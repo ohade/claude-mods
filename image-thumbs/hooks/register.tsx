@@ -297,12 +297,7 @@ export const register: Register = on => {
 
             return (
               <Box flexDirection="column" alignItems="flex-start">
-                <Box
-                  key={`frame-${key}-${index}`}
-                  borderStyle="round"
-                  borderDimColor
-                  hover={{ borderDimColor: false, borderColor: 'cyan' }}
-                >
+                <Box borderStyle="round" borderDimColor>
                   <Box>
                     <Image key={`thumb-${index}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
                     {originalPath !== undefined && (
