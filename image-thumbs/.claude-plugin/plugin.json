@@ -1,0 +1,9 @@
+{
+  "name": "image-thumbs",
+  "version": "0.2.0",
+  "description": "Shows pasted images as framed thumbnails under the prompt; click to expand, open in a pane, or /image",
+  "author": {
+    "name": "Ohad Edelstein"
+  },
+  "types": "./types/index.d.ts"
+}
