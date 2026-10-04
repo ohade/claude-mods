@@ -3,7 +3,7 @@
 A two-line statusline for Claude Code. It renders like this (colour stripped):
 
 ```
-fable5.1 | xhigh | 📁 git | 🌿 main | cache 92% 1h →21:24
+fable5.1 | xhigh | 📁 git | 🌿 main | cache hit 99% 1h →21:24
 ▰▱▱▱ 7% | 5h ▰▰▰▰ 89% 2h26m | wk ▰▱▱▱ 15% 5d13h | fable wk ▰▰▱▱ 41%
 ```
 
@@ -92,7 +92,7 @@ jq '{ok, five_hour, seven_day: .seven_day.pct}' ~/.claude/usage-live.json
 
 ## Reading the statusline
 
-**Line 1** — `fable5.1 | xhigh | 📁 git | 🌿 main | cache 92% 1h →21:24`
+**Line 1** — `fable5.1 | xhigh | 📁 git | 🌿 main | cache hit 99% 1h →21:24`
 
 - Model, shortened from the display name: `Claude Opus 5 (1M context)` becomes `opus5`.
 - Reasoning effort, colour-coded: amber `low`, green `medium`, blue `high`, purple `xhigh`,
@@ -120,10 +120,11 @@ Every message resends the whole conversation to the model. The prompt cache stor
 was already sent, so the model reuses it instead of processing it again. A cache read costs
 about a tenth of normal input, so a warm cache keeps long sessions cheap.
 
-- `cache 92% 1h →21:24`: the cache is warm. 92% of this session's input came from the
-  cache, the cache lifetime is 1 hour, and it expires at 21:24 if you send nothing. Each
-  message resets the lifetime, so the time moves forward as you work. The percent turns
-  amber below 80% and red below 50%.
+- `cache hit 99% 1h →21:24`: the cache is warm. 99% of the last request's input came from
+  the cache, the cache lifetime is 1 hour, and it expires at 21:24 if you send nothing.
+  Each message resets the lifetime, so the time moves forward as you work. The percent
+  turns amber below 80% and red below 50%. It is hidden on a session's first request,
+  which always writes the whole prompt to the cache.
 - `cache cold rewrite 84k`: the lifetime passed. The next message must write all 84k tokens
   to the cache again, which costs more than normal input. It turns red at 100k or more,
   which is a good moment for `/clear` if the task is finished.

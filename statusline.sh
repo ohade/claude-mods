@@ -187,13 +187,22 @@ short_tokens() {
 # Shows the expiry as a clock time, not a countdown: without refreshInterval the
 # script only re-runs on events, so a countdown would freeze while idle. Claude
 # Code re-runs the script at expires_at, which flips the segment to cold.
+# The hit rate is the last request's, not the session's hit_ratio: the first
+# request always writes the whole prompt, which drags a session ratio down for
+# many turns. It is hidden on that first request.
 CACHE_SEG=""
 IFS='|' read -r PC_PRESENT PC_OBSERVED PC_WARM PC_TTL PC_EXP PC_HIT PC_MISSES PC_COLD <<< "$(echo "$input" | jq -r '
     .prompt_cache as $p
+    | .context_window.current_usage as $u
     | if $p == null then "no"
-      else ["yes", ($p.caching_observed // false), ($p.warm // false), ($p.ttl // ""),
-            ($p.expires_at // ""), (if $p.hit_ratio == null then "" else ($p.hit_ratio * 100 | floor) end),
-            ($p.misses // 0), ($p.recache_tokens_if_cold // "")] | map(tostring) | join("|")
+      else (if $u == null or ($p.requests // 0) < 2 then ""
+            else (($u.input_tokens // 0) + ($u.cache_read_input_tokens // 0)
+                  + ($u.cache_creation_input_tokens // 0)) as $t
+                 | if $t > 0 then (($u.cache_read_input_tokens // 0) * 100 / $t | floor) else "" end
+            end) as $hit
+           | ["yes", ($p.caching_observed // false), ($p.warm // false), ($p.ttl // ""),
+              ($p.expires_at // ""), $hit, ($p.misses // 0), ($p.recache_tokens_if_cold // "")]
+           | map(tostring) | join("|")
       end' 2>/dev/null)"
 if [ "$PC_PRESENT" = "yes" ]; then
     if [ "$PC_OBSERVED" != "true" ]; then
@@ -205,7 +214,7 @@ if [ "$PC_PRESENT" = "yes" ]; then
             [ "$PC_HIT" -lt 50 ] && HIT_COLOR="$RED"
         fi
         CACHE_SEG="${GRAY}cache${RESET}"
-        [ -n "$PC_HIT" ] && CACHE_SEG="${CACHE_SEG} ${HIT_COLOR}${PC_HIT}%${RESET}"
+        [ -n "$PC_HIT" ] && CACHE_SEG="${CACHE_SEG} ${GRAY}hit${RESET} ${HIT_COLOR}${PC_HIT}%${RESET}"
         [ -n "$PC_TTL" ] && CACHE_SEG="${CACHE_SEG} ${GRAY}${PC_TTL}${RESET}"
         if [[ "$PC_EXP" =~ ^[0-9]+$ ]]; then
             CACHE_SEG="${CACHE_SEG} ${BLUE}→$(date -r "$PC_EXP" +%H:%M 2>/dev/null)${RESET}"
