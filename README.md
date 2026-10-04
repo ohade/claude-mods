@@ -27,15 +27,12 @@ Check it with `claude plugin validate image-thumbs`, and type-check it with `tsc
 
 ## statusline
 
-`statusline.sh` draws the status line: model and effort, folder, prompt-cache state, and the 5-hour and weekly usage. It reads two helpers from `~/.claude/scripts/`:
+A two-line status line: model and effort, folder and branch, prompt-cache state, context use, and live 5-hour and weekly quota. `usage-live.py` reads Claude Code's OAuth credential from the macOS Keychain to fetch the quota; it never prints or stores the token.
 
-- `usage-live.py` reads Claude Code's OAuth credential from the macOS Keychain, calls the usage endpoint, and caches a sanitized result. It never prints or stores the token.
-- `usage-snapshot.sh` estimates weekly Opus usage from local transcripts.
+Install it, which copies the scripts into `~/.claude` and points `statusLine` in `~/.claude/settings.json` at them after a backup:
 
-Wire it in `~/.claude/settings.json`:
-
-```json
-"statusLine": { "type": "command", "command": "~/.claude/statusline.sh" }
+```sh
+./statusline/install.sh
 ```
 
-This folder is a snapshot of the live copy in `~/.claude`, taken 2026-10-04.
+[statusline/README.md](statusline/README.md) has the details. This folder was `ohade/claude-statusline-setup`, merged here with its history on 2026-10-04.
