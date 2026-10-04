@@ -35,7 +35,8 @@ You need two files from this folder: `statusline.sh` and `usage-live.py`.
 ### Option A — run the installer (recommended)
 
 ```bash
-cd /path/to/claude-statusline-setup
+git clone https://github.com/ohade/claude-statusline-setup.git
+cd claude-statusline-setup
 ./install.sh
 ```
 
