@@ -64,6 +64,46 @@ const jump = async ($: EngineInterface, requestId: string, block: 'start' | 'end
   }
 }
 
+// $.session.messages() answers at most this many entries; past it, older tool calls look
+// absent though they are not, so the rewind check does nothing.
+const MESSAGES_CAP = 4096
+
+// /rewind raises no event, so detect it from the transcript: a question whose
+// track_question call is gone was asked in a rewound turn, and an answer whose
+// mark_answered call is gone was rewound. Only work since the last compaction is judged,
+// since compaction removes old tool calls as well.
+const dropRewound = async ($: EngineInterface): Promise<void> => {
+  const since = (await read($, turn)).compactedAt ?? 0
+  const l = await read($, ledger)
+  const judged = (q: Question) =>
+    (q.trackedBy !== undefined && q.at > since) || (q.answerRequestId !== undefined && (q.answeredAt ?? 0) > since)
+  if (!l.questions.some(judged)) {
+    return
+  }
+  const messages = await $.session.messages()
+  if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP) {
+    return
+  }
+  const present = new Set(messages.flatMap(m => m.toolUses.map(u => u.tool_use_id)))
+  const isRewound = (q: Question) => q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)
+  const answerRewound = (q: Question) =>
+    q.answerRequestId !== undefined && (q.answeredAt ?? 0) > since && !present.has(q.answerRequestId)
+  if (!l.questions.some(q => isRewound(q) || answerRewound(q))) {
+    return
+  }
+  await update<Ledger>($, ledger, cur => ({
+    ...cur,
+    questions: cur.questions
+      .filter(q => !isRewound(q))
+      .map(q => {
+        if (!answerRewound(q)) return q
+        const { answerRequestId: _a, answeredAt: _t, note: _n, ...rest } = q
+
+        return { ...rest, status: 'open' as const }
+      }),
+  }))
+}
+
 const openPane = async ($: EngineInterface): Promise<boolean> => {
   const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS })
   await update($, pane, p => ({ ...p, isOpen: opened.isPlaced }))
@@ -154,7 +194,8 @@ export const register: Register = on => {
 
   // The per-turn reminder: a short row beside the prompt, only while something is open.
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind !== 'composer' || e.text.trim().startsWith('/')) {
+    await dropRewound($)
+    if (e.origin?.kind !== 'composer' || e.text.trim().startsWith('/')) {
       return next(e)
     }
     const l = await read($, ledger)
@@ -199,6 +240,17 @@ export const register: Register = on => {
       block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. If you answered it, call mcp__track__mark_answered({ id: ${first.id}, status: "answered" }); if it must wait, status "deferred" with a note. Then finish.`,
     }
   }).catch(($, e, next) => next(e))
+
+  // Compaction removes old tool calls from the transcript; record when, so the rewind check
+  // never mistakes compacted questions for rewound ones.
+  on('session.compact', async ($, e, next) => {
+    const compacted = await next(e)
+    if (e.agentId === undefined && !('skip' in compacted)) {
+      await update($, turn, t => ({ ...t, compactedAt: Date.now() }))
+    }
+
+    return compacted
+  })
 
   // An interrupted turn leaves its questions open and tags them, so the pane shows why.
   on('turn.complete', async ($, e, next) => {
@@ -255,6 +307,7 @@ export const register: Register = on => {
         at: Date.now(),
         ...(last?.rowKey !== undefined && { rowKey: last.rowKey }),
         ...(last?.requestId !== undefined && { askedRequestId: last.requestId }),
+        ...(e.tool_use_id !== undefined && { trackedBy: e.tool_use_id }),
         turnId: last?.turnId ?? t.currentId,
         status: 'open',
       }
@@ -288,7 +341,13 @@ export const register: Register = on => {
       ...cur,
       questions: cur.questions.map(q =>
         q.id === id
-          ? { ...q, status, ...(note !== undefined && { note }), ...(e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }) }
+          ? {
+              ...q,
+              status,
+              answeredAt: Date.now(),
+              ...(note !== undefined && { note }),
+              ...(e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
+            }
           : q,
       ),
     }))

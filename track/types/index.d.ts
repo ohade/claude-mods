@@ -24,6 +24,10 @@ export type Question = {
   note?: string
   interrupted?: true
   cleared?: true
+  // The tool_use_id of the track_question call that minted it, and when it was answered:
+  // a /rewind is detected by these ids leaving the transcript.
+  trackedBy?: string
+  answeredAt?: number
 }
 
 // A step the model set itself: a Task, a todo line, or a line of an approved plan.
@@ -45,7 +49,9 @@ export type Ledger = {
   steps: Step[]
 }
 
-export type Turn = { currentId: string | null; gatedTurnId: string | null }
+// `compactedAt`: when the transcript was last compacted. Questions older than that are
+// never dropped by the rewind check, because compaction removes their tool calls too.
+export type Turn = { currentId: string | null; gatedTurnId: string | null; compactedAt?: number }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.
