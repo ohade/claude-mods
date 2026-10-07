@@ -128,16 +128,17 @@ test('the track_question call draws no row', async ($, on) => {
   expect(await ui.findAll({ type: 'Text' })).toHaveLength(0)
 })
 
-// After a handoff, the restore_steps call is bookkeeping too: neither its row nor its result shows.
-test('the restore_steps call draws no row and no result', async ($, on) => {
+// A restore_tracker row this session holds no restore for (a refused call) draws nothing, and its
+// result never shows: the model's text is not for the person.
+test('a restore_tracker row with nothing restored draws no row, and no result', async ($, on) => {
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
   on('ui.render', { component: 'ToolResult' }, () => ({ type: 'Text', props: {}, children: ['engine result'] }))
 
-  const use = await $.ui.mount(toolRow('mcp__track__restore_steps', { from_session: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))
+  const use = await $.ui.mount(toolRow('mcp__track__restore_tracker', { from_session: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))
   const result = await $.ui.mount({
-    ...toolRow('mcp__track__restore_steps', {}),
+    ...toolRow('mcp__track__restore_tracker', {}),
     component: 'ToolResult' as const,
-    props: { tool_use_id: 'toolu_row', tool: 'mcp__track__restore_steps', output: 'Restored 41 steps from session aaaaaaaa.', isErrored: false },
+    props: { tool_use_id: 'toolu_row', tool: 'mcp__track__restore_tracker', output: 'Restored 41 steps from session aaaaaaaa.', isErrored: false },
   } as never)
 
   expect(await use.findAll({ type: 'Text' })).toHaveLength(0)
@@ -1527,8 +1528,8 @@ test('clear completed above the steps hides the done steps and keeps the rest', 
 })
 
 // The context-handoff session, 2026-10-07: after a handoff the fresh session's pane is empty.
-// restore_steps copies the old session's steps from the store with one call, keyed by the brief's
-// session id; the questions stay behind.
+// restore_tracker copies the old session's steps from the store with one call, keyed by the brief's
+// session id; its questions come back too (handoff-qa.test.tsx).
 const OLD = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 const SAVED_STEPS = [
   { id: 'plan:1', source: 'plan', subject: 'Fix the pane', status: 'completed' },
@@ -1551,9 +1552,9 @@ const restoreCase = (on: Parameters<TestBody>[1], current: unknown, saved: unkno
 }
 
 const restore = ($: Parameters<TestBody>[0], input: Record<string, unknown>) =>
-  $.tool.call({ tool: 'mcp__track__restore_steps', ...input } as never) as Promise<{ result?: unknown; deny?: string }>
+  $.tool.call({ tool: 'mcp__track__restore_tracker', ...input } as never) as Promise<{ result?: unknown; deny?: string }>
 
-test('restore_steps copies the old steps in order with their ids and statuses, and no questions', async ($, on) => {
+test('restore_tracker copies the old steps in order with their ids and statuses, and the open question', async ($, on) => {
   const writes = restoreCase(on, withSteps([]), SAVED)
 
   const ran = await restore($, { from_session: OLD })
@@ -1563,12 +1564,12 @@ test('restore_steps copies the old steps in order with their ids and statuses, a
     'plan:3|Deploy|in_progress',
     'plan:2|Clean up|pending',
   ])
-  expect(writes.at(-1)?.questions).toHaveLength(0)
+  expect(writes.at(-1)?.questions).toHaveLength(1)
   expect(String(ran.result)).toContain('Restored 3 steps')
   expect(String(ran.result)).toContain('In progress: S2 Deploy')
 })
 
-test('restore_steps refuses to replace steps the session already has, unless replace is true', async ($, on) => {
+test('restore_tracker refuses to replace steps the session already has, unless replace is true', async ($, on) => {
   const writes = restoreCase(on, withSteps([{ id: 'plan:1', source: 'plan', subject: 'Live step', status: 'in_progress' }]), SAVED)
 
   const refused = await restore($, { from_session: OLD })
@@ -1579,7 +1580,7 @@ test('restore_steps refuses to replace steps the session already has, unless rep
   expect(writes.at(-1)?.steps.map(s => s.subject)).toEqual(['Fix the pane', 'Deploy', 'Clean up'])
 })
 
-test('restore_steps changes nothing for a session id with nothing saved, or one that is not an id', async ($, on) => {
+test('restore_tracker changes nothing for a session id with nothing saved, or one that is not an id', async ($, on) => {
   const writes = restoreCase(on, withSteps([]), SAVED)
 
   const missing = await restore($, { from_session: '00000000-0000-4000-8000-000000000000' })
@@ -1590,7 +1591,7 @@ test('restore_steps changes nothing for a session id with nothing saved, or one 
   expect(writes).toHaveLength(0)
 })
 
-test('restore_steps keeps only well-formed steps, and a subagent cannot call it', async ($, on) => {
+test('restore_tracker keeps only well-formed steps, and a subagent cannot call it', async ($, on) => {
   const odd = { ...SAVED, ledger: { ...SAVED.ledger, steps: [...SAVED_STEPS, { id: 'plan:9', subject: 'Bad status', status: 'done' }, 'not a step', null] } }
   const writes = restoreCase(on, withSteps([]), odd)
 
