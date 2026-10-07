@@ -12,6 +12,17 @@ const MAX_PROMPTS = 200
 const MAX_QUESTIONS = 200
 const HOTKEYS = 9
 
+// How many open questions the per-turn context row names.
+const OPEN_LISTED = 5
+
+// The standing rule, sent once per request as a byte-stable system-prompt section.
+const RULE = [
+  'track: if the user\'s prompt is a question, call mcp__track__track_question with a one-line summary before answering',
+  '(one call per distinct question). Write the answer, then call mcp__track__mark_answered with status "answered",',
+  'or "deferred" with a note if it must wait. For work of more than one step, create the steps with TaskCreate and',
+  'keep their status current; mcp__track__mark_step overrides a step the tracker shows wrong.',
+].join(' ')
+
 const EMPTY_LEDGER: Ledger = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
@@ -101,8 +112,8 @@ export const register: Register = on => {
   })
 
   // The two per-turn tools stay in the model's tool list; a deferred tool costs a ToolSearch round trip.
-  on('tool.describe', { tool: 'mcp__track__track_question' }, ($, e, next) => next({ ...e, isDeferred: false }))
-  on('tool.describe', { tool: 'mcp__track__mark_answered' }, ($, e, next) => next({ ...e, isDeferred: false }))
+  on('tool.describe', { tool: 'mcp__track__track_question' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: 'mcp__track__mark_answered' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
   // Every typed prompt is recorded before the model runs: its provisional row key and a short head.
   // A subagent's prompt row carries agentId and is not the person's.
@@ -128,6 +139,75 @@ export const register: Register = on => {
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
       questions: l.questions.map(q => (q.turnId === null ? { ...q, turnId: e.turnId } : q)),
     }))
+
+    return next(e)
+  })
+
+  // The standing rule: one byte-stable system-prompt section, appended last (scope `session`),
+  // so the prompt cache holds across turns. Everything that changes per turn goes in the
+  // prompt.submit context row instead.
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+
+    return { sections: [...composed.sections, { id: 'track:rule', text: RULE, scope: 'session' as const }] }
+  })
+
+  // The per-turn reminder: a short row beside the prompt, only while something is open.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin.kind !== 'composer' || e.text.trim().startsWith('/')) {
+      return next(e)
+    }
+    const l = await read($, ledger)
+    const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
+    const stepsLeft = l.steps.filter(s => s.status !== 'completed').length
+    if (open.length === 0 && stepsLeft === 0) {
+      return next(e)
+    }
+    const listed = open
+      .slice(-OPEN_LISTED)
+      .map(q => `Q${q.id} "${truncate(q.head, 60)}"${q.status === 'deferred' ? ' (deferred)' : ''}`)
+      .join(', ')
+    const done = l.steps.length - stepsLeft
+    const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done. Mark a question with mcp__track__mark_answered when you answer it.`
+
+    return next({ ...e, context: [...(e.context ?? []), line] })
+  })
+
+  // The gate: after the settings Stop hooks have run (and only when none of them blocked),
+  // hold the turn once when a question the model tracked this turn is still open. The catch
+  // replays the chain, so a failure here can never add or erase a block.
+  on('classic.Stop', async ($, e, next) => {
+    const below = await next(e)
+    if (below.block !== undefined || e.stop_hook_active || e.agent_id !== undefined) {
+      return below
+    }
+    const t = await read($, turn)
+    if (t.currentId === null || t.gatedTurnId === t.currentId) {
+      return below
+    }
+    const l = await read($, ledger)
+    const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
+    if (open.length === 0) {
+      return below
+    }
+    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
+    const first = open[0] as Question
+    const rest = open.length > 1 ? ` (${open.length - 1} more open: ${open.slice(1).map(q => `Q${q.id}`).join(', ')})` : ''
+
+    return {
+      ...below,
+      block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. If you answered it, call mcp__track__mark_answered({ id: ${first.id}, status: "answered" }); if it must wait, status "deferred" with a note. Then finish.`,
+    }
+  }).catch(($, e, next) => next(e))
+
+  // An interrupted turn leaves its questions open and tags them, so the pane shows why.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && e.reason === 'aborted') {
+      await update($, ledger, l => ({
+        ...l,
+        questions: l.questions.map(q => (q.status === 'open' && q.turnId === e.turnId ? { ...q, interrupted: true as const } : q)),
+      }))
+    }
 
     return next(e)
   })
@@ -173,8 +253,8 @@ export const register: Register = on => {
         id: l.nextQuestionId,
         head: summary,
         at: Date.now(),
-        rowKey: last?.rowKey,
-        askedRequestId: last?.requestId,
+        ...(last?.rowKey !== undefined && { rowKey: last.rowKey }),
+        ...(last?.requestId !== undefined && { askedRequestId: last.requestId }),
         turnId: last?.turnId ?? t.currentId,
         status: 'open',
       }
@@ -201,9 +281,13 @@ export const register: Register = on => {
     if (!l.questions.some(q => q.id === id)) {
       return { result: { ok: false, known: l.questions.filter(q => q.status === 'open').map(q => ({ id: q.id, head: q.head })) } }
     }
-    await update($, ledger, cur => ({
+    await update<Ledger>($, ledger, cur => ({
       ...cur,
-      questions: cur.questions.map(q => (q.id === id ? { ...q, status, note, answerRequestId: e.tool_use_id ?? q.answerRequestId } : q)),
+      questions: cur.questions.map(q =>
+        q.id === id
+          ? { ...q, status, ...(note !== undefined && { note }), ...(e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }) }
+          : q,
+      ),
     }))
 
     return { result: { ok: true, id, status } }
@@ -266,8 +350,9 @@ export const register: Register = on => {
         </Box>
         {questions.length === 0 && <Text dimColor>  none yet — the model adds a question with track_question</Text>}
         {questions.map((q, index) => {
+          // The engine draws a hotkey button as `1: label`, so the label carries no digit itself.
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
-          const label = `${hotkey ?? ' '} ${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 12)}`
+          const label = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 12)}`
 
           return (
             <Box flexDirection="row">
@@ -295,7 +380,7 @@ export const register: Register = on => {
           </Text>
         ))}
         <Box flexDirection="row" marginTop={1}>
-          <Button key="clear" plain hotkey="c" label="[c] Clear completed" onPress={clearCompleted} />
+          <Button key="clear" plain hotkey="c" label="Clear completed" onPress={clearCompleted} />
           <Text dimColor>   /track hides · ctrl+x x closes for good</Text>
         </Box>
       </Box>
