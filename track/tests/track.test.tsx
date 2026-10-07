@@ -1212,11 +1212,19 @@ test('the pane opens as Session Tracker, its title on the first line', async ($,
   expect(opens[0]).toMatchObject({ id: 'track', title: 'Session Tracker' })
 })
 
-test('the first line of the pane is the Session Tracker title', async ($, on) => {
+// Updated the same day at Ohad's request: the title is centered, as a header bar.
+test('the first line of the pane is the Session Tracker title, centered as a header bar', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
-  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts[0]).toBe('Session Tracker')
+  const texts = await ui.findAll({ type: 'Text' })
+  const title = texts.findIndex(t => String(t.text ?? '').includes('SESSION TRACKER'))
+  expect(title).toBeLessThanOrEqual(1)
+  expect((texts[title]?.props as { bold?: boolean } | undefined)?.bold).toBe(true)
+  const header = (await ui.findAll({ type: 'Box' })).find(b => b.key === 'title')
+  expect((header?.props as { justifyContent?: string } | undefined)?.justifyContent).toBe('center')
+  // The rules on both sides fill the width: the whole header is as wide as the pane body (60).
+  const line = texts.slice(0, 3).map(t => String(t.text ?? '')).join('')
+  expect(line.length).toBe(60)
 })
 
 test('the banner sits between the questions and the Steps header', async ($, on) => {
@@ -1266,4 +1274,28 @@ test('a typed prompt names the step still in progress and asks for it to be mark
 
 test('a plugin prompt (an approval from Plannotator) names the step in progress too', async ($, on) => {
   expect(await contextFor($, on, { kind: 'plugin', name: 'plannotator' })).toContain('plan:2 "Fold the design into the retro report"')
+})
+
+// Observed 2026-10-07 (session 7bbc175c): the transcript said "plan:10 in progress" and Ohad read
+// it as the pane's S10, a finished step; plan:10 was inserted third, so the pane shows it as S3.
+// The quiet mark_step line names the step as the pane does: its S-number and its title.
+test('a mark_step line names the step by its pane number and title, not its id', async ($, on) => {
+  const inserted = {
+    ...ANSWERED,
+    steps: [
+      { id: 'plan:1', source: 'plan', subject: 'Receive the audit', status: 'completed' },
+      { id: 'plan:2', source: 'plan', subject: 'Fold the design', status: 'completed' },
+      { id: 'plan:10', source: 'plan', subject: 'Write the retro-fix plan', status: 'in_progress' },
+      { id: 'plan:3', source: 'plan', subject: 'Live check', status: 'completed' },
+    ],
+  }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: inserted, version: 1 } }))
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+
+  const mark = await $.ui.mount(toolRow('mcp__track__mark_step', { id: 'plan:10', status: 'in_progress' }))
+
+  const text = String((await mark.findAll({ type: 'Text' }))[0]?.text ?? '')
+  expect(text).toContain('S3 Write the retro-fix plan')
+  expect(text).toContain('in progress')
+  expect(text).not.toContain('plan:10')
 })

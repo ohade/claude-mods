@@ -1027,8 +1027,15 @@ export const register: Register = on => {
       const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
       const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
       const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : '◻'
+      // Named as the pane names it, S<n> and the title: an id such as plan:10 can sit third in
+      // the pane after an insert, and was read as S10 (Ohad, 2026-10-07).
+      const id = String(input.id ?? '?')
+      const shown = (await read($, ledger)).steps.filter(s => s.cleared !== true)
+      const at = shown.findIndex(s => s.id === id)
+      const step = shown[at]
+      const name = step === undefined ? id : `S${at + 1} ${truncate(step.subject, 60)}`
 
-      return <Text dimColor>{`${glyph} ${String(input.id ?? '?')} ${status.replace('_', ' ')}`}</Text>
+      return <Text dimColor>{`${glyph} ${name} ${status.replace('_', ' ')}`}</Text>
     }
     if (e.props.tool === MARK_ANSWERED) {
       const { Text } = $.ui.resolve(e)
@@ -1074,6 +1081,8 @@ export const register: Register = on => {
       startPulse($)
     }
     const width = Math.max(20, e.props.bodyColumns)
+    const titleLabel = ` ${TITLE.toUpperCase()} `
+    const titleSide = Math.max(2, Math.floor((width - titleLabel.length) / 2))
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
     // stay reachable above the newest (track_question scrolls the newest into view).
     const questions = l.questions.filter(q => q.cleared !== true)
@@ -1092,8 +1101,13 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Box marginBottom={1}>
-          <Text bold>{TITLE}</Text>
+        {/* The title as a centered header bar, rules filling the width (Ohad, 2026-10-07). */}
+        <Box key="title" flexDirection="row" justifyContent="center" marginBottom={1}>
+          <Text dimColor>{'─'.repeat(titleSide)}</Text>
+          <Text bold color="claude">
+            {titleLabel}
+          </Text>
+          <Text dimColor>{'─'.repeat(Math.max(2, width - titleLabel.length - titleSide))}</Text>
         </Box>
         <Box flexDirection="row">
           <Text bold>Questions </Text>
