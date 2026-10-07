@@ -27,6 +27,14 @@ declare module 'claude-code' {
       // The large picture a thumbnail expanded into, by image number.
       expanded: StateFamily<Shown | null>
       pasted: Pasted[]
+      // The newest picture number a row or a submitted prompt took as its own.
+      claimed: number
+      // When each picture's [Image #n] landed in the prompt box, in ms.
+      pastedAt: StateFamily<number>
+      // The saved clipboard files thumbnails were built from.
+      used: string[]
+      // When the last prompt or slash command was submitted, in ms.
+      submittedAt: number
     }
   }
 }

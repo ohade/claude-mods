@@ -8,14 +8,19 @@ const SHOWN = { plugin: 'image-thumbs', key: 'shown' } as const
 const PASTED = { plugin: 'image-thumbs', key: 'pasted' } as const
 const EXPANDED = { plugin: 'image-thumbs', key: 'expanded' } as const
 const REPAINTS = { plugin: 'image-thumbs', key: 'repaints' } as const
+const CLAIMED = { plugin: 'image-thumbs', key: 'claimed' } as const
+const PASTED_AT = { plugin: 'image-thumbs', key: 'pastedAt' } as const
+const USED = { plugin: 'image-thumbs', key: 'used' } as const
+const SUBMITTED = { plugin: 'image-thumbs', key: 'submittedAt' } as const
 
 const PANE = 'image-view'
 
 // The rows that carry a pasted picture among their blocks: a typed prompt and
 // a slash command's expansion. A skill's expansion (/recall ...) is a meta row
 // of its own by the note door; the command's row before it has the text alone.
-// A message sent mid-turn comes in by the delivery door instead, without its
-// pictures (see the delivery hook).
+// A message sent mid-turn comes in by the delivery door with its text alone.
+// Most thumbnails are built at submit from the saved files; these rows build
+// the rest from their own bytes.
 const PICTURE_DOORS = ['prompt', 'command', 'attachment', 'note'] as const
 
 // Thumbnail height in terminal rows; the width follows the picture's aspect.
@@ -111,10 +116,14 @@ const deleteOriginal = async ($: EngineInterface, originalPath: string): Promise
   await $.process.run(['/bin/rmdir', folderOf(originalPath)])
 }
 
-// Decodes one pasted image into a private folder of its own under $TMPDIR,
+// Where a picture's bytes are: base64 from a row, or the file Claude Code
+// saved when it was pasted.
+type Source = { data: string } | { file: string }
+
+// Copies one pasted image into a private folder of its own under $TMPDIR,
 // kept for the session so the large view can be drawn from the original,
 // and returns its thumbnail; undefined, with the reason in the debug log.
-const makeThumb = async ($: EngineInterface, data: string, n: number): Promise<Thumb | undefined> => {
+const makeThumb = async ($: EngineInterface, source: Source, n: number): Promise<Thumb | undefined> => {
   const created = await $.process.run(['/usr/bin/mktemp', '-d', '-t', 'claude-image-thumbs'])
   const dir = created.stdout.trim()
   if (created.exitCode !== 0 || dir === '') {
@@ -125,7 +134,11 @@ const makeThumb = async ($: EngineInterface, data: string, n: number): Promise<T
   const originalPath = `${dir}/original`
 
   try {
-    await runOrThrow($, ['/usr/bin/base64', '-D', '-o', originalPath], data)
+    if ('file' in source) {
+      await runOrThrow($, ['/bin/cp', source.file, originalPath])
+    } else {
+      await runOrThrow($, ['/usr/bin/base64', '-D', '-o', originalPath], source.data)
+    }
     const thumbPath = `${dir}/thumb.png`
     const size = await writePng($, originalPath, thumbPath, { width: THUMB_MAX_WIDTH, height: THUMB_HEIGHT })
 
@@ -173,19 +186,153 @@ const openImage = async ($: EngineInterface, n: number, originalPath: string): P
   }
 }
 
-// Builds and stores the thumbnails of a row's own pictures: those its text
-// names past the last number seen, in order, matched to `images` in order.
-const storeThumbs = async ($: EngineInterface, text: string, images: ImageBlock[]): Promise<void> => {
+const isThumb = (thumb: Thumb | undefined): thumb is Thumb => thumb !== undefined
+
+const isStored = async ($: EngineInterface, n: number): Promise<boolean> =>
+  (await $.state.get({ ...BY_IMAGE, id: String(n) })).value !== undefined
+
+const keepThumbs = async ($: EngineInterface, thumbs: Thumb[]): Promise<void> => {
+  if (thumbs.length === 0) {
+    return
+  }
+  await Promise.all(thumbs.map(thumb => $.state.set({ ...BY_IMAGE, id: String(thumb.n) }, thumb)))
   const { value: pasted = [] } = await $.state.get(PASTED)
-  const numbers = freshNumbers(text, Math.max(0, ...pasted.map(image => image.n)))
+  const added: Pasted[] = thumbs.map(({ n, originalPath }) => ({ n, originalPath }))
+  await $.state.set(PASTED, [...pasted, ...added])
+}
+
+// A text's own pictures: the numbers it names past the newest one claimed.
+const freshOf = async ($: EngineInterface, text: string): Promise<number[]> => {
+  const { value: claimed = 0 } = await $.state.get(CLAIMED)
+
+  return freshNumbers(text, claimed)
+}
+
+const claim = async ($: EngineInterface, numbers: number[]): Promise<void> => {
+  const { value: claimed = 0 } = await $.state.get(CLAIMED)
+  await $.state.set(CLAIMED, Math.max(claimed, ...numbers))
+}
+
+// Builds and stores the thumbnails of a row's own pictures not built yet,
+// matched to `images` in order.
+const storeThumbs = async ($: EngineInterface, text: string, images: ImageBlock[]): Promise<void> => {
+  const numbers = (await freshOf($, text)).slice(0, images.length)
   const made = await Promise.all(
-    numbers.slice(0, images.length).map((n, index) => makeThumb($, images[index]?.source.data ?? '', n)),
+    numbers.map(async (n, index) =>
+      (await isStored($, n)) ? undefined : makeThumb($, { data: images[index]?.source.data ?? '' }, n),
+    ),
   )
-  const thumbs = made.filter((thumb): thumb is Thumb => thumb !== undefined)
-  if (thumbs.length > 0) {
-    await Promise.all(thumbs.map(thumb => $.state.set({ ...BY_IMAGE, id: String(thumb.n) }, thumb)))
-    const added: Pasted[] = thumbs.map(({ n, originalPath }) => ({ n, originalPath }))
-    await $.state.set(PASTED, [...pasted, ...added])
+  await keepThumbs($, made.filter(isThumb))
+  await claim($, numbers)
+}
+
+// Claude Code saves each pasted picture when it is pasted, as
+// $TMPDIR/clipboard-YYYY-MM-DD-HHMMSS-<id>.png (local time). A slash
+// command's row, and a message sent mid-turn, are printed before any row
+// carrying the picture's bytes, and a printed row is not drawn again; so when
+// a prompt is submitted its thumbnails are built from these files.
+const SAVED_NAME = /\/clipboard-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})-[0-9A-Za-z]+\.\w+$/
+// How far a file's name time may be from its paste: the name keeps whole
+// seconds, and the file is written as the paste lands.
+const PASTE_SLACK_MS = 3000
+
+type Saved = { path: string; at: number }
+
+const savedAt = (path: string): number | undefined => {
+  const parts = SAVED_NAME.exec(path)?.slice(1).map(Number)
+  if (parts === undefined) {
+    return undefined
+  }
+  const [year = 0, month = 1, day = 1, hours = 0, minutes = 0, seconds = 0] = parts
+
+  return new Date(year, month - 1, day, hours, minutes, seconds).getTime()
+}
+
+// The pictures Claude Code saved in the last two hours, oldest first.
+const savedPictures = async ($: EngineInterface): Promise<Saved[]> => {
+  const dir = (await runOrThrow($, ['/usr/bin/getconf', 'DARWIN_USER_TEMP_DIR'])).trim().replace(/\/$/, '')
+  const found = await runOrThrow($, ['/usr/bin/find', dir, '-maxdepth', '1', '-name', 'clipboard-*', '-mmin', '-120'])
+
+  return found
+    .split('\n')
+    .flatMap(path => {
+      const at = savedAt(path)
+
+      return at === undefined ? [] : [{ path, at }]
+    })
+    .sort((one, other) => one.at - other.at)
+}
+
+// The saved file of each wanted picture: the one saved nearest its paste,
+// when the paste was seen. Pictures left over take the files saved since the
+// last prompt only when there are exactly as many: one more may be another
+// session's paste, and drawing it here would show the wrong picture.
+const pickFiles = (pastedAt: (number | undefined)[], saved: Saved[], since: number): (string | undefined)[] => {
+  const taken = new Set<string>()
+  const picked = pastedAt.map(at => {
+    if (at === undefined) {
+      return undefined
+    }
+    const [nearest] = saved
+      .filter(file => !taken.has(file.path) && Math.abs(file.at - at) <= PASTE_SLACK_MS)
+      .sort((one, other) => Math.abs(one.at - at) - Math.abs(other.at - at))
+    if (nearest !== undefined) {
+      taken.add(nearest.path)
+    }
+
+    return nearest?.path
+  })
+  const missing = picked.flatMap((path, index) => (path === undefined ? [index] : []))
+  const sinceLast = saved.filter(file => !taken.has(file.path) && file.at >= since - PASTE_SLACK_MS)
+  if (missing.length > 0 && sinceLast.length === missing.length) {
+    missing.forEach((index, order) => {
+      picked[index] = sinceLast[order]?.path
+    })
+  }
+
+  return picked
+}
+
+// At submit, before any row of the prompt exists: builds the thumbnails of
+// the pictures `text` names that are not built yet, from their saved files.
+const storeSavedThumbs = async ($: EngineInterface, text: string): Promise<void> => {
+  const submittedAt = Date.now()
+  const { value: since = 0 } = await $.state.get(SUBMITTED)
+  await $.state.set(SUBMITTED, submittedAt)
+  const numbers = await freshOf($, text)
+  const wanted = (await Promise.all(numbers.map(async n => ((await isStored($, n)) ? [] : [n])))).flat()
+  if (wanted.length === 0) {
+    return
+  }
+  let saved: Saved[]
+  try {
+    saved = await savedPictures($)
+  } catch (error) {
+    $.ui.log(`image-thumbs: no saved pictures listed: ${String(error)}`, { to: 'debug' })
+
+    return
+  }
+  const { value: used = [] } = await $.state.get(USED)
+  const pastedAt = await Promise.all(wanted.map(async n => (await $.state.get({ ...PASTED_AT, id: String(n) })).value))
+  const files = pickFiles(
+    pastedAt,
+    saved.filter(file => !used.includes(file.path)),
+    since,
+  )
+  const made = await Promise.all(
+    wanted.map((n, index) => {
+      const file = files[index]
+
+      return file === undefined ? undefined : makeThumb($, { file }, n)
+    }),
+  )
+  const thumbs = made.filter(isThumb)
+  await keepThumbs($, thumbs)
+  await $.state.set(USED, [...used, ...files.filter((file): file is string => file !== undefined)])
+  // Claimed only when every picture was built: a row then builds the rest
+  // from its own bytes, where it carries them.
+  if (thumbs.length === wanted.length) {
+    await claim($, numbers)
   }
 }
 
@@ -224,24 +371,35 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A message sent while Claude works comes in by the delivery door, as a
-  // queued_command attachment, and the engine hands this hook an attachment's
-  // text alone. Once the row is kept, the conversation the next request is
-  // built from carries its pictures, so they are read back from there.
-  on('session.append', { door: 'delivery' }, async ($, e, next) => {
-    const row = await next(e)
-    const text = textOf(e.message.content)
-    const [first] = imageNumbers(text)
-    if (first === undefined) {
-      return row
+  // A paste puts [Image #n] in the prompt box: when it landed tells which
+  // saved file is that picture's.
+  on('prompt.edit', async ($, e, next) => {
+    const numbers = imageNumbers(e.inputText)
+    if (numbers.length > 0) {
+      const at = Date.now()
+      await Promise.all(numbers.map(n => $.state.set({ ...PASTED_AT, id: String(n) }, at)))
     }
-    const messages = await $.session.messages({ as: 'api' })
-    const message = messages.findLast(one => one.role === 'user' && textOf(one.content).includes(`[Image #${first}]`))
-    const images = (message?.content ?? []).filter(isImageBlock)
-    // The newest pictures are the message's last ones.
-    await storeThumbs($, text, images.slice(-imageNumbers(text).length))
 
-    return row
+    return next(e)
+  })
+
+  // A prompt typed at the prompt or sent while Claude works, before its rows
+  // exist.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.attachments?.some(attachment => attachment.type === 'image') === true) {
+      await storeSavedThumbs($, e.text)
+    }
+
+    return next(e)
+  })
+
+  // A slash command's pictures are in its arguments.
+  on('command.run', async ($, e, next) => {
+    if (imageNumbers(e.args).length > 0) {
+      await storeSavedThumbs($, e.args)
+    }
+
+    return next(e)
   })
 
   // A /clear ends the session too, and the next one may number its pictures

@@ -116,6 +116,98 @@ test("a skill's slash command draws the picture its expansion brings in on a not
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
 })
 
+// Claude Code saves a pasted picture at paste time as
+// $TMPDIR/clipboard-<local time>-<id>.png. A file name saved `secondsAgo` ago.
+const savedName = (secondsAgo: number, id: string) => {
+  const at = new Date(Date.now() - secondsAgo * 1000)
+  const two = (part: number) => String(part).padStart(2, '0')
+  const day = `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}`
+
+  return `/private/tmp/tmpdir/clipboard-${day}-${two(at.getHours())}${two(at.getMinutes())}${two(at.getSeconds())}-${id}.png`
+}
+
+// The disk as standInForDisk has it, with these pasted pictures saved in the
+// temp folder; the copies the mod makes of them are recorded in `copied`.
+const standInForSavedPictures = (on: On, saved: string[], copied: string[]) => {
+  on('process.run', (_, e) => {
+    if (e.argv[0] === '/bin/cp') {
+      copied.push(e.argv[1] ?? '')
+    }
+    const stdout =
+      e.argv[0] === '/usr/bin/getconf'
+        ? '/private/tmp/tmpdir/\n'
+        : e.argv[0] === '/usr/bin/find'
+          ? saved.map(path => `${path}\n`).join('')
+          : e.argv.includes('-g')
+            ? 'pixelWidth: 64\npixelHeight: 32\n'
+            : e.argv[0] === '/usr/bin/mktemp'
+              ? '/private/tmp/thumbs-test\n'
+              : ''
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', () => ({ value: { base64: PNG } }))
+  on('ui.render', engineRow, (_, e) => ({ type: 'Text', props: {}, children: [e.props.text] }))
+}
+
+// How a command is shown: the main screen, 100 columns.
+const PRESENTATION = { isFullscreen: false, columns: 100 }
+
+// The kit's engine raises prompt.edit, though its types leave that call out.
+const promptEdit = ($: unknown, e: Record<string, unknown>) =>
+  ($ as { prompt: { edit: (edit: Record<string, unknown>) => Promise<unknown> } }).prompt.edit(e)
+
+// The kit has nothing beneath the plugins to run a command or enter a prompt,
+// so the call may reject once the mod's hook has handed it on.
+const settle = async (call: Promise<unknown>) => {
+  await call.catch(() => undefined)
+}
+
+test("a slash command's row draws the picture pasted into it, before any row brings the picture's bytes", async ($, on) => {
+  const copied: string[] = []
+  standInForSavedPictures(on, [savedName(2, '6524ECCF')], copied)
+
+  // Live, the command's row is printed before the row carrying the picture
+  // arrives, and a printed row is not drawn again: the thumbnail must exist
+  // when the command runs.
+  await settle($.command.run({ command: 'recall', args: 'look at this [Image #1]', origin: { kind: 'composer' }, presentation: PRESENTATION }))
+  const ui = await $.ui.mount(userMessage('/recall look at this [Image #1]'))
+
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
+  expect(copied).toEqual([savedName(2, '6524ECCF')])
+})
+
+test('a prompt sent while Claude works draws its picture from the file saved when it was pasted', async ($, on) => {
+  standInForSavedPictures(on, [savedName(1, 'A1B2C3D4')], [])
+
+  await settle($.prompt.submit({ text: 'why is it blank? [Image #4]', attachments: [{ type: 'image', mediaType: 'image/png' }], wait: false, origin: { kind: 'composer' } }))
+  const ui = await $.ui.mount(userMessage('why is it blank? [Image #4]', '8a8b0111-01c9-465e-9864-e5453358cf5d'))
+
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #4]' })
+})
+
+test('the file saved nearest the paste is the one drawn', async ($, on) => {
+  const copied: string[] = []
+  standInForSavedPictures(on, [savedName(40, '0000000A'), savedName(0, '0000000B')], copied)
+
+  await settle(promptEdit($, { origin: { kind: 'composer' }, text: 'look ', cursor: 5, start: 5, end: 5, inputText: ' [Image #2]' }))
+  await settle($.command.run({ command: 'recall', args: 'look [Image #2]', origin: { kind: 'composer' }, presentation: PRESENTATION }))
+
+  expect(copied).toEqual([savedName(0, '0000000B')])
+})
+
+test('with no paste seen and two files saved since the last prompt, neither is taken', async ($, on) => {
+  const copied: string[] = []
+  // One may be another session's paste: drawing it under this prompt would show the wrong picture.
+  standInForSavedPictures(on, [savedName(5, '0000000C'), savedName(3, '0000000D')], copied)
+
+  await settle($.command.run({ command: 'recall', args: 'look [Image #3]', origin: { kind: 'composer' }, presentation: PRESENTATION }))
+  const ui = await $.ui.mount(userMessage('/recall look [Image #3]'))
+
+  expect(copied).toEqual([])
+  expect(await ui.findAll({ type: 'Image' })).toHaveLength(0)
+})
+
 test('a message sent while Claude works draws its thumbnail', async ($, on) => {
   // The picture came in on the attachment that folds the message into the turn.
   storeThumbs(on, [4])
