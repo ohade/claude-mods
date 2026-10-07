@@ -14,8 +14,9 @@ const SCROLL_AFTER_MS = 150
 const REWIND_CHECK_DELAY_MS = 1000
 const REWIND_CHECK_GAP_MS = 3000
 const rewindCheck = { isScheduled: false, lastAt: -Infinity }
-// The built-in diff panel's rule: it opens by itself only from this width, in the fullscreen
-// layout, in a git repository, and never after the person closed it by hand.
+// The built-in diff panel's rule, less its git condition (Ohad, 2026-10-07: most sessions start
+// in ~/git, no repository, and the tracker does not need git): it opens by itself only from
+// this width, in the fullscreen layout, and never after the person closed it by hand.
 const AUTO_OPEN_MIN_COLUMNS = 144
 const AUTO_OPEN_DELAY_MS = 50
 const autoOpen = { isScheduled: false }
@@ -180,7 +181,7 @@ const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
 }
 
 // Called from a prompt redraw, which only draws: the cheap viewport test runs here, and the
-// store read, the git read and the open run from a timer, where state may be written.
+// store read and the open run from a timer, where state may be written.
 const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number; isFullscreen?: boolean } | undefined): Promise<void> => {
   if (autoOpen.isScheduled || viewport?.isFullscreen !== true || (viewport.columns ?? 0) < AUTO_OPEN_MIN_COLUMNS) {
     return
@@ -193,8 +194,7 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
   $.clock.after(AUTO_OPEN_DELAY_MS, () => {
     void (async () => {
       const closedByPerson = (await $.store.get('closedByPerson')) === true
-      const inRepo = !closedByPerson && (await $.session.repo()) !== null
-      if (closedByPerson || !inRepo) {
+      if (closedByPerson) {
         await update($, pane, cur => ({ ...cur, closedByPerson, autoOpenDone: true as const }))
       } else {
         await openPane($)
