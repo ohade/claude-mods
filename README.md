@@ -25,6 +25,36 @@ or list the folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude
 
 Check it with `claude plugin validate image-thumbs`, and type-check it with `tsc -p image-thumbs` once Claude Code has loaded it (loading writes the API types into `.claude-plugin/types/`).
 
+## track
+
+A pane beside the transcript that keeps the session's register: the questions you asked and
+where each was answered, and the steps the model set itself, each with a completion ring.
+
+- **Questions.** The model sends each question to the pane with `track_question` and closes it
+  with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
+  Both calls stay quiet in the transcript: the first draws nothing, the second one dim
+  `✓ Q<n> answered` line. An answered question turns green.
+- **Jump.** `[ asked ]` scrolls the transcript to your prompt, `[ answer ]` to the answer. The
+  digits 1–9 press them while the pane has focus (ctrl+x tab).
+- **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved
+  plan (`ExitPlanMode`: its numbered and checkbox lines). A Task named like a plan step links to it.
+- **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
+  hides finished rows and keeps them counted.
+- **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
+- **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
+  turn once if a question the model tracked in that turn is neither answered nor deferred. It
+  runs after your own Stop hooks and never adds a second block.
+- **Rewind and resume.** A `/rewind` drops the questions asked in the rewound turns. Each finished
+  turn saves the register, so `/resume` brings it back.
+
+It opens by itself by the built-in diff panel's rule: in a git repository, in the fullscreen
+layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). `/track`
+shows or hides it at any width; `/track status` prints the open questions. To keep the diff
+panel out of the slot, type `/diff` once.
+
+Load it with `ln -s ../../git/claude-mods/track ~/.claude/skills/track`, or for one session
+`claude --plugin-dir ~/git/claude-mods/track`. Tests: `claude plugin test track`.
+
 ## statusline
 
 A two-line status line: model and effort, folder and branch, prompt-cache state, context use, and live 5-hour and weekly quota. `usage-live.py` reads Claude Code's OAuth credential from the macOS Keychain to fetch the quota; it never prints or stores the token.
