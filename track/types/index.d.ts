@@ -21,6 +21,9 @@ export type Question = {
   turnId: string | null
   status: 'open' | 'answered' | 'deferred'
   answerRequestId?: string
+  // The answer's last text block, keyed by its words (`text:` and a hash): lit with the
+  // `mark_answered` row by a jump to the answer.
+  answerKey?: string
   note?: string
   interrupted?: true
   cleared?: true
@@ -66,6 +69,10 @@ declare module 'claude-code' {
       ledger: Ledger
       turn: Turn
       pane: Pane
+      // A jump's highlight on a transcript row, 0 when unlit; keyed by the row's requestId, or
+      // by an answer's text key. `lit` lists the rows lit now, so a reload can put them out.
+      flash: StateFamily<number>
+      lit: string[]
     }
   }
 }

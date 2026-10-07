@@ -422,14 +422,16 @@ test('a finished turn saves the ledger under the session id', async ($, on) => {
 })
 
 // Ohad, 2026-10-07: an answered question turns green, and the jump to its answer stands out.
+// Updated the same day at Ohad's request: the question became the jump Button, and a Button
+// takes no color, so an answered row's green is its dot.
 test('an answered question is green and its answer button is prominent', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
 
   const ui = await $.ui.mount(pane('dock'))
 
   const texts = await ui.findAll({ type: 'Text' })
-  const question = texts.find(t => String(t.text ?? '').includes('Q1'))
-  expect((question?.props as { color?: string } | undefined)?.color).toBe('success')
+  const dot = texts.find(t => String(t.text ?? '') === '●')
+  expect((dot?.props as { color?: string } | undefined)?.color).toBe('success')
   const answer = (await ui.findAll({ type: 'Button' })).find(b => b.key === 'a-1')
   expect(answer?.props).toMatchObject({ variant: 'primary', label: 'answer' })
   expect((answer?.props as { plain?: true } | undefined)?.plain).toBeUndefined()
@@ -570,7 +572,235 @@ test('a long question is shown whole, its dot in a column of its own', async ($,
 
   const ui = await $.ui.mount(pane('dock'))
 
-  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts).toContain(`Q4 ${head}`)
-  expect(texts).toContain('●')
+  // Updated 2026-10-07: the question is the jump Button, its label the whole question.
+  expect(await listed(ui)).toContain(`Q4 ${head}`)
+  expect((await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))).toContain('●')
+})
+
+// Observed 2026-10-07 (Ohad): the pane opened by itself at session start, then closed. Every
+// reload in the debug logs is followed by `ui.close nested in track#0`: session.start runs again
+// on a reload, an enable or a worker respawn, while the pane stays up, and it closed the pane.
+const startSession = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  panes: Array<{ id: string; title: string; isShown: boolean; isFocused: boolean; isPlaced: boolean }>,
+) => {
+  const closes: string[] = []
+  on('ui.panes', () => ({ value: panes }))
+  on('ui.close', (_, e) => {
+    closes.push(e.id)
+
+    return { value: undefined }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+
+  return closes
+}
+
+test('session.start again (a reload) leaves a placed pane open', async ($, on) => {
+  const closes = await startSession($, on, [{ id: 'track', title: 'Track', isShown: true, isFocused: false, isPlaced: true }])
+  expect(closes).toEqual([])
+})
+
+test('session.start drops a pane that waits undrawn', async ($, on) => {
+  const closes = await startSession($, on, [{ id: 'track', title: 'Track', isShown: false, isFocused: false, isPlaced: false }])
+  expect(closes).toEqual(['track'])
+})
+
+// Ohad, 2026-10-07: after a jump, light the question or answer in the transcript and fade it,
+// so the eye finds where the jump landed.
+const lightLog = (on: Parameters<TestBody>[1]) => {
+  const levels: Array<[string, number]> = []
+  let version = 1
+  on('state.set', { plugin: 'track', key: 'flash' }, (_, e) => {
+    levels.push([String(e.id), Number(e.value)])
+    version += 1
+
+    return { value: { isSet: true as const, version } }
+  })
+
+  return levels
+}
+
+// Ohad, 2026-10-07: the question itself is the link to where it was asked; no [ asked ] button.
+// The kit cannot raise a transcript scroll (it answers none, whatever a test returns), so where
+// the press lands is read from the row it lights.
+test('the question is the jump to where it was asked, and there is no asked button', async ($, on) => {
+  mock.clock(on)
+  const levels = lightLog(on)
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.map(b => (b.props as { label?: string }).label)).not.toContain('asked')
+  expect(buttons.find(b => b.key === 'q-1')?.props).toMatchObject({ label: 'Q1 what is the capital of Australia?', plain: true })
+  await ui.press({ key: 'q-1' })
+  expect(levels.filter(([, level]) => level > 0).map(([id]) => id)).toEqual(['row-1'])
+})
+
+test('a jump to the question lights its prompt row, then fades it out', async ($, on) => {
+  const clock = mock.clock(on)
+  const levels = lightLog(on)
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'q-1' })
+
+  const row = () => levels.filter(([id]) => id === 'row-1').map(([, level]) => level)
+  expect(row()[0]).toBeGreaterThan(0)
+  await clock.advance(5000)
+  const seen = row()
+  expect(seen.at(-1)).toBe(0)
+  expect(seen.length).toBeGreaterThan(2)
+  expect(seen.every((level, i) => i === 0 || level < (seen[i - 1] as number))).toBe(true)
+})
+
+test('a jump to the answer lights the answer text and the mark under it', async ($, on) => {
+  mock.clock(on)
+  const levels = lightLog(on)
+  const withText = { ...ANSWERED, questions: [{ ...ANSWERED.questions[0], answerKey: 'text:abc' }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: withText, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'a-1' })
+
+  const lit = levels.filter(([, level]) => level > 0).map(([id]) => id)
+  expect(lit).toContain('toolu_a')
+  expect(lit).toContain('text:abc')
+})
+
+const userRow = (requestId: string) => ({
+  plugin: 'track',
+  surface: 'terminal' as const,
+  component: 'UserMessage' as const,
+  requestId,
+  props: { text: 'what is the capital of Australia?', origin: { kind: 'composer' }, isExpanded: false },
+})
+
+const flashAt = (on: Parameters<TestBody>[1], lit: Record<string, number>) =>
+  on('state.get', { plugin: 'track', key: 'flash' }, (_, e) => ({ value: { value: lit[String(e.id)] ?? 0, version: 1 } }))
+
+test('a lit prompt row is drawn on a highlight; an unlit one is left alone', async ($, on) => {
+  flashAt(on, { 'row-1': 3 })
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+  on('ui.render', { component: 'UserMessage' }, () => ({ type: 'Text', props: {}, children: ['the prompt'] }))
+
+  const lit = await $.ui.mount(userRow('row-1') as never)
+  const plain = await $.ui.mount(userRow('row-2') as never)
+
+  const background = async (ui: { findAll: (q: { type: string }) => Promise<Array<{ props: unknown }>> }) =>
+    (await ui.findAll({ type: 'Box' })).map(b => (b.props as { backgroundColor?: string }).backgroundColor).filter(Boolean)
+  expect(await background(lit)).toHaveLength(1)
+  expect(await background(plain)).toHaveLength(0)
+})
+
+test('the lit answer mark is drawn on a highlight', async ($, on) => {
+  flashAt(on, { toolu_row: 3 })
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+
+  const mark = await $.ui.mount(toolRow('mcp__track__mark_answered', { id: 1, status: 'answered' }))
+
+  const markText = (await mark.findAll({ type: 'Text' }))[0]
+  expect((markText?.props as { backgroundColor?: string } | undefined)?.backgroundColor).toBeDefined()
+})
+
+// The answer's text has no id the tracker learns: mark_answered keys it by its words, and the
+// drawn block with the same words reads its highlight under that key.
+test('mark_answered keys the answer text, and that drawn text is lit by a jump to it', async ($, on) => {
+  const answer = 'Canberra is the capital of Australia.'
+  let key = ''
+  on('session.messages', () => ({
+    value: [
+      { role: 'user' as const, text: 'what is the capital of Australia?', toolUses: [] },
+      { role: 'assistant' as const, text: answer, toolUses: [] },
+      { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: 'toolu_mark', tool: 'mcp__track__mark_answered', input: { id: 1, status: 'answered' } }] },
+    ],
+  }))
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    key = String((e.value as { questions: Array<{ answerKey?: string }> }).questions[0]?.answerKey ?? '')
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  on('state.get', { plugin: 'track', key: 'flash' }, (_, e) => ({ value: { value: key !== '' && e.id === key ? 3 : 0, version: 1 } }))
+  on('ui.render', { component: 'AssistantMessage' }, () => ({ type: 'Text', props: {}, children: [answer] }))
+
+  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status: 'answered' } as never)
+  expect(key).toMatch(/^text:/)
+
+  const block = (text: string) => ({
+    plugin: 'track',
+    surface: 'terminal' as const,
+    component: 'AssistantMessage' as const,
+    requestId: `msg-${text.length}`,
+    props: { text, isFirstOfReply: true },
+  })
+  const backgrounds = async (ui: { findAll: (q: { type: string }) => Promise<Array<{ props: unknown }>> }) =>
+    (await ui.findAll({ type: 'Box' })).map(b => (b.props as { backgroundColor?: string }).backgroundColor).filter(Boolean)
+  expect(await backgrounds(await $.ui.mount(block(`  ${answer}\n`)))).toHaveLength(1)
+  expect(await backgrounds(await $.ui.mount(block('Some other reply.')))).toHaveLength(0)
+})
+
+// Observed 2026-10-07: "do a /retro" ran its steps unlisted until Ohad asked. The managed plugin
+// bypasses prompt.compose, so the standing rule never reached the model; each typed prompt
+// carries the steps instruction instead, a skill's slash command included.
+const submitted = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text: string) => {
+  let context: readonly string[] = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }, version: 1 } }))
+  on('prompt.submit', (_, e) => {
+    context = e.context ?? []
+
+    return { text: e.text }
+  })
+  await $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
+
+  return context.join('\n')
+}
+
+test('a typed prompt with nothing open still tells the model to send multi-step work to track', async ($, on) => {
+  expect(await submitted($, on, 'stop it now, and do a /retro why you did that')).toContain('mcp__track__track_steps')
+})
+
+test('a skill typed as a slash command carries the steps instruction too', async ($, on) => {
+  expect(await submitted($, on, '/retro')).toContain('mcp__track__track_steps')
+})
+
+// Ohad, 2026-10-07: /track should act like /btw, at once while a turn runs and without a row in
+// the session. The command is registered `immediate`, and the toggle answers with no text.
+test('/track is registered to run at once while a turn is in flight', async ($, on) => {
+  const commands: Array<{ name: string; immediate?: true }> = []
+  on('ui.panes', () => ({ value: [] }))
+  on('command.register', (_, e) => {
+    commands.push(e)
+
+    return { value: { command: e.name } }
+  })
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+
+  expect(commands.find(c => c.name === 'track')).toMatchObject({ immediate: true })
+})
+
+test('/track opens and hides the pane without writing a transcript row', async ($, on) => {
+  let isOpen = false
+  mock.store(on)
+  on('state.get', { plugin: 'track', key: 'pane' }, () => ({ value: { value: { isOpen, hidden: false, closedByPerson: false }, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'pane' }, (_, e) => {
+    isOpen = (e.value as { isOpen: boolean }).isOpen
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  on('ui.open', () => ({ value: { isPlaced: true as const } }))
+  on('ui.close', () => ({ value: undefined }))
+
+  const opened = await $.command.run({ command: 'track', args: '' } as never)
+  const hidden = await $.command.run({ command: 'track', args: '' } as never)
+
+  expect([opened?.text, hidden?.text]).toEqual([undefined, undefined])
 })

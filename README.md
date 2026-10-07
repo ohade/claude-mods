@@ -34,16 +34,21 @@ where each was answered, and the steps the model set itself, each with a complet
   with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
   Both calls stay quiet in the transcript: the first draws nothing, the second one dim
   `✓ Q<n> answered` line. An answered question turns green.
-- **Jump.** `[ asked ]` scrolls the transcript to your prompt, `[ answer ]` to the answer. The
-  digits 1–9 press them while the pane has focus (ctrl+x tab).
+- **Jump.** Click a question to scroll the transcript to your prompt; `[ answer ]` scrolls to the
+  answer. The row you land on lights up and fades out over about two seconds: your prompt, or the
+  answer's last text block and the `✓ Q<n> answered` line under it. The digits 1–9 press the
+  jumps while the pane has focus (ctrl+x tab). A question is a button, which takes no color, so an
+  answered question shows its green on the dot.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved
   plan (`ExitPlanMode`: its numbered and checkbox lines). A Task named like a plan step links to it.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
   hides finished rows and keeps them counted.
 - **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions
   are withdrawn, so the model is told not to answer them.
-- **Chat plans.** When the model lays out steps in chat instead of plan mode or Tasks, it
-  registers them with `track_steps` and ticks them with `mark_step`.
+- **Chat plans.** When the model starts work of more than one step (a skill such as `/retro`, a
+  plan in chat, a multi-step task), it registers the steps with `track_steps` and ticks them with
+  `mark_step`. Each typed prompt carries that instruction beside it, because a managed plugin may
+  bypass the system-prompt rule.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred. It
@@ -54,8 +59,10 @@ where each was answered, and the steps the model set itself, each with a complet
   turn saves the register, so `/resume` brings it back.
 
 It opens by itself by the built-in diff panel's rule, less the git condition: in the fullscreen
-layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). `/track`
-shows or hides it at any width; `/track status` prints the open questions. To keep the diff
+layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). A reload of
+the mod leaves an open pane open. `/track` shows or hides it at any width, and like `/btw` it acts
+at once while a turn runs and adds nothing to the session; `/track status` prints the open
+questions. To keep the diff
 panel out of the slot, type `/diff` once.
 
 Load it with `ln -s ../../git/claude-mods/track ~/.claude/skills/track`, or for one session
