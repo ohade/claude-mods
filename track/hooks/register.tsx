@@ -741,22 +741,26 @@ export const register: Register = on => {
           <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
         )}
         {questions.map((q, index) => {
-          // The engine draws a hotkey button as `1: label`, so the label carries no digit itself.
+          // The question is text, green once answered; the jumps are bracketed buttons, the
+          // answer one in the primary style. The engine draws a hotkey button as `1: label`: an
+          // answered row puts its digit on the answer, an open row on the ask.
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
-          const label = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 12)}`
+          const answered = q.status === 'answered'
+          const text = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 28)}`
 
           return (
-            <Box key={`row-q-${q.id}`} flexDirection="row">
-              {q.askedRequestId !== undefined ? (
-                <Button key={`q-${q.id}`} plain hotkey={hotkey} dimColor={q.status !== 'open'} label={label} onPress={() => jump($, q.askedRequestId as string, 'start')} />
-              ) : (
-                <Text dimColor={q.status !== 'open'}>{label}</Text>
+            <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1}>
+              <Text color={answered ? 'success' : undefined} dimColor={q.status === 'deferred'}>
+                {text}
+              </Text>
+              {q.askedRequestId !== undefined && (
+                <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="asked" onPress={() => jump($, q.askedRequestId as string, 'start')} />
               )}
               {q.answerRequestId !== undefined && (
-                <Button key={`a-${q.id}`} plain label=" ↩" onPress={() => jump($, q.answerRequestId as string, 'end')} />
+                <Button key={`a-${q.id}`} variant="primary" hotkey={answered ? hotkey : undefined} label="answer" onPress={() => jump($, q.answerRequestId as string, 'end')} />
               )}
-              {q.status === 'deferred' && <Text dimColor> (deferred)</Text>}
-              <Button key={`del-${q.id}`} plain dimColor label=" ✕" onPress={() => withdraw($, q.id)} />
+              {q.status === 'deferred' && <Text dimColor>(deferred)</Text>}
+              <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
             </Box>
           )
         })}

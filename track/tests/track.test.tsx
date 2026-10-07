@@ -93,6 +93,12 @@ const ANSWERED = {
   ],
 }
 
+// Everything a pane row shows: its texts and its button labels.
+const listed = async (ui: { findAll: (q: { type: string }) => Promise<Array<{ text?: string; props: unknown }>> }) => [
+  ...(await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? '')),
+  ...(await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? '')),
+]
+
 const pane = (placement: 'dock' | 'inline') => ({
   plugin: 'track',
   surface: 'terminal' as const,
@@ -107,7 +113,7 @@ test('an answered question stays listed in the inline pane', async ($, on) => {
 
   const ui = await $.ui.mount(pane('inline'))
 
-  const labels = (await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? ''))
+  const labels = await listed(ui)
   expect(labels.some(label => label.includes('Q1'))).toBe(true)
   expect(await ui.find({ type: 'Text', text: /none yet — the model adds a question/ })).toBeUndefined()
 })
@@ -152,7 +158,7 @@ test('a short inline pane still lists every uncleared question', async ($, on) =
 
   const ui = await $.ui.mount(short)
 
-  const labels = (await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? ''))
+  const labels = await listed(ui)
   expect([1, 2, 3, 4].every(id => labels.some(label => label.includes(`Q${id} `)))).toBe(true)
 })
 
@@ -407,4 +413,18 @@ test('a finished turn saves the ledger under the session id', async ($, on) => {
   const bucket = sets.find(s => s.key === 's:S1')?.value as { ledger?: { questions: QuestionRow[] } } | undefined
   expect(bucket?.ledger?.questions.map(q => q.id)).toEqual([1])
   expect(sets.find(s => s.key === 'sessions')?.value).toEqual(['S1'])
+})
+
+// Ohad, 2026-10-07: an answered question turns green, and the jump to its answer stands out.
+test('an answered question is green and its answer button is prominent', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const texts = await ui.findAll({ type: 'Text' })
+  const question = texts.find(t => String(t.text ?? '').includes('Q1'))
+  expect((question?.props as { color?: string } | undefined)?.color).toBe('success')
+  const answer = (await ui.findAll({ type: 'Button' })).find(b => b.key === 'a-1')
+  expect(answer?.props).toMatchObject({ variant: 'primary', label: 'answer' })
+  expect((answer?.props as { plain?: true } | undefined)?.plain).toBeUndefined()
 })
