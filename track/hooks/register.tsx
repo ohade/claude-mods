@@ -841,10 +841,11 @@ export const register: Register = on => {
         {steps.length === 0 && (
           <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>
         )}
-        {/* A completed step turns green, as an answered question does. */}
-        {steps.map(s => (
+        {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
+            same left edge, a number S<n> by position, and green once done. */}
+        {steps.map((s, index) => (
           <Text color={s.status === 'completed' ? 'success' : undefined}>
-            {`   ${s.status === 'completed' ? '◼' : s.status === 'in_progress' ? '◧' : '◻'} ${truncate(s.subject, width - 6)}`}
+            {`${s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'} S${index + 1} ${truncate(s.subject, width - 8)}`}
           </Text>
         ))}
         <Box flexDirection="row" marginTop={1}>

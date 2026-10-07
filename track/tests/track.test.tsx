@@ -522,3 +522,21 @@ test('the clear-all buttons carry no padding in their labels', async ($, on) => 
     .map(b => (b.props as { label?: string }).label)
   expect(labels).toEqual(['clear all', 'clear all'])
 })
+
+// Ohad, 2026-10-07: steps read like questions — same dot glyphs, same left edge, numbered.
+test('step rows are annotated like question rows', async ($, on) => {
+  const three = {
+    ...BOTH,
+    steps: [
+      { id: 'plan:1', source: 'plan', subject: 'Write', status: 'completed' },
+      { id: 'plan:2', source: 'plan', subject: 'Print', status: 'in_progress' },
+      { id: 'plan:3', source: 'plan', subject: 'Count', status: 'pending' },
+    ],
+  }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: three, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts.filter(t => /^[○◐●] S\d /.test(t))).toEqual(['● S1 Write', '◐ S2 Print', '○ S3 Count'])
+})
