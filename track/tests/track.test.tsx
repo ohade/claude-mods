@@ -1438,3 +1438,84 @@ test('scrolling past the end and back up moves the window up at once', async ($,
   expect(atEnd).toBeLessThan(20)
   expect(at.steps).toBe(atEnd - 1)
 })
+
+// Ohad, 2026-10-07: "s: clear all" at the bottom too, and "clear completed" at the top and the
+// bottom, both stuck in place while the steps scroll. One bar heads the steps, one sits under them.
+const clearBar = (el: { key?: string; props: unknown }) => {
+  const p = el.props as { hotkey?: string; label?: string }
+
+  return `${p.hotkey}: ${p.label}`
+}
+
+test('clear all and clear completed sit above and below the steps, outside their scrolling region', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: { questions: null, steps: 5 }, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+
+  const all = await ui.findAll({})
+  const bars = all.filter(el => el.type === 'Button' && /^clear-(steps|completed)/.test(String(el.key ?? '')))
+  expect(bars.map(clearBar)).toEqual(['s: clear all', 'c: clear completed', 's: clear all', 'c: clear completed'])
+  const region = all.findIndex(el => el.key === 'steps')
+  const lastRow = all.findLastIndex(el => String(el.key ?? '').startsWith('row-s-'))
+  const at = bars.map(b => all.indexOf(b))
+  expect(region).toBeGreaterThan(-1)
+  expect(at.slice(0, 2).every(i => i < region)).toBe(true)
+  expect(at.slice(2).every(i => i > lastRow)).toBe(true)
+})
+
+test('scrolling the steps leaves the region the same height, so neither bar moves', async ($, on) => {
+  let at: { questions: number | null; steps: number | null } = { questions: null, steps: 0 }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: at, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+  const height = async () => {
+    const region = await ui.find({ type: 'Box', key: 'steps' })
+    const bars = (await ui.findAll({ type: 'Button' })).filter(b => /^clear-(steps|completed)/.test(String(b.key ?? '')))
+
+    return { height: (region?.props as { height?: number } | undefined)?.height, bars: bars.length }
+  }
+
+  const top = await height()
+  at = { questions: null, steps: 7 }
+  await ui.redraw()
+  const scrolled = await height()
+
+  expect(top.bars).toBe(4)
+  expect(scrolled).toEqual(top)
+})
+
+// A bar wider than a narrow pane must not wrap: one row too many pushes the banner out of the pane.
+test('the bars truncate their trailing text instead of wrapping onto a second row', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: { questions: null, steps: 5 }, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+
+  const hint = await ui.find({ type: 'Text', text: /\/track hides/ })
+  const arrows = await ui.find({ type: 'Text', text: /↑\d/ })
+  expect((hint?.props as { wrap?: string } | undefined)?.wrap).toBe('truncate-end')
+  expect((arrows?.props as { wrap?: string } | undefined)?.wrap).toBe('truncate-end')
+})
+
+test('the bottom clear all empties the steps, like the one above them', async ($, on) => {
+  const writes = captureLedger(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-steps-bottom' })
+
+  expect(writes.at(-1)?.steps ?? ['not cleared']).toHaveLength(0)
+  expect(writes.at(-1)?.questions.map(q => q.id)).toEqual([1, 2])
+})
+
+test('clear completed above the steps hides the done steps and keeps the rest', async ($, on) => {
+  const writes: Array<{ steps: Array<StepRow & { cleared?: true }> }> = []
+  const mixed = { ...BOTH, steps: [{ id: 'plan:1', source: 'plan', subject: 'Done', status: 'completed' }, { id: 'plan:2', source: 'plan', subject: 'Next', status: 'pending' }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: mixed, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { steps: Array<StepRow & { cleared?: true }> })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-completed' })
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}:${s.cleared === true ? 'cleared' : 'shown'}`)).toEqual(['plan:1:cleared', 'plan:2:shown'])
+})

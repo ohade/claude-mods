@@ -51,7 +51,9 @@ where each was answered, and the steps the model set itself, each with a complet
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
   hides finished rows and keeps them counted.
 - **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions
-  are withdrawn, so the model is told not to answer them.
+  are withdrawn, so the model is told not to answer them. The Steps controls (`s: clear all`,
+  `c: clear completed`) appear twice, in the Steps header and in the bottom bar, and neither
+  moves when the steps scroll.
 - **Chat plans.** When the model starts work of more than one step (a skill such as `/retro`, a
   plan in chat, a multi-step task), it registers the steps with `track_steps` and ticks them with
   `mark_step`. Work that joins a running plan, such as review comments from Plannotator, is

@@ -1170,6 +1170,15 @@ export const register: Register = on => {
         questions: cur.questions.map(q => (q.status === 'open' ? q : { ...q, cleared: true as const })),
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
+    // The steps' two clear controls, in a bar above the steps and a bar below them. Both bars sit
+    // outside the scrolling region, so a scroll never moves them (Ohad, 2026-10-07). The copies
+    // share hotkeys: the engine lets the later one win, and both do the same thing.
+    const clearBar = (suffix: '' | '-bottom') => (
+      <Box key={`clear-bar${suffix}`} flexDirection="row" columnGap={2} flexShrink={0}>
+        {l.steps.length > 0 && <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />}
+        <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label="clear completed" onPress={clearCompleted} />
+      </Box>
+    )
 
     const state = sessionState(l, now)
     const shown = BANNERS[state]
@@ -1199,6 +1208,9 @@ export const register: Register = on => {
     const sFrom = Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast)
     const [qStart, qEnd] = windowOf(qLines, qRows, qFrom)
     const [sStart, sEnd] = windowOf(sLines, sRows, sFrom)
+    // The rows out of view, as arrows; cut at the edge, since a header that wraps pushes the banner out.
+    const qHidden = hidden(qStart, questions.length - qEnd)
+    const sHidden = hidden(sStart, steps.length - sEnd)
     const titleRows = roomy ? 2 : 1
     Object.assign(regions, {
       qTop: titleRows,
@@ -1234,7 +1246,7 @@ export const register: Register = on => {
               <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />
             </Box>
           )}
-          <Text dimColor>{hidden(qStart, questions.length - qEnd) === '' ? '' : `  ${hidden(qStart, questions.length - qEnd)}`}</Text>
+          <Text dimColor wrap="truncate-end">{qHidden === '' ? '' : `  ${qHidden}`}</Text>
         </Box>
         <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
         {questions.length === 0 && (
@@ -1288,13 +1300,13 @@ export const register: Register = on => {
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
           {l.steps.length > 0 && (
-            // The gap sits outside the button: the engine draws "s: label", so padding in the
+            // The gap sits outside the buttons: the engine draws "s: label", so padding in the
             // label would land after "s:".
-            <Box marginLeft={3}>
-              <Button key="clear-steps" plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />
+            <Box marginLeft={3} flexShrink={0}>
+              {clearBar('')}
             </Box>
           )}
-          <Text dimColor>{hidden(sStart, steps.length - sEnd) === '' ? '' : `  ${hidden(sStart, steps.length - sEnd)}`}</Text>
+          <Text dimColor wrap="truncate-end">{sHidden === '' ? '' : `  ${sHidden}`}</Text>
         </Box>
         <Box key="steps" flexDirection="column" height={sRows} overflow="hidden">
         {steps.length === 0 && (
@@ -1334,8 +1346,10 @@ export const register: Register = on => {
         </Box>
         <Box flexGrow={1} />
         <Box flexDirection="row" marginTop={roomy ? 1 : 0}>
-          <Button key="clear" plain hotkey="c" label="Clear completed" onPress={clearCompleted} />
-          <Text dimColor>   /track hides · ctrl+x x closes for good</Text>
+          {clearBar('-bottom')}
+          <Box marginLeft={3} flexShrink={1}>
+            <Text dimColor wrap="truncate-end">/track hides · ctrl+x x closes for good</Text>
+          </Box>
         </Box>
         {/* The banner, pinned at the bottom: its color across the whole width, its words centered. */}
         <Box key="banner" width={width} justifyContent="center" backgroundColor={shown.color}>
