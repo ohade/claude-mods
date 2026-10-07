@@ -721,6 +721,22 @@ const openPane = async ($: EngineInterface): Promise<boolean> => {
   return opened.isPlaced
 }
 
+// Every message the person typed is recorded before the model reads it: its provisional row key
+// and a short head. Only the composer's rows count. A subagent's row carries agentId, and a
+// hand-back or a notification comes in under its sender's origin; its row is never linked, so
+// as the last prompt it left the next question with no [ Q ].
+const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: { kind: string }; uuid: string }, text: string): Promise<void> => {
+  if (e.agentId !== undefined || e.origin.kind !== 'composer') {
+    return
+  }
+  const head = headOf(text)
+  if (head === '' || head.startsWith('/')) {
+    return
+  }
+  const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
+  await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
@@ -821,22 +837,6 @@ export const register: Register = on => {
   on('tool.describe', { tool: MARK_ANSWERED }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: TRACK_STEPS }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: MARK_STEP }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
-
-  // Every message the person typed is recorded before the model reads it: its provisional row key
-  // and a short head. Only the composer's rows count. A subagent's row carries agentId, and a
-  // hand-back or a notification comes in under its sender's origin; its row is never linked, so
-  // as the last prompt it left the next question with no [ Q ].
-  const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: { kind: string }; uuid: string }, text: string) => {
-    if (e.agentId !== undefined || e.origin.kind !== 'composer') {
-      return
-    }
-    const head = headOf(text)
-    if (head === '' || head.startsWith('/')) {
-      return
-    }
-    const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
-    await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
-  }
 
   on('session.append', { door: 'prompt' }, async ($, e, next) => {
     await recordPrompt($, e, textOf(e.message.content))
