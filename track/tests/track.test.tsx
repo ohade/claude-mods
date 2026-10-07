@@ -272,6 +272,8 @@ test('TaskCreate adds a pending step', async ($, on) => {
 })
 
 test('TaskUpdate completes a step, and deleted removes it', async ($, on) => {
+  // A status change stamps the step's clock, so the test stands in the engine's clock.
+  mock.clock(on)
   const two = [
     { id: 'task:7', source: 'task', subject: 'A', status: 'pending', taskId: '7' },
     { id: 'task:8', source: 'task', subject: 'B', status: 'pending', taskId: '8' },
@@ -310,6 +312,8 @@ test('a Task named like a plan step links to it instead of adding a row', async 
 })
 
 test('TodoWrite replaces the todo rows and keeps the others', async ($, on) => {
+  // A status change stamps the step's clock, so the test stands in the engine's clock.
+  mock.clock(on)
   const writes = captureSteps(
     on,
     withSteps([
@@ -326,6 +330,8 @@ test('TodoWrite replaces the todo rows and keeps the others', async ($, on) => {
 })
 
 test('mark_step sets a step status', async ($, on) => {
+  // A status change stamps the step's clock, so the test stands in the engine's clock.
+  mock.clock(on)
   const writes = captureSteps(on, withSteps([{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'pending' }]))
 
   await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'completed' } as never)
@@ -1390,6 +1396,8 @@ test('the banner words carry no glyph before them', async ($, on) => {
 // A step can be paused (started, then parked) or waiting on the person (it
 // needs their answer); the retro session had both and could only show them as pending.
 test('mark_step sets a step paused or waiting', async ($, on) => {
+  // A status change stamps the step's clock, so the test stands in the engine's clock.
+  mock.clock(on)
   const writes = captureSteps(on, withSteps([
     { id: 'plan:1', source: 'plan', subject: 'Guard fix', status: 'in_progress' },
     { id: 'plan:2', source: 'plan', subject: 'Decide the handoff mod', status: 'pending' },

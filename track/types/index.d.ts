@@ -42,6 +42,9 @@ export type Step = {
   taskId?: string
   createdRequestId?: string
   cleared?: true
+  // The step's wall clock: when it first went in progress, and when it was done.
+  startedAt?: number
+  endedAt?: number
 }
 
 export type Ledger = {
@@ -94,6 +97,8 @@ declare module 'claude-code' {
       pulse: number
       // Each pane region's first shown row; null follows the newest question or the step at work.
       scroll: ScrollAt
+      // The time the step clocks were last moved on, by a timer while a step is under way.
+      tick: number
     }
   }
 }

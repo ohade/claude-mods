@@ -95,6 +95,10 @@ const SPINNER = ['◐', '◓', '◑', '◒'] as const
 const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a828c'] as const
 const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
 const pulsing: { timer?: Timer } = {}
+// Each step row ends in its wall clock. It moves every second under an hour, then once a minute.
+const TICK_MS = 1000
+const HOUR_MS = 3_600_000
+const ticking: { timer?: Timer } = {}
 
 // The pane's layout: the title pinned at the top, the banner and footer pinned at the bottom,
 // and between them Questions and Steps, each a fixed region that scrolls alone. Questions get
@@ -161,6 +165,28 @@ const capRows = <T extends { cleared?: true }>(rows: T[], max: number, isDone: (
 }
 
 const capSteps = (steps: Step[]): Step[] => capRows(steps, MAX_STEPS, s => s.status === 'completed')
+
+// A step at a new status. Its clock starts the first time it goes in progress and stops when it
+// is done; a done step that is opened again runs on from its first start.
+const withStatus = (s: Step, status: Step['status'], now: number): Step => {
+  const { endedAt: _ended, ...rest } = s
+  const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
+  const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
+
+  return { ...rest, status, ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
+}
+
+// A stretch of wall-clock time: m:ss under an hour, then 1h 05m.
+const clockText = (ms: number): string => {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+
+  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}:${String(total % 60).padStart(2, '0')}`
+}
+
+// The shown steps whose clock runs: started, not done.
+const runningClocks = (l: Ledger): Step[] => l.steps.filter(s => s.cleared !== true && s.startedAt !== undefined && s.endedAt === undefined)
 
 // Lines `text` takes word-wrapped at `width` columns, as the terminal wraps it: a word that does
 // not fit starts a new line, and a word longer than a line is broken.
@@ -232,6 +258,7 @@ const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
 const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [] }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
+const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
 const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: null, steps: null } as ScrollAt)
 
@@ -339,6 +366,29 @@ const startPulse = ($: EngineInterface): void => {
       }
       await update($, pulse, n => (n + 1) % PULSE_PHASES)
     })().catch(error => $.ui.log(`track: pulse tick failed: ${reason(error)}`, { to: 'debug' }))
+  })
+}
+
+// Started from the pane's drawing while a step's clock runs; each tick stops it once none does.
+// Past an hour every running clock shows minutes, so a tick writes only when the minute turns.
+const startTick = ($: EngineInterface): void => {
+  ticking.timer = $.clock.every(TICK_MS, () => {
+    void (async () => {
+      const running = runningClocks(await read($, ledger))
+      if (running.length === 0) {
+        ticking.timer?.cancel()
+        ticking.timer = undefined
+
+        return
+      }
+      const now = await $.clock.now()
+      const last = await read($, tick)
+      const everyMinute = running.every(s => now - (s.startedAt ?? now) >= HOUR_MS)
+      if (everyMinute && Math.floor(now / 60_000) === Math.floor(last / 60_000)) {
+        return
+      }
+      await update($, tick, () => now)
+    })().catch(error => $.ui.log(`track: clock tick failed: ${reason(error)}`, { to: 'debug' }))
   })
 }
 
@@ -595,6 +645,8 @@ const savedStep = (row: unknown): Step | undefined => {
     status,
     ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
     ...(r.cleared === true ? { cleared: true as const } : {}),
+    ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
+    ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
   }
 }
 
@@ -1070,6 +1122,7 @@ export const register: Register = on => {
       return ran
     }
     const taskId = String(e.taskId)
+    const now = await $.clock.now()
     await update<Ledger>($, ledger, cur => ({
       ...cur,
       steps:
@@ -1083,7 +1136,7 @@ export const register: Register = on => {
 
                 return plan
               })
-          : cur.steps.map(s => (s.taskId === taskId ? { ...s, status } : s)),
+          : cur.steps.map(s => (s.taskId === taskId ? withStatus(s, status, now) : s)),
     }))
 
     return ran
@@ -1096,15 +1149,24 @@ export const register: Register = on => {
       return ran
     }
     // Two todos whose titles normalize alike get #2, #3 after the id, so mark_step reaches each.
-    const seen = new Map<string, number>()
-    const rows: Step[] = todos.map(t => {
-      const base = `todo:${norm(t.content)}`
-      const n = (seen.get(base) ?? 0) + 1
-      seen.set(base, n)
+    // A todo written again keeps its clock.
+    const now = await $.clock.now()
+    await update<Ledger>($, ledger, cur => {
+      const before = new Map(cur.steps.filter(s => s.source === 'todo').map(s => [s.id, s]))
+      const seen = new Map<string, number>()
+      const rows: Step[] = todos.map(t => {
+        const base = `todo:${norm(t.content)}`
+        const n = (seen.get(base) ?? 0) + 1
+        seen.set(base, n)
+        const id = n === 1 ? base : `${base}#${n}`
+        const was = before.get(id)
+        const row: Step = { ...(was ?? { id, source: 'todo' as const, status: 'pending' as const }), subject: headOf(t.content) }
 
-      return { id: n === 1 ? base : `${base}#${n}`, source: 'todo', subject: headOf(t.content), status: t.status }
+        return withStatus(row, t.status, now)
+      })
+
+      return { ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }
     })
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }))
 
     return ran
   })
@@ -1260,7 +1322,8 @@ export const register: Register = on => {
     if (status === undefined || !l.steps.some(s => s.id === id)) {
       return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     }
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? { ...s, status } : s)) }))
+    const now = await $.clock.now()
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? withStatus(s, status, now) : s)) }))
 
     return { result: `Step ${id} marked ${status}.` }
   })
@@ -1458,6 +1521,16 @@ export const register: Register = on => {
     if (pulsing.timer === undefined && isPulsing(l, now)) {
       startPulse($)
     }
+    // The tick is read so each one redraws the pane; the time itself is the clock's.
+    await read($, tick)
+    const clockRuns = runningClocks(l).length > 0
+    if (ticking.timer === undefined && clockRuns) {
+      startTick($)
+    }
+    const nowMs = clockRuns ? await $.clock.now() : 0
+    // A step's clock: its time so far while it runs, how long it took once done.
+    const clockOf = (s: Step): string =>
+      s.startedAt === undefined ? '' : clockText((s.endedAt ?? Math.max(nowMs, s.startedAt)) - s.startedAt)
     const width = Math.max(20, e.props.bodyColumns)
     const bodyRows = Math.max(8, e.props.scroll.bodyRows)
     const at = await read($, scrollAt)
@@ -1513,7 +1586,8 @@ export const register: Register = on => {
     const qWidth = Math.max(8, width - ROW_INDENT - 2 - QUESTION_CHROME)
     const sWidth = Math.max(8, width - ROW_INDENT - 2)
     const qLines = questions.map(q => wrappedLines(`Q${q.id} ${q.head}`, qWidth))
-    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1} ${s.subject}`, sWidth))
+    const stepWidth = (s: Step) => Math.max(8, sWidth - (s.startedAt === undefined ? 0 : clockOf(s).length + 1))
+    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1} ${s.subject}`, stepWidth(s)))
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
@@ -1668,11 +1742,16 @@ export const register: Register = on => {
           return (
             <Box key={`row-s-${s.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
               <Text color={look.glyphColor}>{look.glyph}</Text>
-              <Box flexShrink={1}>
+              <Box flexShrink={1} flexGrow={1}>
                 <Text color={look.textColor} wrap="wrap">
-                  {fitLines(`S${index + 1} ${s.subject}`, sWidth, sRows)}
+                  {fitLines(`S${index + 1} ${s.subject}`, stepWidth(s), sRows)}
                 </Text>
               </Box>
+              {s.startedAt !== undefined && (
+                <Text dimColor color={s.endedAt === undefined ? look.textColor : undefined}>
+                  {clockOf(s)}
+                </Text>
+              )}
             </Box>
           )
         })}

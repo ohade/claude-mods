@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 import { EMPTY, atomStore, pluginStore } from './kit'
 import type { Engine } from './kit'
@@ -78,6 +78,8 @@ test('restored steps keep no Task link, so a new Task with the same id leaves th
 })
 
 test('two todos with the same normalized title get distinct ids', async ($, on) => {
+  // A status change stamps the step's clock, so the test stands in the engine's clock.
+  mock.clock(on)
   const ledger = atomStore<Held>(on, 'ledger', EMPTY as Held)
   const newTodos = [
     { content: 'Fix the bug', status: 'pending', activeForm: 'Fixing' },
