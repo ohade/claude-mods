@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -153,4 +153,26 @@ test('a short inline pane still lists every uncleared question', async ($, on) =
 
   const labels = (await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? ''))
   expect([1, 2, 3, 4].every(id => labels.some(label => label.includes(`Q${id} `)))).toBe(true)
+})
+
+// Ohad, 2026-10-07: a rewound question should leave the pane at the rewind, not at the next
+// prompt. No event marks a rewind; the prompt hint redraws when the rewind puts the old
+// prompt back in the box, so that redraw schedules the same check.
+test('a prompt-hint redraw after /rewind drops the rewound question without a new prompt', async ($, on) => {
+  const clock = mock.clock(on)
+  const writes: Array<{ questions: QuestionRow[] }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: LEDGER, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { questions: QuestionRow[] })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  on('session.messages', () => ({ value: AFTER_REWIND }))
+  on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Text', props: {}, children: ['hint'] }))
+
+  await $.ui.mount({ plugin: 'track', surface: 'terminal' as const, component: 'PromptHint' as const, requestId: 'hint', props: { isDraft: true, isWorking: false, hint: '' } })
+  await clock.advance(5000)
+
+  expect(writes.length).toBeGreaterThan(0)
+  expect((writes.at(-1)?.questions ?? []).map(q => q.id)).toEqual([1])
 })

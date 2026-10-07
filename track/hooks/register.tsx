@@ -9,6 +9,11 @@ const PANE_COLUMNS = 48
 const PANE_ROWS = 16
 // The newest question is scrolled into view after the redraw that draws it.
 const SCROLL_AFTER_MS = 150
+// The rewind check a prompt-hint redraw schedules: run after this delay, at most once per gap.
+// Module memory, not $.state: a reload only resets the debounce.
+const REWIND_CHECK_DELAY_MS = 1000
+const REWIND_CHECK_GAP_MS = 3000
+const rewindCheck = { isScheduled: false, lastAt: -Infinity }
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 
@@ -400,6 +405,25 @@ export const register: Register = on => {
     }
 
     return closed
+  })
+
+  // A rewind puts the old prompt back in the box, which redraws the prompt hint; no event
+  // marks the rewind itself. So a hint redraw schedules the rewind check, at most once per
+  // REWIND_CHECK_GAP_MS, and the rewound question leaves the pane without a new prompt.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    const now = await $.clock.now()
+    if (!rewindCheck.isScheduled && now - rewindCheck.lastAt >= REWIND_CHECK_GAP_MS) {
+      rewindCheck.isScheduled = true
+      $.clock.after(REWIND_CHECK_DELAY_MS, () => {
+        void (async () => {
+          rewindCheck.lastAt = await $.clock.now()
+          rewindCheck.isScheduled = false
+          await dropRewound($)
+        })()
+      })
+    }
+
+    return next(e)
   })
 
   // The model's bookkeeping calls stay quiet in the transcript: track_question draws nothing,
