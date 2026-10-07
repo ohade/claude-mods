@@ -5,6 +5,8 @@ import type { Ledger, Pane, Prompt, Question, Turn } from '../types'
 
 const PANE = 'track'
 const PANE_COLUMNS = 48
+const TRACK_QUESTION = 'mcp__track__track_question'
+const MARK_ANSWERED = 'mcp__track__mark_answered'
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
 const HEAD_CHARS = 80
@@ -386,14 +388,45 @@ export const register: Register = on => {
     return closed
   })
 
+  // The model's bookkeeping calls stay quiet in the transcript: track_question draws nothing,
+  // mark_answered draws one dim line, which is also where "jump to answer" lands.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.tool === TRACK_QUESTION) {
+      const { Box } = $.ui.resolve(e)
+
+      return <Box />
+    }
+    if (e.props.tool === MARK_ANSWERED) {
+      const { Text } = $.ui.resolve(e)
+      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
+      const status = input.status === 'deferred' ? 'deferred' : 'answered'
+
+      return <Text dimColor>{`✓ Q${String(input.id ?? '?')} ${status}`}</Text>
+    }
+
+    return next(e)
+  })
+
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.props.tool === TRACK_QUESTION || e.props.tool === MARK_ANSWERED) {
+      const { Box } = $.ui.resolve(e)
+
+      return <Box />
+    }
+
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const width = Math.max(20, e.props.bodyColumns)
-    const narrow = e.props.placement === 'inline'
-    const questions = l.questions.filter(q => q.cleared !== true && (!narrow || q.status === 'open'))
+    // Every uncleared row is listed in both placements; inline, above the prompt, the pane
+    // has few rows, so each section keeps its newest rows (5 rows go to headers and footer).
+    const room = e.props.placement === 'inline' ? Math.max(1, Math.floor((e.props.scroll.bodyRows - 5) / 2)) : Infinity
+    const questions = l.questions.filter(q => q.cleared !== true).slice(-room)
     const qDone = l.questions.filter(q => q.status !== 'open').length
-    const steps = l.steps.filter(s => s.cleared !== true && (!narrow || s.status !== 'completed'))
+    const steps = l.steps.filter(s => s.cleared !== true).slice(-room)
     const sDone = l.steps.filter(s => s.status === 'completed').length
     const clearCompleted = () =>
       void update($, ledger, cur => ({
@@ -410,7 +443,9 @@ export const register: Register = on => {
             {ring(qDone, l.questions.length)}
           </Text>
         </Box>
-        {questions.length === 0 && <Text dimColor>  none yet — the model adds a question with track_question</Text>}
+        {questions.length === 0 && (
+          <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
+        )}
         {questions.map((q, index) => {
           // The engine draws a hotkey button as `1: label`, so the label carries no digit itself.
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
@@ -434,7 +469,9 @@ export const register: Register = on => {
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
         </Box>
-        {steps.length === 0 && <Text dimColor>  none yet — tasks and approved plan steps appear here</Text>}
+        {steps.length === 0 && (
+          <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>
+        )}
         {steps.map(s => (
           <Text dimColor={s.status === 'completed'}>
             {'   '}

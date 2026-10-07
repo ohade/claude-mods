@@ -78,3 +78,61 @@ test('nothing is dropped when every tracked call is still in the transcript', as
 
   expect(writes).toHaveLength(0)
 })
+
+// An answered question must stay listed when the pane sits inline above the prompt
+// (main screen or a narrow terminal). Observed 2026-10-07: the ring said "2 of 2" while
+// the list said "none yet".
+const ANSWERED = {
+  v: 1,
+  nextQuestionId: 2,
+  prompts: [],
+  steps: [],
+  questions: [
+    { id: 1, head: 'what is the capital of Australia?', at: 1000, turnId: 't1', status: 'answered', askedRequestId: 'row-1', trackedBy: 'toolu_q', answerRequestId: 'toolu_a', answeredAt: 1100 },
+  ],
+}
+
+const pane = (placement: 'dock' | 'inline') => ({
+  plugin: 'track',
+  surface: 'terminal' as const,
+  component: 'Pane' as const,
+  requestId: 'track',
+  viewport: { columns: 120, rows: 40, isFullscreen: placement === 'dock' },
+  props: { title: 'Track', isFocused: false, bodyColumns: 60, placement, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+})
+
+test('an answered question stays listed in the inline pane', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('inline'))
+
+  const labels = (await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? ''))
+  expect(labels.some(label => label.includes('Q1'))).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /none yet — the model adds a question/ })).toBeUndefined()
+})
+
+const toolRow = (tool: string, input: unknown) => ({
+  plugin: 'track',
+  surface: 'terminal' as const,
+  component: 'ToolUse' as const,
+  requestId: 'toolu_row',
+  props: { tool_use_id: 'toolu_row', tool, input, isRunning: false, isErrored: false, isInterrupted: false },
+})
+
+test('the track_question call draws no row', async ($, on) => {
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+
+  const ui = await $.ui.mount(toolRow('mcp__track__track_question', { summary: 'what is the capital of Australia?' }))
+
+  expect(await ui.findAll({ type: 'Text' })).toHaveLength(0)
+})
+
+test('the mark_answered call draws one quiet line naming the question', async ($, on) => {
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+
+  const ui = await $.ui.mount(toolRow('mcp__track__mark_answered', { id: 2, status: 'answered' }))
+
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+  expect(texts).toHaveLength(1)
+  expect(texts[0]).toContain('Q2 answered')
+})
