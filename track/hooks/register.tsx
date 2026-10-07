@@ -5,6 +5,10 @@ import type { Ledger, Pane, Prompt, Question, Turn } from '../types'
 
 const PANE = 'track'
 const PANE_COLUMNS = 48
+// Rows the pane asks for when it sits inline above the prompt (main screen or narrow terminal).
+const PANE_ROWS = 16
+// The newest question is scrolled into view after the redraw that draws it.
+const SCROLL_AFTER_MS = 150
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 
@@ -107,7 +111,7 @@ const dropRewound = async ($: EngineInterface): Promise<void> => {
 }
 
 const openPane = async ($: EngineInterface): Promise<boolean> => {
-  const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS })
+  const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS, rows: PANE_ROWS })
   await update($, pane, p => ({ ...p, isOpen: opened.isPlaced }))
   if (!opened.isPlaced) {
     $.ui.toast(`track: the pane did not open — ${opened.reason}`)
@@ -322,6 +326,16 @@ export const register: Register = on => {
       await update($, ledger, l => ({ ...l, questions: l.questions.map(q => (q.id === id ? { ...q, turnId: t.currentId } : q)) }))
     }
 
+    // Keep the newest question in view; older ones stay above it, reachable by scrolling.
+    if (minted !== undefined && (await read($, pane)).isOpen) {
+      const key = `row-q-${minted.id}`
+      $.clock.after(SCROLL_AFTER_MS, () => {
+        void $.ui.scroll({ in: PANE, to: { key }, block: 'nearest' }).then(moved => {
+          if (moved.deny !== undefined) $.ui.log(`track: newest question not scrolled into view: ${moved.deny}`, { to: 'debug' })
+        })
+      })
+    }
+
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered({ id: ${minted?.id}, status: "answered" }).` }
   })
@@ -421,12 +435,11 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const width = Math.max(20, e.props.bodyColumns)
-    // Every uncleared row is listed in both placements; inline, above the prompt, the pane
-    // has few rows, so each section keeps its newest rows (5 rows go to headers and footer).
-    const room = e.props.placement === 'inline' ? Math.max(1, Math.floor((e.props.scroll.bodyRows - 5) / 2)) : Infinity
-    const questions = l.questions.filter(q => q.cleared !== true).slice(-room)
+    // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
+    // stay reachable above the newest (track_question scrolls the newest into view).
+    const questions = l.questions.filter(q => q.cleared !== true)
     const qDone = l.questions.filter(q => q.status !== 'open').length
-    const steps = l.steps.filter(s => s.cleared !== true).slice(-room)
+    const steps = l.steps.filter(s => s.cleared !== true)
     const sDone = l.steps.filter(s => s.status === 'completed').length
     const clearCompleted = () =>
       void update($, ledger, cur => ({
@@ -452,7 +465,7 @@ export const register: Register = on => {
           const label = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 12)}`
 
           return (
-            <Box flexDirection="row">
+            <Box key={`row-q-${q.id}`} flexDirection="row">
               {q.askedRequestId !== undefined ? (
                 <Button key={`q-${q.id}`} plain hotkey={hotkey} dimColor={q.status !== 'open'} label={label} onPress={() => jump($, q.askedRequestId as string, 'start')} />
               ) : (

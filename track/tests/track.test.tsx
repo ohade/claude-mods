@@ -136,3 +136,21 @@ test('the mark_answered call draws one quiet line naming the question', async ($
   expect(texts).toHaveLength(1)
   expect(texts[0]).toContain('Q2 answered')
 })
+
+// Observed 2026-10-07: an inline pane about 7 rows tall listed only the newest of four
+// questions. The pane body scrolls, so every uncleared question is listed.
+const FOUR = {
+  ...ANSWERED,
+  nextQuestionId: 5,
+  questions: [1, 2, 3, 4].map(id => ({ ...ANSWERED.questions[0], id, head: `question ${id}`, askedRequestId: `row-${id}` })),
+}
+
+test('a short inline pane still lists every uncleared question', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: FOUR, version: 1 } }))
+  const short = { ...pane('inline'), props: { ...pane('inline').props, scroll: { offset: 0, bodyRows: 7 } } }
+
+  const ui = await $.ui.mount(short)
+
+  const labels = (await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? ''))
+  expect([1, 2, 3, 4].every(id => labels.some(label => label.includes(`Q${id} `)))).toBe(true)
+})
