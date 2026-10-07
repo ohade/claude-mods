@@ -43,6 +43,8 @@ where each was answered, and the steps the model set itself, each with a complet
   dialog, or open questions and unfinished steps after the turn), or Safe to close.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved
   plan (`ExitPlanMode`: its numbered and checkbox lines). A Task named like a plan step links to it.
+  The step in progress shows who is on it: a spinner breathing in grey while the main session
+  works, an amber hourglass while it waits on agents, a still purple `◆` while it waits on you.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
   hides finished rows and keeps them counted.
 - **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions

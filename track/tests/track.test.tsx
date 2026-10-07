@@ -550,7 +550,10 @@ test('step rows are annotated like question rows', async ($, on) => {
   // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(texts.filter(t => /^S\d /.test(t))).toEqual(['S1 Write', 'S2 Print', 'S3 Count'])
-  expect(texts.filter(t => /^[○◐●]$/.test(t))).toContain('◐')
+  // Updated 2026-10-07 at Ohad's request: the step in progress shows who is on it. With nothing
+  // running the session waits on the person, so its mark is ◆ (a grey spinner while the main
+  // session works, an hourglass while agents do: see the pulse tests).
+  expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◆', '○'])
 })
 
 // Ohad, 2026-10-07: rows sit one step in under their header, in both sections alike.
@@ -1131,4 +1134,73 @@ test('[ Q ] is not offered for a question whose stored row is another prompt\'s'
   const ui = await $.ui.mount(pane('dock'))
 
   expect((await ui.findAll({ type: 'Button' })).find(b => b.key === 'q-1')).toBeUndefined()
+})
+
+// Ohad, 2026-10-07: the step in progress blinks slowly, and differently by who is working: the
+// main session (grey shades, a turning spinner), agents it waits on (amber, an hourglass); while
+// it waits on the person the row holds still in the banner's purple.
+const IN_PROGRESS = {
+  ...ANSWERED,
+  steps: [
+    { id: 'plan:1', source: 'plan', subject: 'Write', status: 'completed' },
+    { id: 'plan:2', source: 'plan', subject: 'Print', status: 'in_progress' },
+    { id: 'plan:3', source: 'plan', subject: 'Count', status: 'pending' },
+  ],
+}
+
+const stepRow = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], activity: unknown, phase = 0) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: IN_PROGRESS, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'activity' }, () => ({ value: { value: activity, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'pulse' }, () => ({ value: { value: phase, version: 1 } }))
+  mock.clock(on)
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = await ui.findAll({ type: 'Text' })
+  const at = texts.findIndex(t => String(t.text ?? '') === 'S2 Print')
+  const color = (t: { props: unknown } | undefined) => (t?.props as { color?: string } | undefined)?.color
+
+  return { glyph: String(texts[at - 1]?.text ?? ''), glyphColor: color(texts[at - 1]), textColor: color(texts[at]) }
+}
+
+test('while the main session works, the step in progress turns a spinner in grey shades', async ($, on) => {
+  const first = await stepRow($, on, { ...IDLE, isWorking: true }, 0)
+  expect(['◐', '◓', '◑', '◒']).toContain(first.glyph)
+  expect(first.textColor).toMatch(/^#[0-9a-f]{6}$/)
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(String(first.textColor).slice(i, i + 2), 16)) as [number, number, number]
+  expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(40)
+})
+
+test('while the session waits on agents, the step in progress pulses amber under an hourglass', async ($, on) => {
+  const row = await stepRow($, on, { ...IDLE, isWorking: true, agentCalls: ['toolu_ag'] }, 0)
+  expect(row.glyph).toBe('⧗')
+  const [r, , b] = [1, 3, 5].map(i => parseInt(String(row.textColor).slice(i, i + 2), 16)) as [number, number, number]
+  expect(r - b).toBeGreaterThan(60)
+})
+
+test('while the session waits on the person, the step in progress holds still in purple', async ($, on) => {
+  const row = await stepRow($, on, IDLE, 3)
+  expect(row).toMatchObject({ glyph: '◆', glyphColor: 'permission' })
+})
+
+test('the pulse ticks only while a step is in progress and the session or its agents work', async ($, on) => {
+  const ticks: number[] = []
+  let activity: unknown = { ...IDLE, isWorking: true }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: IN_PROGRESS, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'activity' }, () => ({ value: { value: activity, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'pulse' }, (_, e) => {
+    ticks.push(Number(e.value))
+
+    return { value: { isSet: true as const, version: ticks.length + 1 } }
+  })
+  const clock = mock.clock(on)
+
+  await $.ui.mount(pane('dock'))
+  await clock.advance(1300)
+  const whileWorking = ticks.length
+  activity = IDLE
+  await clock.advance(1300)
+  const afterIdle = ticks.length
+  await clock.advance(1300)
+
+  expect(whileWorking).toBeGreaterThanOrEqual(2)
+  expect(ticks.length).toBe(afterIdle)
 })

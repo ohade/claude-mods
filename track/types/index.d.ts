@@ -86,6 +86,8 @@ declare module 'claude-code' {
       flash: StateFamily<number>
       lit: string[]
       activity: Activity
+      // The phase of the in-progress step's pulse, advanced by a timer while work runs.
+      pulse: number
     }
   }
 }

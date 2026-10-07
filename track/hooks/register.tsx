@@ -76,6 +76,16 @@ const BANNERS = {
   you: { text: ' ◆ Waiting on you ', color: 'permission' },
   done: { text: ' ✓ Safe to close ', color: 'success' },
 } as const
+// The step in progress breathes while work runs (Ohad, 2026-10-07): one phase every PULSE_MS, a
+// spinner and grey shades while the main session works, an hourglass and amber shades while it
+// waits on agents. The phase is $.state, so each tick redraws the pane alone.
+const PULSE_MS = 400
+const PULSE_PHASES = 12
+const SPINNER = ['◐', '◓', '◑', '◒'] as const
+const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a828c'] as const
+const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
+const pulsing: { timer?: Timer } = {}
+
 // A background task's id in its notification text.
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 
@@ -89,6 +99,7 @@ const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hi
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
 const activity = atom({ plugin: 'track', key: 'activity' } as const, { isWorking: false, agentCalls: [], askCalls: [], background: [] } as Activity)
+const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 
 // The transcript draws a prompt row under the stored row's id with its last group zeroed
 // (observed on 2.1.289, see image-thumbs), so both sides key on the first four groups.
@@ -155,6 +166,39 @@ const shade = (level: number): string | undefined => (level > 0 ? FLASH_SHADES[M
 const light = ($: EngineInterface, id: string, level: number) => update($, memberOf(flash, { requestId: id }), () => level)
 
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+// What the session is doing: the person's question dialog first, then agents, then the turn;
+// after the turn, running background work, then anything still open, else safe to close.
+const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
+  const unfinished = l.questions.some(q => q.status === 'open' || q.status === 'deferred') || l.steps.some(s => s.status !== 'completed')
+  if (now.askCalls.length > 0) return 'you'
+  if (now.agentCalls.length > 0) return 'agents'
+  if (now.isWorking) return 'working'
+  if (now.background.length > 0) return 'agents'
+
+  return unfinished ? 'you' : 'done'
+}
+
+const isPulsing = (l: Ledger, now: Activity): boolean => {
+  const state = sessionState(l, now)
+
+  return (state === 'working' || state === 'agents') && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true)
+}
+
+// Started from the pane's drawing when a step should pulse; each tick stops it once nothing does.
+const startPulse = ($: EngineInterface): void => {
+  pulsing.timer = $.clock.every(PULSE_MS, () => {
+    void (async () => {
+      if (!isPulsing(await read($, ledger), await read($, activity))) {
+        pulsing.timer?.cancel()
+        pulsing.timer = undefined
+
+        return
+      }
+      await update($, pulse, n => (n + 1) % PULSE_PHASES)
+    })().catch(error => $.ui.log(`track: pulse tick failed: ${reason(error)}`, { to: 'debug' }))
+  })
+}
 
 // Runs a flash or lit write after every write queued before it.
 const serially = (op: () => Promise<void>): Promise<void> => {
@@ -1014,6 +1058,10 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const now = await read($, activity)
+    const phase = await read($, pulse)
+    if (pulsing.timer === undefined && isPulsing(l, now)) {
+      startPulse($)
+    }
     const width = Math.max(20, e.props.bodyColumns)
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
     // stay reachable above the newest (track_question scrolls the newest into view).
@@ -1028,21 +1076,7 @@ export const register: Register = on => {
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
 
-    // What the session is doing: the person's question dialog first, then agents, then the turn;
-    // after the turn, running background work, then anything still open, else safe to close.
-    const unfinished = l.questions.some(q => q.status === 'open' || q.status === 'deferred') || l.steps.some(s => s.status !== 'completed')
-    const state =
-      now.askCalls.length > 0
-        ? 'you'
-        : now.agentCalls.length > 0
-          ? 'agents'
-          : now.isWorking
-            ? 'working'
-            : now.background.length > 0
-              ? 'agents'
-              : unfinished
-                ? 'you'
-                : 'done'
+    const state = sessionState(l, now)
     const shown = BANNERS[state]
 
     return (
@@ -1128,12 +1162,24 @@ export const register: Register = on => {
             same left edge, a number S<n> by position, and green once done. */}
         {steps.map((s, index) => {
           const color = s.status === 'completed' ? 'success' : undefined
+          // The step in progress shows who is on it: a grey spinner for the main session, an amber
+          // hourglass for agents, a still purple mark when it waits on the person.
+          const look =
+            s.status !== 'in_progress'
+              ? { glyph: s.status === 'completed' ? '●' : '○', glyphColor: color, textColor: color }
+              : state === 'working'
+                ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
+                : state === 'agents'
+                  ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
+                  : state === 'you'
+                    ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
+                    : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           return (
             <Box key={`row-s-${s.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
-              <Text color={color}>{s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'}</Text>
+              <Text color={look.glyphColor}>{look.glyph}</Text>
               <Box flexShrink={1}>
-                <Text color={color} wrap="wrap">{`S${index + 1} ${s.subject}`}</Text>
+                <Text color={look.textColor} wrap="wrap">{`S${index + 1} ${s.subject}`}</Text>
               </Box>
             </Box>
           )
