@@ -83,6 +83,7 @@ const STEPS_LINE = `track: ${STEPS} If the prompt asks a question, call mcp__tra
 const BANNERS = {
   working: { text: ' Working ', color: 'suggestion' },
   agents: { text: ' Waiting on agents ', color: 'warning' },
+  tasks: { text: ' Waiting on tasks ', color: 'warning' },
   you: { text: ' Waiting on you ', color: 'permission' },
   done: { text: ' Safe to close ', color: 'success' },
 } as const
@@ -245,6 +246,9 @@ const hidden = (above: number, below: number): string =>
 
 // A background task's id in its notification text.
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
+// A background task Stop lists that is an agent: a subagent or a workflow of them. The rest (a
+// shell, a monitor) is a task, so a hung shell never reads as an agent the person waits on.
+const AGENT_TASK = /agent|workflow/i
 
 const EMPTY_LEDGER: Ledger = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
@@ -255,7 +259,7 @@ const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hi
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
-const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [] }
+const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
@@ -335,23 +339,25 @@ const textField = <K extends string>(key: K, value: unknown): Partial<Record<K, 
   typeof value === 'string' ? ({ [key]: value } as Record<K, string>) : {}
 
 // What the session is doing: the person's question dialog first, then agents, then the turn;
-// after the turn, running background work, then anything still open, else safe to close.
+// after the turn, background agents, then other background tasks, then anything still open,
+// else safe to close.
 const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
   const unfinished = l.questions.some(q => q.status === 'open' || q.status === 'deferred') || l.steps.some(s => s.status !== 'completed')
   if (now.askCalls.length > 0) return 'you'
   if (now.agentCalls.length > 0) return 'agents'
   if (now.isWorking) return 'working'
   if (now.background.length > 0) return 'agents'
+  if ((now.tasks ?? []).length > 0) return 'tasks'
 
   return unfinished ? 'you' : 'done'
 }
 
-// Waiting on agents always pulses (the banner blinks amber); the main session's work pulses only
-// the step in progress, so with none there is nothing to animate.
+// Waiting on agents or tasks always pulses (the banner blinks amber); the main session's work
+// pulses only the step in progress, so with none there is nothing to animate.
 const isPulsing = (l: Ledger, now: Activity): boolean => {
   const state = sessionState(l, now)
 
-  return state === 'agents' || (state === 'working' && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true))
+  return state === 'agents' || state === 'tasks' || (state === 'working' && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true))
 }
 
 // Started from the pane's drawing when a step should pulse; each tick stops it once nothing does.
@@ -868,7 +874,7 @@ export const register: Register = on => {
     if (e.origin?.kind === 'task-notification') {
       const done = [...e.text.matchAll(TASK_ID)].map(m => m[1])
       if (done.length > 0) {
-        await update($, activity, a => ({ ...a, background: a.background.filter(id => !done.includes(id)) }))
+        await update($, activity, a => ({ ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)) }))
       }
     }
     await dropRewound($)
@@ -925,8 +931,10 @@ export const register: Register = on => {
     // Stop lists the background work still in flight: a task whose notification never came
     // (killed, or lost) leaves the banner here.
     if (e.agent_id === undefined && Array.isArray(e.background_tasks)) {
-      const inFlight = e.background_tasks.map(task => task.id)
-      await update($, activity, a => ({ ...a, background: inFlight }))
+      const inFlight = e.background_tasks
+      const background = inFlight.filter(task => AGENT_TASK.test(task.type)).map(task => task.id)
+      const tasks = inFlight.filter(task => !AGENT_TASK.test(task.type)).map(task => task.id)
+      await update($, activity, a => ({ ...a, background, tasks }))
     }
     if (below.block !== undefined || e.stop_hook_active || e.agent_id !== undefined) {
       return below
@@ -1185,8 +1193,8 @@ export const register: Register = on => {
     return ran
   })
 
-  // The banner's inputs: an Agent call in flight, a background agent or shell task, a question
-  // dialog for the person. A subagent's own calls are its work, not the session's.
+  // The banner's inputs: an Agent call in flight, a background agent, a background shell task, a
+  // question dialog for the person. A subagent's own calls are its work, not the session's.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     if (e.agentId !== undefined) {
       return next(e)
@@ -1224,7 +1232,7 @@ export const register: Register = on => {
     const ran = await next(e)
     const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
     if (e.agentId === undefined && typeof taskId === 'string') {
-      await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== taskId), taskId] }))
+      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId] }))
     }
 
     return ran
@@ -1627,16 +1635,21 @@ export const register: Register = on => {
       qLast,
       sLast,
     })
-    // Background agents show in the banner while the main turn runs too: the session works and
-    // waits on them at once. Waiting on agents blinks amber.
-    const running = now.background.length
-    const bannerText =
-      running === 0 || (state !== 'agents' && state !== 'working')
-        ? shown.text
+    // Background agents and tasks show in the banner while the main turn runs too: the session
+    // works and waits on them at once, and names each kind apart. Waiting on either blinks amber.
+    const agentCount = now.background.length
+    const taskCount = (now.tasks ?? []).length
+    const title = shown.text.trimEnd()
+    const parts =
+      state === 'working'
+        ? [title, agentCount > 0 && `agents (${agentCount})`, taskCount > 0 && `tasks (${taskCount})`]
         : state === 'agents'
-          ? `${shown.text.trimEnd()} (${running}) `
-          : `${shown.text.trimEnd()} · agents (${running}) `
-    const bannerColor = state === 'agents' ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
+          ? [agentCount > 0 ? `${title} (${agentCount})` : title, taskCount > 0 && `tasks (${taskCount})`]
+          : state === 'tasks'
+            ? [`${title} (${taskCount})`]
+            : [title]
+    const bannerText = `${parts.filter(Boolean).join(' · ')} `
+    const bannerColor = state === 'agents' || state === 'tasks' ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
 
     return (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
@@ -1723,7 +1736,7 @@ export const register: Register = on => {
           const index = sStart + shownAt
           const color = s.status === 'completed' ? 'success' : undefined
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
-          // hourglass for agents, a still purple mark when it waits on the person.
+          // hourglass for background agents or tasks, a still purple mark when it waits on the person.
           const look =
             s.status === 'paused'
               ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
@@ -1733,7 +1746,7 @@ export const register: Register = on => {
               ? { glyph: s.status === 'completed' ? '●' : '○', glyphColor: color, textColor: color }
               : state === 'working'
                 ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
-                : state === 'agents'
+                : state === 'agents' || state === 'tasks'
                   ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
                   : state === 'you'
                     ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }

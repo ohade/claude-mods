@@ -5,7 +5,7 @@ import type { Engine, On } from './kit'
 
 // The banner and the two rings: what the pane says about the session's work.
 
-const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[] }
+const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[], tasks: [] as string[] }
 const AMBER = ['#7a5410', '#9a6c16', '#bb861d', '#dba126']
 
 type Drawn = { findAll: (q: { type: string }) => Promise<Array<{ key?: string; text?: string; props: unknown }>> }
