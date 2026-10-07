@@ -15,7 +15,7 @@ const LEDGER = {
   prompts: [],
   steps: [],
   questions: [
-    { id: 1, head: 'kept question', at: 1000, turnId: 't1', status: 'answered', trackedBy: 'toolu_kept', answerRequestId: 'toolu_rewound_answer', answeredAt: 1100 },
+    { id: 1, head: 'kept question', at: 1000, turnId: 't1', status: 'answered', trackedBy: 'toolu_kept', answerRequestId: 'toolu_rewound_answer', answeredAt: 1100, answerKey: 'aaaa1111-bbbb-cccc-dddd' },
     { id: 2, head: 'rewound question', at: 1200, turnId: 't2', status: 'open', trackedBy: 'toolu_rewound' },
   ],
 }
@@ -49,6 +49,7 @@ test('a prompt after /rewind drops questions tracked in rewound turns and reopen
   expect(questions.map(q => q.id)).toEqual([1])
   expect(questions[0]).toMatchObject({ id: 1, status: 'open' })
   expect(questions[0]?.answerRequestId).toBeUndefined()
+  expect((questions[0] as { answerKey?: string } | undefined)?.answerKey).toBeUndefined()
 })
 
 test('nothing is dropped when every tracked call is still in the transcript', async ($, on) => {
@@ -422,18 +423,18 @@ test('a finished turn saves the ledger under the session id', async ($, on) => {
 })
 
 // Ohad, 2026-10-07: an answered question turns green, and the jump to its answer stands out.
-// Updated the same day at Ohad's request: the question became the jump Button, and a Button
-// takes no color, so an answered row's green is its dot.
+// The audit of the same day found the clickable-question change had dropped the green; Ohad
+// chose green text with short jump buttons, [ Q ] and [ A ], so the original check is restored.
 test('an answered question is green and its answer button is prominent', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
 
   const ui = await $.ui.mount(pane('dock'))
 
   const texts = await ui.findAll({ type: 'Text' })
-  const dot = texts.find(t => String(t.text ?? '') === '●')
-  expect((dot?.props as { color?: string } | undefined)?.color).toBe('success')
+  const question = texts.find(t => String(t.text ?? '').includes('Q1'))
+  expect((question?.props as { color?: string } | undefined)?.color).toBe('success')
   const answer = (await ui.findAll({ type: 'Button' })).find(b => b.key === 'a-1')
-  expect(answer?.props).toMatchObject({ variant: 'primary', label: 'answer' })
+  expect(answer?.props).toMatchObject({ variant: 'primary', label: 'A' })
   expect((answer?.props as { plain?: true } | undefined)?.plain).toBeUndefined()
 })
 
@@ -572,9 +573,9 @@ test('a long question is shown whole, its dot in a column of its own', async ($,
 
   const ui = await $.ui.mount(pane('dock'))
 
-  // Updated 2026-10-07: the question is the jump Button, its label the whole question.
-  expect(await listed(ui)).toContain(`Q4 ${head}`)
-  expect((await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))).toContain('●')
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts).toContain(`Q4 ${head}`)
+  expect(texts).toContain('●')
 })
 
 // Observed 2026-10-07 (Ohad): the pane opened by itself at session start, then closed. Every
@@ -625,21 +626,54 @@ const lightLog = (on: Parameters<TestBody>[1]) => {
   return levels
 }
 
-// Ohad, 2026-10-07: the question itself is the link to where it was asked; no [ asked ] button.
-// The kit cannot raise a transcript scroll (it answers none, whatever a test returns), so where
-// the press lands is read from the row it lights.
-test('the question is the jump to where it was asked, and there is no asked button', async ($, on) => {
+// Ohad, 2026-10-07: remove [ asked ]; then, after the audit, short jump buttons [ Q ] and [ A ]
+// beside the green question text. The kit cannot raise a transcript scroll: a probe answering
+// on('ui.scroll') with {}, { value: {} } and { deny } each still failed "no implementation for
+// ui.scroll". So the test reads the debug line that carries the exact scroll arguments, the
+// toast that reports the refusal, and the row the press lights.
+const jumpLog = (on: Parameters<TestBody>[1]) => {
+  const logs: string[] = []
+  const toasts: string[] = []
+  on('ui.log', (_, e) => {
+    logs.push(String(e.text))
+
+    return { value: undefined }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(String(e.text))
+
+    return { value: undefined }
+  })
+
+  return { logs, toasts }
+}
+
+test('[ Q ] jumps to where the question was asked; there is no asked button', async ($, on) => {
   mock.clock(on)
   const levels = lightLog(on)
+  const { logs, toasts } = jumpLog(on)
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
 
   const ui = await $.ui.mount(pane('dock'))
 
   const buttons = await ui.findAll({ type: 'Button' })
   expect(buttons.map(b => (b.props as { label?: string }).label)).not.toContain('asked')
-  expect(buttons.find(b => b.key === 'q-1')?.props).toMatchObject({ label: 'Q1 what is the capital of Australia?', plain: true })
+  expect(buttons.find(b => b.key === 'q-1')?.props).toMatchObject({ label: 'Q' })
   await ui.press({ key: 'q-1' })
+  expect(logs).toContain('track: jump {"to":{"requestId":"row-1"},"block":"start"}')
+  expect(toasts.some(t => t.startsWith('track: cannot jump'))).toBe(true)
   expect(levels.filter(([, level]) => level > 0).map(([id]) => id)).toEqual(['row-1'])
+})
+
+test('[ A ] jumps to the end of the answer', async ($, on) => {
+  mock.clock(on)
+  const { logs } = jumpLog(on)
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'a-1' })
+
+  expect(logs).toContain('track: jump {"to":{"requestId":"toolu_a"},"block":"end"}')
 })
 
 test('a jump to the question lights its prompt row, then fades it out', async ($, on) => {
@@ -662,7 +696,7 @@ test('a jump to the question lights its prompt row, then fades it out', async ($
 test('a jump to the answer lights the answer text and the mark under it', async ($, on) => {
   mock.clock(on)
   const levels = lightLog(on)
-  const withText = { ...ANSWERED, questions: [{ ...ANSWERED.questions[0], answerKey: 'text:abc' }] }
+  const withText = { ...ANSWERED, questions: [{ ...ANSWERED.questions[0], answerKey: 'aaaa1111-bbbb-cccc-dddd' }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: withText, version: 1 } }))
 
   const ui = await $.ui.mount(pane('dock'))
@@ -670,7 +704,7 @@ test('a jump to the answer lights the answer text and the mark under it', async 
 
   const lit = levels.filter(([, level]) => level > 0).map(([id]) => id)
   expect(lit).toContain('toolu_a')
-  expect(lit).toContain('text:abc')
+  expect(lit).toContain('aaaa1111-bbbb-cccc-dddd')
 })
 
 const userRow = (requestId: string) => ({
@@ -708,55 +742,165 @@ test('the lit answer mark is drawn on a highlight', async ($, on) => {
   expect((markText?.props as { backgroundColor?: string } | undefined)?.backgroundColor).toBeDefined()
 })
 
-// The answer's text has no id the tracker learns: mark_answered keys it by its words, and the
-// drawn block with the same words reads its highlight under that key.
-test('mark_answered keys the answer text, and that drawn text is lit by a jump to it', async ($, on) => {
-  const answer = 'Canberra is the capital of Australia.'
-  let key = ''
-  on('session.messages', () => ({
-    value: [
-      { role: 'user' as const, text: 'what is the capital of Australia?', toolUses: [] },
-      { role: 'assistant' as const, text: answer, toolUses: [] },
-      { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: 'toolu_mark', tool: 'mcp__track__mark_answered', input: { id: 1, status: 'answered' } }] },
-    ],
+// Audit 2026-10-07 (both engines): a hash of the words matched the stored message's joined text
+// blocks against one drawn block, and lit identical replies together. The answer's text row is
+// now keyed by its row id: the engine draws an assistant row under its uuid with the last group
+// zeroed (debug log of session 7bb54c88, image-thumbs probe), as it draws a prompt row.
+const ROW = 'aaaa1111-bbbb-cccc-dddd'
+const TURN_WITH_TEXT = { currentId: 't1', gatedTurnId: null, lastText: { row: ROW, turnId: 't1' } }
+
+const answeredWith = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], turnState: unknown, status = 'answered') => {
+  let written: { answerKey?: string } | undefined
+  on('state.get', { plugin: 'track', key: 'turn' }, () => ({ value: { value: turnState, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({
+    value: { value: { ...OPEN_ONE, questions: [{ ...OPEN_ONE.questions[0], answerKey: 'stale-key' }] }, version: 1 },
   }))
-  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))
   on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
-    key = String((e.value as { questions: Array<{ answerKey?: string }> }).questions[0]?.answerKey ?? '')
+    written = (e.value as { questions: Array<{ answerKey?: string }> }).questions[0]
 
     return { value: { isSet: true as const, version: 2 } }
   })
-  on('state.get', { plugin: 'track', key: 'flash' }, (_, e) => ({ value: { value: key !== '' && e.id === key ? 3 : 0, version: 1 } }))
+  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status } as never)
+
+  return written
+}
+
+test('mark_answered keys the answer by the last text row the model wrote this turn', async ($, on) => {
+  expect((await answeredWith($, on, TURN_WITH_TEXT))?.answerKey).toBe(ROW)
+})
+
+test('mark_answered keeps no answer key when this turn wrote no text, or when deferred', async ($, on) => {
+  const other = { ...TURN_WITH_TEXT, lastText: { row: ROW, turnId: 't0' } }
+  expect((await answeredWith($, on, other))?.answerKey).toBeUndefined()
+})
+
+test('a deferred question gets no answer key', async ($, on) => {
+  expect((await answeredWith($, on, TURN_WITH_TEXT, 'deferred'))?.answerKey).toBeUndefined()
+})
+
+test('the answer text row is lit by its row key; another row with the same words is not', async ($, on) => {
+  const answer = 'Canberra is the capital of Australia.'
+  flashAt(on, { [ROW]: 3 })
   on('ui.render', { component: 'AssistantMessage' }, () => ({ type: 'Text', props: {}, children: [answer] }))
 
-  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status: 'answered' } as never)
-  expect(key).toMatch(/^text:/)
-
-  const block = (text: string) => ({
+  const block = (requestId: string) => ({
     plugin: 'track',
     surface: 'terminal' as const,
     component: 'AssistantMessage' as const,
-    requestId: `msg-${text.length}`,
-    props: { text, isFirstOfReply: true },
+    requestId,
+    props: { text: answer, isFirstOfReply: true },
   })
   const backgrounds = async (ui: { findAll: (q: { type: string }) => Promise<Array<{ props: unknown }>> }) =>
     (await ui.findAll({ type: 'Box' })).map(b => (b.props as { backgroundColor?: string }).backgroundColor).filter(Boolean)
-  expect(await backgrounds(await $.ui.mount(block(`  ${answer}\n`)))).toHaveLength(1)
-  expect(await backgrounds(await $.ui.mount(block('Some other reply.')))).toHaveLength(0)
+  expect(await backgrounds(await $.ui.mount(block(`${ROW}-000000000000`)))).toHaveLength(1)
+  expect(await backgrounds(await $.ui.mount(block('eeee2222-ffff-0000-1111-000000000000')))).toHaveLength(0)
 })
 
-// Observed 2026-10-07: "do a /retro" ran its steps unlisted until Ohad asked. The managed plugin
-// bypasses prompt.compose, so the standing rule never reached the model; each typed prompt
-// carries the steps instruction instead, a skill's slash command included.
-const submitted = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], text: string) => {
+// Audit 2026-10-07 (both engines, reproduced on a fixture): a fade step already under way could
+// clear a newer jump's lit list, so a later jump or a reload left that row lit for good.
+test('a fade step under way when a new jump lands does not undo the new jump', async ($, on) => {
+  const clock = mock.clock(on)
+  const flash = new Map<string, number>()
+  let lit: string[] = []
+  let release: (() => void) | undefined
+  let version = 1
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'flash' }, (_, e) => ({ value: { value: flash.get(String(e.id)) ?? 0, version } }))
+  on('state.get', { plugin: 'track', key: 'lit' }, () => ({ value: { value: lit, version } }))
+  on('state.set', { plugin: 'track', key: 'lit' }, (_, e) => {
+    lit = e.value as string[]
+    version += 1
+
+    return { value: { isSet: true as const, version } }
+  })
+  on('state.set', { plugin: 'track', key: 'flash' }, async (_, e) => {
+    // Hold the old jump's last fade step until the new jump has been pressed.
+    if (String(e.id) === 'row-1' && Number(e.value) === 0 && release === undefined) {
+      await new Promise<void>(resolve => {
+        release = resolve
+      })
+    }
+    flash.set(String(e.id), Number(e.value))
+    version += 1
+
+    return { value: { isSet: true as const, version } }
+  })
+
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'q-1' })
+  await clock.advance(5000)
+  expect(release).toBeDefined()
+  // The new jump runs as far as it can while the old step is held, then the old step finishes.
+  const pressed = ui.press({ key: 'a-1' })
+  await clock.advance(0)
+  release?.()
+  await pressed
+  await clock.advance(0)
+
+  expect(lit).toEqual(['toolu_a'])
+  expect(flash.get('toolu_a')).toBe(3)
+})
+
+// Audit 2026-10-07: session.start did its housekeeping before registering /track and the tools,
+// so one refused call there left the session without them.
+test('session.start registers /track and the tools even when its pane housekeeping fails', async ($, on) => {
+  const commands: string[] = []
+  on('ui.panes', () => ({ deny: 'no panes here' }))
+  on('command.register', (_, e) => {
+    commands.push(e.name)
+
+    return { value: { command: e.name } }
+  })
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
+  on('ui.log', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+
+  expect(commands).toEqual(['track'])
+})
+
+test('session.start puts out rows a reload left lit', async ($, on) => {
+  const levels = lightLog(on)
+  on('ui.panes', () => ({ value: [] }))
+  on('state.get', { plugin: 'track', key: 'lit' }, () => ({ value: { value: ['row-9'], version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'lit' }, () => ({ value: { isSet: true as const, version: 2 } }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+
+  expect(levels).toEqual([['row-9', 0]])
+})
+
+// Observed 2026-10-07: "do a /retro" ran its steps unlisted until Ohad asked. The debug logs of
+// that day show "track: prompt.compose bypassed by cc-plugin-sec-default", so the standing rule
+// never reached the model; each prompt carries the steps instruction instead, while the rule is
+// bypassed. Then Plannotator's review comments (a plugin's prompt) added work and no step.
+const submitted = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  text: string,
+  origin: unknown = { kind: 'composer' },
+  composeSeen = false,
+) => {
   let context: readonly string[] = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'turn' }, () => ({ value: { value: { currentId: null, gatedTurnId: null, ...(composeSeen && { composeSeen: true }) }, version: 1 } }))
+  on('command.list', () => ({
+    value: [
+      { name: 'retro', description: 'retro', source: 'plugin' as const },
+      { name: 'compact', description: 'compact', source: 'builtin' as const },
+      { name: 'track', description: 'track', source: 'plugin' as const },
+    ],
+  }))
   on('prompt.submit', (_, e) => {
     context = e.context ?? []
 
     return { text: e.text }
   })
-  await $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
+  await $.prompt.submit({ text, origin } as never)
 
   return context.join('\n')
 }
@@ -767,6 +911,49 @@ test('a typed prompt with nothing open still tells the model to send multi-step 
 
 test('a skill typed as a slash command carries the steps instruction too', async ($, on) => {
   expect(await submitted($, on, '/retro')).toContain('mcp__track__track_steps')
+})
+
+test('a built-in command and /track carry no steps instruction', async ($, on) => {
+  expect(await submitted($, on, '/compact')).not.toContain('track_steps')
+})
+
+test('/track carries no steps instruction', async ($, on) => {
+  expect(await submitted($, on, '/track status')).not.toContain('track_steps')
+})
+
+test('a plugin\'s prompt (review comments) carries the steps instruction, naming after', async ($, on) => {
+  const context = await submitted($, on, 'Ohad annotated the retro report: fix section 2.', { kind: 'plugin', name: 'plannotator' })
+  expect(context).toContain('mcp__track__track_steps')
+  expect(context).toContain('after')
+})
+
+test('a task notification carries no steps instruction', async ($, on) => {
+  expect(await submitted($, on, '<task-notification>done</task-notification>', { kind: 'task-notification' })).not.toContain('track_steps')
+})
+
+test('no steps instruction rides on the prompt once the system rule reached the model', async ($, on) => {
+  expect(await submitted($, on, 'do a /retro', { kind: 'composer' }, true)).not.toContain('track_steps')
+})
+
+// Ohad, 2026-10-07: new work mid-plan (review comments) gets a step of its own, in place.
+test('track_steps with after inserts steps after that step and keeps the plan', async ($, on) => {
+  const writes = captureSteps(
+    on,
+    withSteps([
+      { id: 'plan:1', source: 'plan', subject: 'Draft the retro', status: 'completed' },
+      { id: 'plan:2', source: 'plan', subject: 'Open it in Plannotator', status: 'in_progress' },
+      { id: 'plan:3', source: 'plan', subject: 'Save the retro', status: 'pending' },
+    ]),
+  )
+
+  await $.tool.call({ tool: 'mcp__track__track_steps', steps: ['Apply Ohad\'s review comments'], after: 'plan:2' } as never)
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
+    'plan:1|Draft the retro|completed',
+    'plan:2|Open it in Plannotator|in_progress',
+    'plan:4|Apply Ohad\'s review comments|pending',
+    'plan:3|Save the retro|pending',
+  ])
 })
 
 // Ohad, 2026-10-07: /track should act like /btw, at once while a turn runs and without a row in
@@ -796,11 +983,86 @@ test('/track opens and hides the pane without writing a transcript row', async (
 
     return { value: { isSet: true as const, version: 2 } }
   })
-  on('ui.open', () => ({ value: { isPlaced: true as const } }))
-  on('ui.close', () => ({ value: undefined }))
+  const calls: string[] = []
+  on('ui.open', (_, e) => {
+    calls.push(`open ${e.id}`)
+
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', (_, e) => {
+    calls.push(`close ${e.id}`)
+
+    return { value: undefined }
+  })
+  on('ui.toast', () => ({ value: undefined }))
 
   const opened = await $.command.run({ command: 'track', args: '' } as never)
   const hidden = await $.command.run({ command: 'track', args: '' } as never)
 
   expect([opened?.text, hidden?.text]).toEqual([undefined, undefined])
+  expect(calls).toEqual(['open track', 'close track'])
+})
+
+// Ohad, 2026-10-07: a colored banner at the top of the pane says where the session stands:
+// working, waiting on agents, waiting on you, or safe to close.
+const IDLE = { isWorking: false, agentCalls: [], askCalls: [], background: [] }
+
+const banner = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], ledger: unknown, activity: unknown) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ledger, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'activity' }, () => ({ value: { value: activity, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+
+  return (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? '')).join('\n')
+}
+
+test('the banner says Working while the main turn runs', async ($, on) => {
+  expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true })).toContain('Working')
+})
+
+test('the banner says Waiting on agents while an Agent call runs', async ($, on) => {
+  expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true, agentCalls: ['toolu_ag'] })).toContain('Waiting on agents')
+})
+
+test('the banner says Waiting on agents after the turn while background work runs', async ($, on) => {
+  expect(await banner($, on, ANSWERED, { ...IDLE, background: ['ag1', 'task7'] })).toContain('Waiting on agents')
+})
+
+test('the banner says Waiting on you while a question to the user is open', async ($, on) => {
+  expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true, askCalls: ['toolu_ask'] })).toContain('Waiting on you')
+})
+
+test('the banner says Waiting on you after the turn while a question or step is open', async ($, on) => {
+  expect(await banner($, on, OPEN_ONE, IDLE)).toContain('Waiting on you')
+})
+
+test('the banner says Safe to close when the turn ended and nothing is open or running', async ($, on) => {
+  expect(await banner($, on, ANSWERED, IDLE)).toContain('Safe to close')
+})
+
+test('turns, a background agent and its notification drive the banner state', async ($, on) => {
+  let activity: { isWorking: boolean; background: string[] } = { ...IDLE }
+  let version = 1
+  on('state.get', { plugin: 'track', key: 'activity' }, () => ({ value: { value: activity, version } }))
+  on('state.set', { plugin: 'track', key: 'activity' }, (_, e) => {
+    activity = e.value as typeof activity
+    version += 1
+
+    return { value: { isSet: true as const, version } }
+  })
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: { ...ANSWERED, questions: [] }, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, () => ({ value: { isSet: true as const, version: 2 } }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'async_launched', agentId: 'ag1' } }) as never)
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('session.id', () => ({ value: 'S1' }))
+  mock.store(on)
+
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  expect(activity.isWorking).toBe(true)
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'toolu_ag', description: 'x', prompt: 'y', run_in_background: true } as never)
+  await $.turn.complete({ answer: 'done', reason: 'answer', turnId: 't1', durationMs: 1, isAborted: false } as never)
+  expect(activity).toMatchObject({ isWorking: false, background: ['ag1'] })
+  await $.prompt.submit({ text: '<task-notification><task-id>ag1</task-id><status>completed</status></task-notification>', origin: { kind: 'task-notification' } } as never)
+  expect(activity.background).toEqual([])
 })

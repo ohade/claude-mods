@@ -21,7 +21,7 @@ export type Question = {
   turnId: string | null
   status: 'open' | 'answered' | 'deferred'
   answerRequestId?: string
-  // The answer's last text block, keyed by its words (`text:` and a hash): lit with the
+  // The answer's last text row, by its row key (the row uuid's first four groups): lit with the
   // `mark_answered` row by a jump to the answer.
   answerKey?: string
   note?: string
@@ -56,7 +56,19 @@ export type Ledger = {
 
 // `compactedAt`: when the transcript was last compacted. Questions older than that are
 // never dropped by the rewind check, because compaction removes their tool calls too.
-export type Turn = { currentId: string | null; gatedTurnId: string | null; compactedAt?: number }
+// `lastText`: the main loop's last text row and the turn it was written in. `composeSeen`: the
+// standing rule reached the model this session (prompt.compose ran), so prompts need no steps line.
+export type Turn = {
+  currentId: string | null
+  gatedTurnId: string | null
+  compactedAt?: number
+  lastText?: { row: string; turnId: string | null }
+  composeSeen?: true
+}
+
+// What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
+// calls in flight (tool_use ids), and background agents and shell tasks still running (their ids).
+export type Activity = { isWorking: boolean; agentCalls: string[]; askCalls: string[]; background: string[] }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.
@@ -73,6 +85,7 @@ declare module 'claude-code' {
       // by an answer's text key. `lit` lists the rows lit now, so a reload can put them out.
       flash: StateFamily<number>
       lit: string[]
+      activity: Activity
     }
   }
 }

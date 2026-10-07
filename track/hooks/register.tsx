@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Ledger, Pane, Prompt, Question, Step, Turn } from '../types'
+import type { Activity, Ledger, Pane, Prompt, Question, Step, Turn } from '../types'
 
 const PANE = 'track'
 const PANE_COLUMNS = 48
@@ -47,24 +47,37 @@ const OPEN_LISTED = 5
 const FLASH_SHADES = ['#2b2a1e', '#4a4120', '#6e5a1c'] as const
 const FLASH_HOLD_MS = 1200
 const FLASH_STEP_MS = 250
-// The fade's own timers: module memory, as a reload only cuts a fade short (session.start
-// puts out what the old module left lit).
-const fade = { timers: [] as Timer[] }
+// The fade's own timers, a generation per jump, and one queue every flash and lit write runs
+// through in order (audit 2026-10-07: a fade step already under way cleared a newer jump's lit
+// list). Module memory, as a reload only cuts a fade short; session.start puts out what is left.
+const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as Promise<void> }
 
 // The standing rule, sent once per request as a byte-stable system-prompt section.
+// The steps instruction, one wording for the standing rule, the per-prompt line and the tool.
+const STEPS =
+  'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go.'
+
 const RULE = [
   'track: if the user\'s prompt is a question, call mcp__track__track_question with a one-line summary before answering',
   '(one call per distinct question). Write the answer, then call mcp__track__mark_answered with status "answered",',
-  'or "deferred" with a note if it must wait. For work of more than one step (a skill such as /retro, a plan, a',
-  'multi-step task), send the steps with mcp__track__track_steps before the first one, or create them with TaskCreate,',
-  'and mark each with mcp__track__mark_step as you go.',
+  `or "deferred" with a note if it must wait. ${STEPS}`,
 ].join(' ')
 
-// An organization's managed plugin may bypass prompt.compose, so RULE never reaches the model.
-// Observed 2026-10-07: a /retro ran its steps unlisted until Ohad asked. Each typed prompt
-// therefore carries the steps half of the rule beside it.
-const STEPS_LINE =
-  'track: if this prompt starts work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one and mark each with mcp__track__mark_step as you go; if it asks a question, call mcp__track__track_question before answering.'
+// The managed security plugin bypasses prompt.compose: the debug logs of 2026-10-07 read "track:
+// prompt.compose bypassed by cc-plugin-sec-default", and a /retro ran its steps unlisted until
+// Ohad asked. While the rule has not reached the model this session, each prompt that can start
+// work carries the steps instruction beside it.
+const STEPS_LINE = `track: ${STEPS} If the prompt asks a question, call mcp__track__track_question before answering.`
+
+// The banner at the top of the pane: what the session is doing, in one colored line.
+const BANNERS = {
+  working: { text: ' ● Working ', color: 'suggestion' },
+  agents: { text: ' ◐ Waiting on agents ', color: 'warning' },
+  you: { text: ' ◆ Waiting on you ', color: 'permission' },
+  done: { text: ' ✓ Safe to close ', color: 'success' },
+} as const
+// A background task's id in its notification text.
+const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 
 const EMPTY_LEDGER: Ledger = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
@@ -75,6 +88,7 @@ const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hi
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
+const activity = atom({ plugin: 'track', key: 'activity' } as const, { isWorking: false, agentCalls: [], askCalls: [], background: [] } as Activity)
 
 // The transcript draws a prompt row under the stored row's id with its last group zeroed
 // (observed on 2.1.289, see image-thumbs), so both sides key on the first four groups.
@@ -136,70 +150,64 @@ const parsePlan = (plan: string): Step[] => {
 
 const statusGlyph = (q: Question): string => (q.status === 'answered' ? '●' : q.status === 'deferred' ? '◌' : '○')
 
-// An answer's text has no id the tracker learns, so it is keyed by its words: whitespace
-// collapsed, then a 32-bit FNV-1a hash and the length. The drawn text and the stored one agree.
-const textKey = (text: string): string => {
-  const words = text.replace(/\s+/g, ' ').trim()
-  let hash = 0x811c9dc5
-  for (let i = 0; i < words.length; i++) {
-    hash = Math.imul(hash ^ words.charCodeAt(i), 0x01000193) >>> 0
-  }
-
-  return `text:${words.length}:${hash.toString(36)}`
-}
-
 const shade = (level: number): string | undefined => (level > 0 ? FLASH_SHADES[Math.min(level, FLASH_SHADES.length) - 1] : undefined)
 
 const light = ($: EngineInterface, id: string, level: number) => update($, memberOf(flash, { requestId: id }), () => level)
 
+const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+// Runs a flash or lit write after every write queued before it.
+const serially = (op: () => Promise<void>): Promise<void> => {
+  const run = fade.queue.then(op)
+  fade.queue = run.catch(() => undefined)
+
+  return run
+}
+
 // Lights the rows a jump lands on and fades them out; a new jump puts out the last one first.
+// A fade step of an older jump finds a newer generation and leaves the rows to it.
 const flashRows = async ($: EngineInterface, ids: string[]): Promise<void> => {
   for (const timer of fade.timers) timer.cancel()
   fade.timers = []
-  const before = await read($, lit)
-  await update($, lit, () => ids)
-  await Promise.all([...before.filter(id => !ids.includes(id)).map(id => light($, id, 0)), ...ids.map(id => light($, id, FLASH_SHADES.length))])
+  const generation = ++fade.generation
+  await serially(async () => {
+    const before = await read($, lit)
+    await update($, lit, () => ids)
+    await Promise.all([...before.filter(id => !ids.includes(id)).map(id => light($, id, 0)), ...ids.map(id => light($, id, FLASH_SHADES.length))])
+  })
+  if (fade.generation !== generation) {
+    return
+  }
   for (let level = FLASH_SHADES.length - 1; level >= 0; level--) {
     const at = FLASH_HOLD_MS + (FLASH_SHADES.length - 1 - level) * FLASH_STEP_MS
     fade.timers.push(
       $.clock.after(at, () => {
-        void Promise.all(ids.map(id => light($, id, level))).then(() => (level === 0 ? update($, lit, () => []) : undefined))
+        void serially(async () => {
+          if (fade.generation !== generation) return
+          await Promise.all(ids.map(id => light($, id, level)))
+          if (level === 0 && fade.generation === generation) await update($, lit, () => [])
+        }).catch(error => $.ui.log(`track: fade to level ${level} failed: ${reason(error)}`, { to: 'debug' }))
       }),
     )
   }
 }
 
-// Lights the target rows, then scrolls the transcript to the first. A scroll is allowed only
-// while answering the person's own input, which a Button press is; a refusal is a toast.
+// Scrolls the transcript to the first target row, then lights the rows. The scroll starts first:
+// a transcript row moves only while the plugin answers the person's own input, a Button press
+// here, so it must not wait behind the state writes. A refusal is a toast. The debug line
+// carries the scroll's exact arguments.
 const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end'): Promise<void> => {
+  const target = { to: { requestId: ids[0] as string }, block }
+  $.ui.log(`track: jump ${JSON.stringify(target)}`, { to: 'debug' })
+  const moving = $.ui.scroll(target).then(
+    moved => moved,
+    (error: unknown) => ({ deny: reason(error) }),
+  )
   await flashRows($, ids)
-  try {
-    const moved = await $.ui.scroll({ to: { requestId: ids[0] as string }, block })
-    if (moved.deny !== undefined) {
-      $.ui.toast(`track: cannot jump — ${moved.deny}`)
-    }
-  } catch (error) {
-    $.ui.toast(`track: cannot jump — ${error instanceof Error ? error.message : String(error)}`)
+  const moved = await moving
+  if (moved.deny !== undefined) {
+    $.ui.toast(`track: cannot jump — ${moved.deny}`)
   }
-}
-
-// The last text the model wrote before a mark_answered call, in the same turn: the end of the
-// answer, which the jump to the answer lights with the ✓ row under it.
-const answerTextKey = async ($: EngineInterface, toolUseId: string | undefined): Promise<string | undefined> => {
-  const messages = await $.session.messages()
-  if (!Array.isArray(messages)) {
-    return undefined
-  }
-  const at = messages.findIndex(m => m.toolUses.some(u => u.tool_use_id === toolUseId))
-  for (let i = at < 0 ? messages.length - 1 : at; i >= 0; i--) {
-    const m = messages[i]
-    if (m === undefined) continue
-    if (m.role === 'assistant' && m.text.trim() !== '') return textKey(m.text)
-    // The person's prompt: this turn wrote no text before the call.
-    if (m.role === 'user' && m.text.trim() !== '' && (m.toolResults?.length ?? 0) === 0) return undefined
-  }
-
-  return undefined
 }
 
 // $.session.messages() answers at most this many entries; past it, older tool calls look
@@ -327,20 +335,6 @@ const openPane = async ($: EngineInterface): Promise<boolean> => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    // session.start runs again on a reload, an enable or a worker respawn, while the pane stays
-    // up (Ohad, 2026-10-07: it opened by itself, then closed). Only a pane asked for by code below
-    // 144 columns, which waits unseen, is dropped.
-    const mine = (await $.ui.panes()).find(p => p.id === PANE)
-    if (mine !== undefined && !mine.isPlaced) {
-      await $.ui.close({ id: PANE })
-    } else if (mine !== undefined) {
-      await update($, pane, p => ({ ...p, isOpen: true }))
-    }
-    const stale = await read($, lit)
-    if (stale.length > 0) {
-      await Promise.all(stale.map(id => light($, id, 0)))
-      await update($, lit, () => [])
-    }
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
     // end (Ohad, 2026-10-07), and the toggle answers with no text, so the session gets no row.
     await $.command.register({
@@ -376,11 +370,13 @@ export const register: Register = on => {
 
     await $.tool.register({
       name: 'track_steps',
-      description:
-        'Show the steps of work of more than one step in the track pane: a skill or slash command such as /retro, a plan you lay out in chat, a multi-step task. Call it once, before the first step, with the step titles in order; they get ids plan:1, plan:2, … Not needed for TaskCreate tasks or an approved plan-mode plan: those appear on their own.',
+      description: `Show steps in the track pane. ${STEPS} Without after, the steps replace the plan and get ids plan:1, plan:2, …; with after, they are inserted and get the next free plan ids. Not needed for TaskCreate tasks or an approved plan-mode plan: those appear on their own.`,
       inputSchema: {
         type: 'object',
-        properties: { steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' } },
+        properties: {
+          steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' },
+          after: { type: 'string', description: 'Insert after this step id (plan:2, task:7, ...) and keep the plan' },
+        },
         required: ['steps'],
       },
     })
@@ -394,6 +390,27 @@ export const register: Register = on => {
         required: ['id', 'status'],
       },
     })
+
+    // Housekeeping runs after the registrations, so a refused call here never costs the session
+    // /track or the tools (audit 2026-10-07).
+    try {
+      // session.start runs again on a reload, an enable or a worker respawn, while the pane stays
+      // up (Ohad, 2026-10-07: it opened by itself, then closed). Only a pane asked for by code
+      // below 144 columns, which waits unseen, is dropped.
+      const mine = (await $.ui.panes()).find(p => p.id === PANE)
+      if (mine !== undefined && !mine.isPlaced) {
+        await $.ui.close({ id: PANE })
+      } else if (mine !== undefined) {
+        await update($, pane, p => ({ ...p, isOpen: true }))
+      }
+      const stale = await read($, lit)
+      if (stale.length > 0) {
+        await Promise.all(stale.map(id => light($, id, 0)))
+        await update($, lit, () => [])
+      }
+    } catch (error) {
+      $.ui.log(`track: session.start housekeeping failed: ${reason(error)}`, { to: 'debug' })
+    }
 
     return next(e)
   })
@@ -421,8 +438,21 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The model's last text row, by its row key: the answer a mark_answered call follows. The
+  // engine draws an assistant row under its uuid with the last group zeroed, as a prompt row.
+  on('session.append', { door: 'response' }, async ($, e, next) => {
+    const hasText = e.message.content.some(block => block.type === 'text' && String(block.text).trim() !== '')
+    if (e.agentId === undefined && hasText) {
+      const t = await read($, turn)
+      await update($, turn, cur => ({ ...cur, lastText: { row: rowKey(e.uuid), turnId: t.currentId } }))
+    }
+
+    return next(e)
+  })
+
   on('turn.start', async ($, e, next) => {
     await update($, turn, t => ({ ...t, currentId: e.turnId }))
+    await update($, activity, a => ({ ...a, isWorking: true }))
     await update($, ledger, l => ({
       ...l,
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
@@ -437,21 +467,37 @@ export const register: Register = on => {
   // prompt.submit context row instead.
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
+    // The rule reaches the model this session, so prompts need not carry the steps line.
+    if ((await read($, turn)).composeSeen !== true) {
+      await update($, turn, t => ({ ...t, composeSeen: true as const }))
+    }
 
     return { sections: [...composed.sections, { id: 'track:rule', text: RULE, scope: 'session' as const }] }
   })
 
   // The per-turn reminder: a short row beside the prompt, only while something is open.
   on('prompt.submit', async ($, e, next) => {
+    // A finished background task or agent says so in its notification: it leaves the banner.
+    if (e.origin?.kind === 'task-notification') {
+      const done = [...e.text.matchAll(TASK_ID)].map(m => m[1])
+      if (done.length > 0) {
+        await update($, activity, a => ({ ...a, background: a.background.filter(id => !done.includes(id)) }))
+      }
+    }
     await dropRewound($)
     const typed = e.origin?.kind === 'composer'
+    // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
+    const fromPlugin = e.origin?.kind === 'plugin'
+    const needsSteps = (typed || fromPlugin) && (await read($, turn)).composeSeen !== true
     if (e.text.trim().startsWith('/')) {
-      // A skill's slash command starts work of several steps; /track itself reaches no model.
-      const isOwn = /^\/track(\s|$)/.test(e.text.trim())
+      // A skill's slash command starts work of several steps; /track and the built-in commands
+      // reach no main-loop work the steps line could describe.
+      const name = /^\/([^\s]+)/.exec(e.text.trim())?.[1] ?? ''
+      const isBuiltin = needsSteps && (await $.command.list()).some(c => c.name === name && c.source === 'builtin')
 
-      return typed && !isOwn ? next({ ...e, context: [...(e.context ?? []), STEPS_LINE] }) : next(e)
+      return needsSteps && name !== 'track' && !isBuiltin ? next({ ...e, context: [...(e.context ?? []), STEPS_LINE] }) : next(e)
     }
-    const lines: string[] = typed ? [STEPS_LINE] : []
+    const lines: string[] = needsSteps ? [STEPS_LINE] : []
     const l = await read($, ledger)
     // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
     const withdrawn = l.withdrawn ?? []
@@ -516,6 +562,13 @@ export const register: Register = on => {
   // An interrupted turn leaves its questions open and tags them, so the pane shows why.
   // Each finished main-loop turn also saves the ledger, so /resume finds it.
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      await update($, activity, a => ({ ...a, isWorking: false, agentCalls: [], askCalls: [] }))
+    } else {
+      // A background agent's loop ended.
+      const agentId = e.agentId
+      await update($, activity, a => ({ ...a, background: a.background.filter(id => id !== agentId) }))
+    }
     if (e.agentId === undefined && e.reason === 'aborted') {
       await update($, ledger, l => ({
         ...l,
@@ -617,10 +670,12 @@ export const register: Register = on => {
 
       return { result: `No question with id ${id}. Open: ${open.length > 0 ? open.join('; ') : 'none'}.` }
     }
-    const answerKey = status === 'answered' ? await answerTextKey($, e.tool_use_id) : undefined
+    // The answer's text row: the last text the model wrote in this turn, if any.
+    const t = await read($, turn)
+    const answerKey = status === 'answered' && t.lastText !== undefined && t.lastText.turnId === t.currentId ? t.lastText.row : undefined
     await update<Ledger>($, ledger, cur => ({
       ...cur,
-      questions: cur.questions.map(q =>
+      questions: cur.questions.map(({ answerKey: _old, ...q }) =>
         q.id === id
           ? {
               ...q,
@@ -630,7 +685,7 @@ export const register: Register = on => {
               ...(e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
               ...(answerKey !== undefined && { answerKey }),
             }
-          : q,
+          : { ...q, ...(_old !== undefined && { answerKey: _old }) },
       ),
     }))
 
@@ -719,6 +774,51 @@ export const register: Register = on => {
     return ran
   })
 
+  // The banner's inputs: an Agent call in flight, a background agent or shell task, a question
+  // dialog for the person. A subagent's own calls are its work, not the session's.
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+    const callId = e.tool_use_id
+    await update($, activity, a => ({ ...a, agentCalls: [...a.agentCalls, callId] }))
+    try {
+      const ran = await next(e)
+      const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
+      if (launched?.status === 'async_launched' && typeof launched.agentId === 'string') {
+        const agentId = launched.agentId
+        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId] }))
+      }
+
+      return ran
+    } finally {
+      await update($, activity, a => ({ ...a, agentCalls: a.agentCalls.filter(id => id !== callId) }))
+    }
+  })
+
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+    const callId = e.tool_use_id
+    await update($, activity, a => ({ ...a, askCalls: [...a.askCalls, callId] }))
+    try {
+      return await next(e)
+    } finally {
+      await update($, activity, a => ({ ...a, askCalls: a.askCalls.filter(id => id !== callId) }))
+    }
+  })
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
+    if (e.agentId === undefined && typeof taskId === 'string') {
+      await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== taskId), taskId] }))
+    }
+
+    return ran
+  })
+
   // A plan laid out in chat: its steps replace any earlier plan's, as a new approved plan does.
   on('tool.call', { tool: TRACK_STEPS }, async ($, e) => {
     if (e.agentId !== undefined) {
@@ -727,6 +827,25 @@ export const register: Register = on => {
     const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
     if (titles.length === 0) {
       return { result: 'No steps given: pass steps as an array of one-line titles.' }
+    }
+    const after = typeof e.after === 'string' && e.after !== '' ? e.after : undefined
+    if (after !== undefined) {
+      // New work joins a running plan: insert after that step, ids after the highest plan id.
+      const l = await read($, ledger)
+      const at = l.steps.findIndex(s => s.id === after)
+      if (at < 0) {
+        return { result: `No step ${after}. Known steps: ${l.steps.map(s => s.id).join(', ') || 'none'}.` }
+      }
+      const top = Math.max(0, ...l.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
+      const added: Step[] = titles.map((subject, i) => ({ id: `plan:${top + i + 1}`, source: 'plan', subject, status: 'pending' }))
+      await update<Ledger>($, ledger, cur => {
+        const i = cur.steps.findIndex(s => s.id === after)
+        const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
+
+        return { ...cur, steps: steps.slice(-MAX_STEPS) }
+      })
+
+      return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
@@ -866,10 +985,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The answer's text, lit with its ✓ row by a jump to the answer. Each block reads only the
-  // level kept under its own words' key, so a jump redraws the lit block alone.
+  // The answer's text row, lit with its ✓ row by a jump to the answer. Each row reads only the
+  // level kept under its own row key, so a jump redraws the lit row alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const level = await read($, memberOf(flash, { requestId: textKey(e.props.text) }))
+    const level = await read($, memberOf(flash, { requestId: rowKey(e.requestId) }))
     if (level === 0) {
       return next(e)
     }
@@ -891,6 +1010,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
+    const now = await read($, activity)
     const width = Math.max(20, e.props.bodyColumns)
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
     // stay reachable above the newest (track_question scrolls the newest into view).
@@ -905,8 +1025,30 @@ export const register: Register = on => {
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
 
+    // What the session is doing: the person's question dialog first, then agents, then the turn;
+    // after the turn, running background work, then anything still open, else safe to close.
+    const unfinished = l.questions.some(q => q.status === 'open' || q.status === 'deferred') || l.steps.some(s => s.status !== 'completed')
+    const state =
+      now.askCalls.length > 0
+        ? 'you'
+        : now.agentCalls.length > 0
+          ? 'agents'
+          : now.isWorking
+            ? 'working'
+            : now.background.length > 0
+              ? 'agents'
+              : unfinished
+                ? 'you'
+                : 'done'
+    const shown = BANNERS[state]
+
     return (
       <Box flexDirection="column">
+        <Box marginBottom={1}>
+          <Text backgroundColor={shown.color} color="inverseText" bold>
+            {state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text}
+          </Text>
+        </Box>
         <Box flexDirection="row">
           <Text bold>Questions </Text>
           <Text color={qDone === l.questions.length && l.questions.length > 0 ? 'success' : 'warning'}>
@@ -924,14 +1066,13 @@ export const register: Register = on => {
           <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
         )}
         {questions.map((q, index) => {
-          // The question is the jump to where it was asked (Ohad, 2026-10-07: no [ asked ]); the
-          // jump to the answer is a bracketed button in the primary style. A Button takes no
-          // color, so the green of an answered row is its dot. The engine draws a hotkey button
-          // as `1: label`: an answered row puts its digit on the answer, an open row on the ask.
+          // The question is text, green once answered; the jumps are short buttons, [ Q ] to the
+          // prompt and [ A ] to the answer, the answer in the primary style (Ohad, 2026-10-07, after
+          // the audit: keep the green, a Button takes no color). An answered row puts its digit
+          // hotkey on [ A ], an open row on [ Q ].
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined
-          const label = `Q${q.id} ${q.head}`
           const askedAt = q.askedRequestId
           const answerAt = q.answerRequestId
 
@@ -943,20 +1084,19 @@ export const register: Register = on => {
                 {statusGlyph(q)}
               </Text>
               <Box flexShrink={1}>
-                {askedAt !== undefined ? (
-                  <Button key={`q-${q.id}`} plain dimColor={q.status === 'deferred'} hotkey={answered ? undefined : hotkey} label={label} onPress={() => jump($, [askedAt], 'start')} />
-                ) : (
-                  <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                    {label}
-                  </Text>
-                )}
+                <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
+                  {`Q${q.id} ${q.head}`}
+                </Text>
               </Box>
+              {askedAt !== undefined && (
+                <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />
+              )}
               {answerAt !== undefined && (
                 <Button
                   key={`a-${q.id}`}
                   variant="primary"
                   hotkey={answered ? hotkey : undefined}
-                  label="answer"
+                  label="A"
                   onPress={() => jump($, q.answerKey !== undefined ? [answerAt, q.answerKey] : [answerAt], 'end')}
                 />
               )}

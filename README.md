@@ -34,11 +34,13 @@ where each was answered, and the steps the model set itself, each with a complet
   with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
   Both calls stay quiet in the transcript: the first draws nothing, the second one dim
   `✓ Q<n> answered` line. An answered question turns green.
-- **Jump.** Click a question to scroll the transcript to your prompt; `[ answer ]` scrolls to the
-  answer. The row you land on lights up and fades out over about two seconds: your prompt, or the
-  answer's last text block and the `✓ Q<n> answered` line under it. The digits 1–9 press the
-  jumps while the pane has focus (ctrl+x tab). A question is a button, which takes no color, so an
-  answered question shows its green on the dot.
+- **Jump.** `[ Q ]` scrolls the transcript to your prompt, `[ A ]` to the answer. The row you land
+  on lights up and fades out over about two seconds: your prompt, or the answer's last text row and
+  the `✓ Q<n> answered` line under it. The digits 1–9 press the jumps while the pane has focus
+  (ctrl+x tab).
+- **Banner.** A colored line at the top says where the session stands: Working, Waiting on agents
+  (an Agent call, or background agents and shell tasks still running), Waiting on you (a question
+  dialog, or open questions and unfinished steps after the turn), or Safe to close.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved
   plan (`ExitPlanMode`: its numbered and checkbox lines). A Task named like a plan step links to it.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
@@ -47,8 +49,10 @@ where each was answered, and the steps the model set itself, each with a complet
   are withdrawn, so the model is told not to answer them.
 - **Chat plans.** When the model starts work of more than one step (a skill such as `/retro`, a
   plan in chat, a multi-step task), it registers the steps with `track_steps` and ticks them with
-  `mark_step`. Each typed prompt carries that instruction beside it, because a managed plugin may
-  bypass the system-prompt rule.
+  `mark_step`. Work that joins a running plan, such as review comments from Plannotator, is
+  inserted with `track_steps({ steps, after })` after the step it follows. While a managed plugin
+  bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
+  instruction beside it; built-in commands do not.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred. It
