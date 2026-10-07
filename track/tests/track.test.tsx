@@ -371,13 +371,19 @@ test('the pane opens by itself in a git repo, fullscreen, at 144+ columns, never
 for (const [why, c] of [
   ['under 144 columns', { columns: 120, isFullscreen: true, repo: REPO, closedByPerson: false }],
   ['outside the fullscreen layout', { columns: 160, isFullscreen: false, repo: REPO, closedByPerson: false }],
-  ['outside a git repository', { columns: 160, isFullscreen: true, repo: null, closedByPerson: false }],
   ['after the person closed it', { columns: 160, isFullscreen: true, repo: REPO, closedByPerson: true }],
 ] as const) {
   test(`the pane does not open by itself ${why}`, async ($, on) => {
     expect(await autoOpenCase($, on, { ...c })).toHaveLength(0)
   })
 }
+
+// Ohad, 2026-10-07: drop the diff panel's git condition. Most sessions start in ~/git, which is
+// no repository, and questions and steps do not depend on git.
+test('the pane opens by itself outside a git repository too', async ($, on) => {
+  const opens = await autoOpenCase($, on, { columns: 160, isFullscreen: true, repo: null, closedByPerson: false })
+  expect(opens).toHaveLength(1)
+})
 
 test('a resumed session gets its saved questions back', async ($, on) => {
   const saved = { v: 1, savedAt: 1, ledger: OPEN_ONE }

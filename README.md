@@ -53,7 +53,7 @@ where each was answered, and the steps the model set itself, each with a complet
 - **Rewind and resume.** A `/rewind` drops the questions asked in the rewound turns. Each finished
   turn saves the register, so `/resume` brings it back.
 
-It opens by itself by the built-in diff panel's rule: in a git repository, in the fullscreen
+It opens by itself by the built-in diff panel's rule, less the git condition: in the fullscreen
 layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). `/track`
 shows or hides it at any width; `/track status` prints the open questions. To keep the diff
 panel out of the slot, type `/diff` once.
