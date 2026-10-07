@@ -68,6 +68,9 @@ export type Turn = {
 
 // What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
 // calls in flight (tool_use ids), and background agents and shell tasks still running (their ids).
+// The first shown row of each pane region, or null to follow the news.
+export type ScrollAt = { questions: number | null; steps: number | null }
+
 export type Activity = { isWorking: boolean; agentCalls: string[]; askCalls: string[]; background: string[] }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
@@ -88,6 +91,8 @@ declare module 'claude-code' {
       activity: Activity
       // The phase of the in-progress step's pulse, advanced by a timer while work runs.
       pulse: number
+      // Each pane region's first shown row; null follows the newest question or the step at work.
+      scroll: ScrollAt
     }
   }
 }

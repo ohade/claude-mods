@@ -38,7 +38,10 @@ where each was answered, and the steps the model set itself, each with a complet
   on lights up and fades out over about two seconds: your prompt, or the answer's last text row and
   the `✓ Q<n> answered` line under it. The digits 1–9 press the jumps while the pane has focus
   (ctrl+x tab).
-- **Banner.** A colored line just above the steps says where the session stands: Working, Waiting on agents
+- **Layout.** The title stays at the top and the banner at the bottom. Questions and Steps are
+  fixed regions, about a third and two thirds; each scrolls on its own under the wheel, and its
+  header counts the rows hidden above and below (`↑2 ↓5`).
+- **Banner.** A full-width colored line at the bottom says where the session stands: Working, Waiting on agents
   (an Agent call, or background agents and shell tasks still running), Waiting on you (a question
   dialog, or open questions and unfinished steps after the turn), or Safe to close.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved

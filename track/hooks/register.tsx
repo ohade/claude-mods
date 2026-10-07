@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Activity, Ledger, Pane, Prompt, Question, Step, Turn } from '../types'
+import type { Activity, Ledger, Pane, Prompt, Question, ScrollAt, Step, Turn } from '../types'
 
 const PANE = 'track'
 // The pane's name (Ohad, 2026-10-07): its tab label, and its first line, since a lone pane shows
@@ -89,6 +89,42 @@ const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a
 const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
 const pulsing: { timer?: Timer } = {}
 
+// The pane's layout (Ohad, 2026-10-07): the title pinned at the top, the banner and footer pinned
+// at the bottom, and between them Questions and Steps, each a fixed region that scrolls alone.
+// Questions get about a third of the room, as Ohad liked it; room one side does not need goes to
+// the other. `regions` is where the last drawing put each region, for routing a wheel tick.
+const QUESTION_SHARE = 0.35
+// Columns a question row spends on its dot, its [ Q ] [ A ] buttons and ✕.
+const QUESTION_CHROME = 18
+const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0, last: 'steps' as 'questions' | 'steps' }
+
+// The rows from `start` whose lines fit `rows`: [start, end).
+const windowOf = (lines: number[], rows: number, start: number): [number, number] => {
+  let end = start
+  let used = 0
+  while (rows > 0 && end < lines.length && used + (lines[end] ?? 1) <= rows) {
+    used += lines[end] ?? 1
+    end++
+  }
+
+  return [start, rows > 0 && end === start && start < lines.length ? start + 1 : end]
+}
+
+// The first row from which the list's last rows fill `rows`.
+const lastStart = (lines: number[], rows: number): number => {
+  let start = lines.length
+  let used = 0
+  while (start > 0 && used + (lines[start - 1] ?? 1) <= rows) {
+    used += lines[start - 1] ?? 1
+    start--
+  }
+
+  return Math.min(start, Math.max(0, lines.length - 1))
+}
+
+const hidden = (above: number, below: number): string =>
+  [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
+
 // A background task's id in its notification text.
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 
@@ -103,6 +139,8 @@ const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
 const activity = atom({ plugin: 'track', key: 'activity' } as const, { isWorking: false, agentCalls: [], askCalls: [], background: [] } as Activity)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
+// Each region's first shown row; null follows the news (the newest question, the step at work).
+const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: null, steps: null } as ScrollAt)
 
 // The transcript draws a prompt row under the stored row's id with its last group zeroed
 // (observed on 2.1.289, see image-thumbs), so both sides key on the first four groups.
@@ -701,15 +739,8 @@ export const register: Register = on => {
       await update($, ledger, l => ({ ...l, questions: l.questions.map(q => (q.id === id ? { ...q, turnId: t.currentId } : q)) }))
     }
 
-    // Keep the newest question in view; older ones stay above it, reachable by scrolling.
-    if (minted !== undefined && (await read($, pane)).isOpen) {
-      const key = `row-q-${minted.id}`
-      $.clock.after(SCROLL_AFTER_MS, () => {
-        void $.ui.scroll({ in: PANE, to: { key }, block: 'nearest' }).then(moved => {
-          if (moved.deny !== undefined) $.ui.log(`track: newest question not scrolled into view: ${moved.deny}`, { to: 'debug' })
-        })
-      })
-    }
+    // The Questions region follows the newest question again.
+    await update($, scrollAt, cur => ({ ...cur, questions: null }))
 
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered({ id: ${minted?.id}, status: "answered" }).` }
@@ -882,6 +913,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
     }
+    await update($, scrollAt, cur => ({ ...cur, steps: null }))
     const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
     if (titles.length === 0) {
       return { result: 'No steps given: pass steps as an array of one-line titles.' }
@@ -1072,6 +1104,31 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A wheel tick moves the region under the pointer by a row; the scroll keys move the region
+  // last scrolled. The pane body itself stays put: its tree is exactly as tall as the body.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person') {
+      return next(e)
+    }
+    const row = e.pointer?.row
+    const region =
+      row === undefined
+        ? regions.last
+        : row >= regions.qTop && row < regions.qBottom
+          ? 'questions'
+          : row >= regions.sTop && row < regions.sBottom
+            ? 'steps'
+            : undefined
+    if (region === undefined) {
+      return {}
+    }
+    regions.last = region
+    const from = region === 'questions' ? regions.qStart : regions.sStart
+    await update($, scrollAt, cur => ({ ...cur, [region]: Math.max(0, (cur[region] ?? from) + e.by) }))
+
+    return {}
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
@@ -1081,6 +1138,8 @@ export const register: Register = on => {
       startPulse($)
     }
     const width = Math.max(20, e.props.bodyColumns)
+    const bodyRows = Math.max(8, e.props.scroll.bodyRows)
+    const at = await read($, scrollAt)
     const titleLabel = ` ${TITLE.toUpperCase()} `
     const titleSide = Math.max(2, Math.floor((width - titleLabel.length) / 2))
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
@@ -1099,10 +1158,46 @@ export const register: Register = on => {
     const state = sessionState(l, now)
     const shown = BANNERS[state]
 
+    // The layout: fixed rows (title, two headers, the separator, footer, banner) and the room left
+    // for the two regions, measured in wrapped lines.
+    const roomy = bodyRows >= 16
+    const fixedRows = (roomy ? 2 : 1) + 3 + (roomy ? 2 : 1) + 1
+    const room = Math.max(0, bodyRows - fixedRows)
+    const qWidth = Math.max(8, width - ROW_INDENT - 2 - QUESTION_CHROME)
+    const sWidth = Math.max(8, width - ROW_INDENT - 2)
+    const qLines = questions.map(q => Math.max(1, Math.ceil(`Q${q.id} ${q.head}`.length / qWidth)))
+    const sLines = steps.map((s, i) => Math.max(1, Math.ceil(`S${i + 1} ${s.subject}`.length / sWidth)))
+    const needQ = Math.max(1, qLines.reduce((a, b) => a + b, 0))
+    const needS = Math.max(1, sLines.reduce((a, b) => a + b, 0))
+    let qRows = Math.min(needQ, room, Math.max(1, Math.round(room * QUESTION_SHARE)))
+    let sRows = Math.max(0, room - qRows)
+    if (needS < sRows) {
+      qRows = Math.min(needQ, qRows + sRows - needS)
+      sRows = needS
+    }
+    // Where each region starts: the newest questions, the step at work with one done row above.
+    const qLast = lastStart(qLines, qRows)
+    const sLast = lastStart(sLines, sRows)
+    const atWork = steps.findIndex(s => s.status !== 'completed')
+    const qFrom = Math.min(at.questions ?? qLast, qLast)
+    const sFrom = Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast)
+    const [qStart, qEnd] = windowOf(qLines, qRows, qFrom)
+    const [sStart, sEnd] = windowOf(sLines, sRows, sFrom)
+    const titleRows = roomy ? 2 : 1
+    Object.assign(regions, {
+      qTop: titleRows,
+      qBottom: titleRows + 1 + qRows,
+      sTop: titleRows + 1 + qRows,
+      sBottom: titleRows + 3 + qRows + sRows,
+      qStart,
+      sStart,
+    })
+    const bannerText = state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text
+
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" height={bodyRows}>
         {/* The title as a centered header bar, rules filling the width (Ohad, 2026-10-07). */}
-        <Box key="title" flexDirection="row" justifyContent="center" marginBottom={1}>
+        <Box key="title" flexDirection="row" justifyContent="center" marginBottom={roomy ? 1 : 0}>
           <Text dimColor>{'─'.repeat(titleSide)}</Text>
           <Text bold color="claude">
             {titleLabel}
@@ -1121,11 +1216,14 @@ export const register: Register = on => {
               <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />
             </Box>
           )}
+          <Text dimColor>{hidden(qStart, questions.length - qEnd) === '' ? '' : `  ${hidden(qStart, questions.length - qEnd)}`}</Text>
         </Box>
+        <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
         {questions.length === 0 && (
           <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
         )}
-        {questions.map((q, index) => {
+        {questions.slice(qStart, qEnd).map((q, shownAt) => {
+          const index = qStart + shownAt
           // The question is text, green once answered; the jumps are short buttons, [ Q ] to the
           // prompt and [ A ] to the answer, the answer in the primary style (Ohad, 2026-10-07, after
           // the audit: keep the green, a Button takes no color). An answered row puts its digit
@@ -1166,13 +1264,8 @@ export const register: Register = on => {
             </Box>
           )
         })}
-        <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
-        {/* The banner sits just above the steps it reports on (Ohad, 2026-10-07). */}
-        <Box marginBottom={1}>
-          <Text backgroundColor={shown.color} color="inverseText" bold>
-            {state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text}
-          </Text>
         </Box>
+        <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
         <Box flexDirection="row">
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
@@ -1183,13 +1276,16 @@ export const register: Register = on => {
               <Button key="clear-steps" plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />
             </Box>
           )}
+          <Text dimColor>{hidden(sStart, steps.length - sEnd) === '' ? '' : `  ${hidden(sStart, steps.length - sEnd)}`}</Text>
         </Box>
+        <Box key="steps" flexDirection="column" height={sRows} overflow="hidden">
         {steps.length === 0 && (
           <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>
         )}
         {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
             same left edge, a number S<n> by position, and green once done. */}
-        {steps.map((s, index) => {
+        {steps.slice(sStart, sEnd).map((s, shownAt) => {
+          const index = sStart + shownAt
           const color = s.status === 'completed' ? 'success' : undefined
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
           // hourglass for agents, a still purple mark when it waits on the person.
@@ -1213,9 +1309,17 @@ export const register: Register = on => {
             </Box>
           )
         })}
-        <Box flexDirection="row" marginTop={1}>
+        </Box>
+        <Box flexGrow={1} />
+        <Box flexDirection="row" marginTop={roomy ? 1 : 0}>
           <Button key="clear" plain hotkey="c" label="Clear completed" onPress={clearCompleted} />
           <Text dimColor>   /track hides · ctrl+x x closes for good</Text>
+        </Box>
+        {/* The banner, pinned at the bottom: its color across the whole width, its words centered. */}
+        <Box key="banner" width={width} justifyContent="center" backgroundColor={shown.color}>
+          <Text color="inverseText" bold>
+            {bannerText}
+          </Text>
         </Box>
       </Box>
     )

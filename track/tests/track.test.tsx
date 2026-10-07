@@ -153,14 +153,17 @@ const FOUR = {
   questions: [1, 2, 3, 4].map(id => ({ ...ANSWERED.questions[0], id, head: `question ${id}`, askedRequestId: `row-${id}` })),
 }
 
-test('a short inline pane still lists every uncleared question', async ($, on) => {
+// Updated 2026-10-07 at Ohad's request: Questions and Steps are fixed regions that scroll on their
+// own, so a short pane shows the newest question and says how many sit above it.
+test('a short inline pane shows the newest question and counts the ones above it', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: FOUR, version: 1 } }))
-  const short = { ...pane('inline'), props: { ...pane('inline').props, scroll: { offset: 0, bodyRows: 7 } } }
+  const short = { ...pane('inline'), props: { ...pane('inline').props, scroll: { offset: 0, bodyRows: 9 } } }
 
   const ui = await $.ui.mount(short)
 
   const labels = await listed(ui)
-  expect([1, 2, 3, 4].every(id => labels.some(label => label.includes(`Q${id} `)))).toBe(true)
+  expect(labels.some(label => label.includes('Q4 '))).toBe(true)
+  expect(labels.some(label => /↑\d/.test(label))).toBe(true)
 })
 
 // Ohad, 2026-10-07: a rewound question should leave the pane at the rewind, not at the next
@@ -1227,16 +1230,18 @@ test('the first line of the pane is the Session Tracker title, centered as a hea
   expect(line.length).toBe(60)
 })
 
-test('the banner sits between the questions and the Steps header', async ($, on) => {
+// Updated 2026-10-07 at Ohad's request: the banner is pinned at the bottom of the pane, its color
+// across the whole width and its words centered.
+test('the banner is pinned at the bottom, full width, its words centered', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
+  const boxes = await ui.findAll({ type: 'Box' })
+  expect((boxes[0]?.props as { height?: number } | undefined)?.height).toBe(20)
+  const banner = boxes.find(b => b.key === 'banner')
+  expect(banner?.props).toMatchObject({ width: 60, justifyContent: 'center' })
+  expect((banner?.props as { backgroundColor?: string } | undefined)?.backgroundColor).toBeDefined()
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  const banner = texts.findIndex(t => /Safe to close|Working|Waiting on/.test(t))
-  const questions = texts.findIndex(t => t.startsWith('Questions'))
-  const steps = texts.findIndex(t => t.startsWith('Steps'))
-  expect(questions).toBeGreaterThanOrEqual(0)
-  expect(banner).toBeGreaterThan(questions)
-  expect(banner).toBeLessThan(steps)
+  expect(texts.at(-1)).toContain('Safe to close')
 })
 
 // Observed 2026-10-07 (session 7bbc175c): after Ohad approved the retro and asked for a plan,
@@ -1298,4 +1303,46 @@ test('a mark_step line names the step by its pane number and title, not its id',
   expect(text).toContain('S3 Write the retro-fix plan')
   expect(text).toContain('in progress')
   expect(text).not.toContain('plan:10')
+})
+
+// Ohad, 2026-10-07: the title stays put; Questions and Steps are fixed regions, about a third and
+// two thirds, and each scrolls on its own under the wheel.
+const MANY = {
+  ...ANSWERED,
+  nextQuestionId: 13,
+  questions: Array.from({ length: 12 }, (_, i) => ({ ...ANSWERED.questions[0], id: i + 1, head: `question ${i + 1}`, askedRequestId: `row-${i + 1}` })),
+  steps: Array.from({ length: 20 }, (_, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject: `step ${i + 1}`, status: i < 12 ? 'completed' : i === 12 ? 'in_progress' : 'pending' })),
+}
+
+const rowKeys = async (ui: { findAll: (q: { type: string }) => Promise<Array<{ key?: string }>> }, prefix: string) =>
+  (await ui.findAll({ type: 'Box' })).map(b => String(b.key ?? '')).filter(k => k.startsWith(prefix))
+
+test('crowded regions show the newest questions and the step at work, each in its own window', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+
+  const questions = await rowKeys(ui, 'row-q-')
+  const steps = await rowKeys(ui, 'row-s-')
+  expect(questions.length).toBeGreaterThan(0)
+  expect(questions.length).toBeLessThan(12)
+  expect(questions).toContain('row-q-12')
+  expect(steps).toContain('row-s-plan:13')
+  expect(steps.length).toBeGreaterThan(questions.length)
+})
+
+test('a wheel tick over the questions scrolls the questions alone', async ($, on) => {
+  let at: { questions: number | null; steps: number | null } = { questions: null, steps: null }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: at, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'scroll' }, (_, e) => {
+    at = e.value as typeof at
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  await $.ui.mount(pane('dock'))
+
+  await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: -1, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 3, column: 5 } } as never)
+
+  expect(at.questions).not.toBeNull()
+  expect(at.steps).toBeNull()
 })
