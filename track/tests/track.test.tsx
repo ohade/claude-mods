@@ -1339,6 +1339,8 @@ test('a wheel tick over the questions scrolls the questions alone', async ($, on
 
     return { value: { isSet: true as const, version: 2 } }
   })
+  // The engine beneath moves the body; the hook passes the tick on with the body pinned at 0.
+  on('ui.scroll', () => ({}))
   await $.ui.mount(pane('dock'))
 
   await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: -1, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 3, column: 5 } } as never)
