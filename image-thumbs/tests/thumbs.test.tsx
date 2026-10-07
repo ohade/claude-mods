@@ -206,6 +206,39 @@ test("a picture pasted from the clipboard is drawn from the session's images fol
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
 })
 
+const assistantMessage = (text: string, requestId: string) => ({
+  plugin: 'image-thumbs',
+  surface: 'terminal' as const,
+  component: 'AssistantMessage' as const,
+  requestId,
+  viewport: { columns: 100, rows: 40 },
+  props: { text, isFirstOfReply: true },
+})
+
+test("a slash command's pictures are drawn above the first text of Claude's reply", async ($, on) => {
+  standInForSavedPictures(on, [], [], [5])
+  on('ui.render', { component: 'AssistantMessage' }, (_, e) => ({ type: 'Text', props: {}, children: [e.props.text] }))
+
+  // Live, the command's own row is drawn by the engine with no render hook,
+  // so its pictures go on the first row of the reply that has text.
+  await settle(
+    $.command.run({ command: 'recall', args: 'test [Image #5]', origin: { kind: 'composer' }, presentation: PRESENTATION }),
+  )
+  await settle(
+    $.session.append({
+      door: 'response',
+      origin: { kind: 'model', model: 'claude-test' },
+      uuid: 'd0000000-0000-4000-8000-000000000001',
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Image #5 arrived.' }] },
+    }),
+  )
+  const reply = await $.ui.mount(assistantMessage('Image #5 arrived.', 'd0000000-0000-4000-8000-000000000000'))
+  const earlier = await $.ui.mount(assistantMessage('An earlier reply.', 'e0000000-0000-4000-8000-000000000000'))
+
+  expect((await reply.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
+  expect(await earlier.findAll({ type: 'Image' })).toHaveLength(0)
+})
+
 test('a prompt sent while Claude works draws its picture from the file saved when it was pasted', async ($, on) => {
   standInForSavedPictures(on, [savedName(1, 'A1B2C3D4')], [])
 

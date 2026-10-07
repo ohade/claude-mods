@@ -34,6 +34,10 @@ declare module 'claude-code' {
       used: string[]
       // When the last prompt or slash command was submitted, in ms.
       submittedAt: number
+      // A slash command's pictures, waiting for the first reply row with text.
+      slashPending: number[]
+      // The slash command pictures drawn above a reply row, by its request id.
+      replyPictures: StateFamily<number[]>
     }
   }
 }

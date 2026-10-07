@@ -12,6 +12,11 @@ const CLAIMED = { plugin: 'image-thumbs', key: 'claimed' } as const
 const PASTED_AT = { plugin: 'image-thumbs', key: 'pastedAt' } as const
 const USED = { plugin: 'image-thumbs', key: 'used' } as const
 const SUBMITTED = { plugin: 'image-thumbs', key: 'submittedAt' } as const
+const SLASH_PENDING = { plugin: 'image-thumbs', key: 'slashPending' } as const
+const REPLY_PICTURES = { plugin: 'image-thumbs', key: 'replyPictures' } as const
+
+// A transcript row is drawn under its uuid with the last group zeroed.
+const requestIdOf = (uuid: string): string => `${uuid.slice(0, 24)}000000000000`
 
 const PANE = 'image-view'
 
@@ -434,10 +439,35 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A slash command's pictures are in its arguments.
+  // A slash command's pictures are in its arguments. The engine draws the
+  // command's own row with no render hook, so they wait for the first row of
+  // the reply that has text, and are drawn above it.
   on('command.run', async ($, e, next) => {
-    if (imageNumbers(e.args).length > 0) {
+    const named = imageNumbers(e.args)
+    if (named.length > 0) {
       await storeSavedThumbs($, e.args)
+      const stored = (await Promise.all(named.map(async n => ((await isStored($, n)) ? [n] : [])))).flat()
+      await $.state.set(SLASH_PENDING, stored)
+    }
+
+    return next(e)
+  })
+
+  on('session.append', { door: 'response' }, async ($, e, next) => {
+    const { value: pending = [] } = await $.state.get(SLASH_PENDING)
+    if (pending.length > 0 && e.message.content.some(block => block.type === 'text')) {
+      await $.state.set({ ...REPLY_PICTURES, id: requestIdOf(e.uuid) }, pending)
+      await $.state.set(SLASH_PENDING, [])
+    }
+
+    return next(e)
+  })
+
+  // A reply with no text leaves nothing to draw them on; the next turn's
+  // reply is not theirs.
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      await $.state.set(SLASH_PENDING, [])
     }
 
     return next(e)
@@ -506,16 +536,17 @@ export const register: Register = on => {
     return {}
   })
 
-  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+  on('ui.render', { component: ['UserMessage', 'AssistantMessage'] }, async ($, e, next) => {
     if (e.surface !== 'terminal') {
       return next(e)
     }
-    // By the numbers the row names, not by the row: a slash command's row and
-    // a message sent mid-turn are drawn under ids other than the rows their
-    // pictures came in on. A slash command's row draws before its expansion
-    // brings the pictures; its read here subscribes it, so it redraws when
-    // they are stored.
-    const numbers = imageNumbers(e.props.text)
+    // A prompt's row by the numbers it names, not by the row: a message sent
+    // mid-turn is drawn under an id other than the row its pictures came in
+    // on. A reply's row by the slash command pictures tied to it.
+    const isReply = e.component === 'AssistantMessage'
+    const numbers = isReply
+      ? ((await $.state.get({ ...REPLY_PICTURES, id: e.requestId })).value ?? [])
+      : imageNumbers(e.props.text)
     if (numbers.length === 0) {
       return next(e)
     }
@@ -537,52 +568,58 @@ export const register: Register = on => {
     const room = { columns, rows: ROWS }
     const roomExpanded = { columns, rows: Math.max(ROWS, Math.min(EXPANDED_ROWS, (e.viewport?.rows ?? 40) - 10)) }
 
-    return (
-      <Box flexDirection="column">
-        {row}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginLeft={2}>
-          {thumbs.map((thumb, index) => {
-            const { n, originalPath } = thumb
-            const expandedPicture = expanded[index] ?? null
-            const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
-            const png = expandedPicture === null ? thumb.png : expandedPicture.png
-            // Drawn again under a new key shortly after the first drawing: a new
-            // image id, sent again with its cells written again, as a window
-            // resize does for every picture. The first drawing can stay blank.
-            const drawing = repaints[index] ?? 0
+    const pictures = (
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginLeft={2}>
+        {thumbs.map((thumb, index) => {
+          const { n, originalPath } = thumb
+          const expandedPicture = expanded[index] ?? null
+          const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
+          const png = expandedPicture === null ? thumb.png : expandedPicture.png
+          // Drawn again under a new key shortly after the first drawing: a new
+          // image id, sent again with its cells written again, as a window
+          // resize does for every picture. The first drawing can stay blank.
+          const drawing = repaints[index] ?? 0
 
-            return (
-              <Box flexDirection="column" alignItems="flex-start">
-                <Box borderStyle="round" borderDimColor>
-                  <Box>
-                    <Image key={`thumb-${n}-${drawing}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
-                    <Box position="absolute" top={0} left={0}>
-                      <Client
-                        key={`click-${n}`}
-                        module="./click-area.ts"
-                        props={{ n }}
-                        width={cells.columns}
-                        height={cells.rows}
-                      />
-                    </Box>
+          return (
+            <Box flexDirection="column" alignItems="flex-start">
+              <Box borderStyle="round" borderDimColor>
+                <Box>
+                  <Image key={`thumb-${n}-${drawing}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
+                  <Box position="absolute" top={0} left={0}>
+                    <Client
+                      key={`click-${n}`}
+                      module="./click-area.ts"
+                      props={{ n }}
+                      width={cells.columns}
+                      height={cells.rows}
+                    />
                   </Box>
                 </Box>
-                <Box flexDirection="row">
-                  <Text dimColor>
-                    #{n} · click the picture to {expandedPicture === null ? 'expand' : 'shrink'} ·{' '}
-                  </Text>
-                  <Button
-                    key={`open-${n}`}
-                    label="open in pane"
-                    plain
-                    dimColor
-                    onPress={() => openImage($, n, originalPath)}
-                  />
-                </Box>
               </Box>
-            )
-          })}
-        </Box>
+              <Box flexDirection="row">
+                <Text dimColor>
+                  #{n} · click the picture to {expandedPicture === null ? 'expand' : 'shrink'} ·{' '}
+                </Text>
+                <Button
+                  key={`open-${n}`}
+                  label="open in pane"
+                  plain
+                  dimColor
+                  onPress={() => openImage($, n, originalPath)}
+                />
+              </Box>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+
+    // Under a prompt; above a reply, whose text follows from the pictures.
+    return (
+      <Box flexDirection="column">
+        {isReply && pictures}
+        {row}
+        {!isReply && pictures}
       </Box>
     )
   })
