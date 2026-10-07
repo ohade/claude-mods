@@ -509,3 +509,16 @@ test('a completed step is green, and a separator line divides the sections', asy
   expect((step?.props as { color?: string } | undefined)?.color).toBe('success')
   expect(texts.some(t => /^─{10,}$/.test(String(t.text ?? '')))).toBe(true)
 })
+
+// Ohad, 2026-10-07: "q: clear all" sat flush against the ring. The engine draws a hotkey
+// button as "q: label", so spacing inside the label lands after "q:", not before it.
+test('the clear-all buttons carry no padding in their labels', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const labels = (await ui.findAll({ type: 'Button' }))
+    .filter(b => b.key === 'clear-questions' || b.key === 'clear-steps')
+    .map(b => (b.props as { label?: string }).label)
+  expect(labels).toEqual(['clear all', 'clear all'])
+})

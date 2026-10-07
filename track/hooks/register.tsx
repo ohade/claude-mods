@@ -792,7 +792,11 @@ export const register: Register = on => {
             {ring(qDone, l.questions.length)}
           </Text>
           {l.questions.length > 0 && (
-            <Button key="clear-questions" plain dimColor hotkey="q" label="   clear all" onPress={() => clearQuestions($)} />
+            // The gap sits outside the button: the engine draws "q: label", so padding in the
+            // label would land after "q:".
+            <Box marginLeft={3}>
+              <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />
+            </Box>
           )}
         </Box>
         {questions.length === 0 && (
@@ -827,7 +831,11 @@ export const register: Register = on => {
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
           {l.steps.length > 0 && (
-            <Button key="clear-steps" plain dimColor hotkey="s" label="   clear all" onPress={() => clearSteps($)} />
+            // The gap sits outside the button: the engine draws "s: label", so padding in the
+            // label would land after "s:".
+            <Box marginLeft={3}>
+              <Button key="clear-steps" plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />
+            </Box>
           )}
         </Box>
         {steps.length === 0 && (
