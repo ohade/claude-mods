@@ -67,6 +67,55 @@ test('a slash command row draws the thumbnails its [Image #n] tags name', async 
   expect(images.map(image => image.props.alt)).toEqual(['[Image #2]', '[Image #3]'])
 })
 
+// sips, base64, mktemp and rm: the size query answers 64x32, mktemp a folder,
+// every other command succeeds silently; the PNG is read back as PNG.
+const standInForDisk = (on: On) => {
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('-g')
+        ? 'pixelWidth: 64\npixelHeight: 32\n'
+        : e.argv[0] === '/usr/bin/mktemp'
+          ? '/private/tmp/thumbs-test\n'
+          : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('fs.read', () => ({ value: { base64: PNG } }))
+  on('fs.write', () => ({ value: undefined }))
+}
+
+test("a skill's slash command draws the picture its expansion brings in on a note row", async ($, on) => {
+  standInForDisk(on)
+  on('ui.render', engineRow, (_, e) => ({ type: 'Text', props: {}, children: [e.props.text] }))
+
+  // A skill's expansion is a meta row of its own, by the note door; the
+  // command's row before it carries the text alone. The kit cannot store the
+  // row (nothing beneath the plugins answers session.append, and it skips a
+  // test's own answer), so the append rejects; the mod has built the
+  // thumbnail by then, before it hands the row on.
+  const appended = $.session.append({
+    door: 'note',
+    origin: { kind: 'engine' },
+    uuid: 'b0000000-0000-4000-8000-000000000001',
+    message: {
+      type: 'user',
+      role: 'user',
+      isMeta: true,
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+        { type: 'text', text: 'Base directory for this skill: /skills/recall\n\nARGUMENTS: look at this [Image #1]' },
+      ],
+    },
+  })
+  await expect(appended).rejects.toThrow('no implementation for session.append')
+  const ui = await $.ui.mount(userMessage('/recall look at this [Image #1]'))
+
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
+})
+
 test('a message sent while Claude works draws its thumbnail', async ($, on) => {
   // The picture came in on the attachment that folds the message into the turn.
   storeThumbs(on, [4])

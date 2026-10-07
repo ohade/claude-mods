@@ -12,21 +12,11 @@ const REPAINTS = { plugin: 'image-thumbs', key: 'repaints' } as const
 const PANE = 'image-view'
 
 // The rows that carry a pasted picture among their blocks: a typed prompt and
-// a slash command's expansion. A message sent mid-turn comes in by the
-// delivery door instead, without its pictures (see the delivery hook).
-const PICTURE_DOORS = ['prompt', 'command', 'attachment'] as const
-
-// TEMPORARY (2026-10-07): a log of the rows that name or carry a picture, by
-// door, to find where a slash command's pictures come in. Remove once known.
-const probeLines: string[] = []
-const probe = async ($: EngineInterface, record: Record<string, unknown>): Promise<void> => {
-  probeLines.push(JSON.stringify({ at: new Date().toISOString(), ...record }))
-  try {
-    await $.fs.write(`/tmp/image-thumbs-probe-${await $.session.id()}.log`, `${probeLines.slice(-200).join('\n')}\n`)
-  } catch (error) {
-    $.ui.log(`image-thumbs: probe not written: ${String(error)}`, { to: 'debug' })
-  }
-}
+// a slash command's expansion. A skill's expansion (/recall ...) is a meta row
+// of its own by the note door; the command's row before it has the text alone.
+// A message sent mid-turn comes in by the delivery door instead, without its
+// pictures (see the delivery hook).
+const PICTURE_DOORS = ['prompt', 'command', 'attachment', 'note'] as const
 
 // Thumbnail height in terminal rows; the width follows the picture's aspect.
 const ROWS = 5
@@ -185,7 +175,7 @@ const openImage = async ($: EngineInterface, n: number, originalPath: string): P
 
 // Builds and stores the thumbnails of a row's own pictures: those its text
 // names past the last number seen, in order, matched to `images` in order.
-const storeThumbs = async ($: EngineInterface, text: string, images: ImageBlock[]): Promise<number[]> => {
+const storeThumbs = async ($: EngineInterface, text: string, images: ImageBlock[]): Promise<void> => {
   const { value: pasted = [] } = await $.state.get(PASTED)
   const numbers = freshNumbers(text, Math.max(0, ...pasted.map(image => image.n)))
   const made = await Promise.all(
@@ -197,8 +187,6 @@ const storeThumbs = async ($: EngineInterface, text: string, images: ImageBlock[
     const added: Pasted[] = thumbs.map(({ n, originalPath }) => ({ n, originalPath }))
     await $.state.set(PASTED, [...pasted, ...added])
   }
-
-  return numbers
 }
 
 // The largest box of cells inside `room` that keeps the picture's aspect.
@@ -231,8 +219,7 @@ export const register: Register = on => {
       return next(e)
     }
     // Claude Code's own numbers, in order, from the row's [Image #n] tags.
-    const numbers = await storeThumbs($, textOf(e.message.content), images)
-    await probe($, { hook: 'picture-row', door: e.door, images: images.length, numbers })
+    await storeThumbs($, textOf(e.message.content), images)
 
     return next(e)
   })
@@ -252,35 +239,7 @@ export const register: Register = on => {
     const message = messages.findLast(one => one.role === 'user' && textOf(one.content).includes(`[Image #${first}]`))
     const images = (message?.content ?? []).filter(isImageBlock)
     // The newest pictures are the message's last ones.
-    const numbers = await storeThumbs($, text, images.slice(-imageNumbers(text).length))
-    await probe($, {
-      hook: 'delivery',
-      name: e.message.name,
-      numbers,
-      found: images.length,
-      blocks: message?.content.map(block => block.type),
-    })
-
-    return row
-  })
-
-  // TEMPORARY probe: every row that names or carries a picture, by door.
-  on('session.append', async ($, e, next) => {
-    const row = await next(e)
-    const blocks = e.message.content
-    const images = blocks.filter(isImageBlock).length
-    if (images > 0 || imageNumbers(textOf(blocks)).length > 0) {
-      await probe($, {
-        hook: 'any-row',
-        door: e.door,
-        type: e.message.type,
-        name: e.message.name,
-        isMeta: e.message.isMeta,
-        blocks: blocks.map(block => block.type),
-        images,
-        text: textOf(blocks).slice(0, 80),
-      })
-    }
+    await storeThumbs($, text, images.slice(-imageNumbers(text).length))
 
     return row
   })
