@@ -9,6 +9,16 @@ export const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 export const EMPTY = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
+// The track pane's render event, docked beside the transcript or inline above the prompt.
+export const pane = (placement: 'dock' | 'inline', bodyColumns = 60, bodyRows = 20) => ({
+  plugin: 'track',
+  surface: 'terminal' as const,
+  component: 'Pane' as const,
+  requestId: 'track',
+  viewport: { columns: 120, rows: 40, isFullscreen: placement === 'dock' },
+  props: { title: 'Track', isFocused: false, bodyColumns, placement, scroll: { offset: 0, bodyRows }, view: {} },
+})
+
 // One state atom: every read sees the last write, each write is recorded, and a write given
 // `ifVersion` misses once another write beat it, as the engine's compare-and-set does.
 // `holdReads` holds the first that many reads until all of them arrived, so two calls in flight

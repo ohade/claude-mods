@@ -134,6 +134,28 @@ const lastStart = (lines: number[], rows: number): number => {
   return Math.min(start, Math.max(0, lines.length - 1))
 }
 
+// The newest `max` rows. Room is made from the oldest rows already cleared, then the oldest done
+// ones; an open question or an unfinished step goes only when no spent row is left.
+const capRows = <T extends { cleared?: true }>(rows: T[], max: number, isDone: (row: T) => boolean): T[] => {
+  let excess = rows.length - max
+  if (excess <= 0) {
+    return rows
+  }
+  const dropped = new Set<T>()
+  for (const isSpent of [(row: T) => row.cleared === true, isDone, () => true]) {
+    for (const row of rows) {
+      if (excess > 0 && !dropped.has(row) && isSpent(row)) {
+        dropped.add(row)
+        excess--
+      }
+    }
+  }
+
+  return rows.filter(row => !dropped.has(row))
+}
+
+const capSteps = (steps: Step[]): Step[] => capRows(steps, MAX_STEPS, s => s.status === 'completed')
+
 const hidden = (above: number, below: number): string =>
   [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
 
@@ -149,7 +171,8 @@ const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hi
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
-const activity = atom({ plugin: 'track', key: 'activity' } as const, { isWorking: false, agentCalls: [], askCalls: [], background: [] } as Activity)
+const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [] }
+const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
 const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: null, steps: null } as ScrollAt)
@@ -238,10 +261,12 @@ const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
   return unfinished ? 'you' : 'done'
 }
 
+// Waiting on agents always pulses (the banner blinks amber); the main session's work pulses only
+// the step in progress, so with none there is nothing to animate.
 const isPulsing = (l: Ledger, now: Activity): boolean => {
   const state = sessionState(l, now)
 
-  return (state === 'working' || state === 'agents') && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true)
+  return state === 'agents' || (state === 'working' && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true))
 }
 
 // Started from the pane's drawing when a step should pulse; each tick stops it once nothing does.
@@ -787,6 +812,12 @@ export const register: Register = on => {
   // replays the chain, so a failure here can never add or erase a block.
   on('classic.Stop', async ($, e, next) => {
     const below = await next(e)
+    // Stop lists the background work still in flight: a task whose notification never came
+    // (killed, or lost) leaves the banner here.
+    if (e.agent_id === undefined && Array.isArray(e.background_tasks)) {
+      const inFlight = e.background_tasks.map(task => task.id)
+      await update($, activity, a => ({ ...a, background: inFlight }))
+    }
     if (below.block !== undefined || e.stop_hook_active || e.agent_id !== undefined) {
       return below
     }
@@ -891,7 +922,9 @@ export const register: Register = on => {
         status: 'open',
       }
 
-      return { ...l, nextQuestionId: l.nextQuestionId + 1, questions: [...l.questions, minted].slice(-MAX_QUESTIONS) }
+      const questions = capRows([...l.questions, minted], MAX_QUESTIONS, q => q.status === 'answered')
+
+      return { ...l, nextQuestionId: l.nextQuestionId + 1, questions }
     })
     const t = await read($, turn)
     if (minted !== undefined && minted.turnId === null && t.currentId !== null) {
@@ -965,7 +998,7 @@ export const register: Register = on => {
         ...(e.tool_use_id !== undefined && { createdRequestId: e.tool_use_id }),
       }
 
-      return { ...cur, steps: [...cur.steps, step].slice(-MAX_STEPS) }
+      return { ...cur, steps: capSteps([...cur.steps, step]) }
     })
 
     return ran
@@ -1013,7 +1046,7 @@ export const register: Register = on => {
 
       return { id: n === 1 ? base : `${base}#${n}`, source: 'todo', subject: headOf(t.content), status: t.status }
     })
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'todo'), ...rows].slice(-MAX_STEPS) }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }))
 
     return ran
   })
@@ -1026,7 +1059,7 @@ export const register: Register = on => {
     }
     const steps = parsePlan(result.plan)
     if (steps.length > 0) {
-      await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
+      await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
     }
 
     return ran
@@ -1102,13 +1135,13 @@ export const register: Register = on => {
         const i = cur.steps.findIndex(s => s.id === after)
         const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
 
-        return { ...cur, steps: steps.slice(-MAX_STEPS) }
+        return { ...cur, steps: capSteps(steps) }
       })
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
   })
@@ -1260,6 +1293,7 @@ export const register: Register = on => {
     if (e.reason === 'clear') {
       await update<Ledger>($, ledger, () => EMPTY_LEDGER)
       await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
+      await update($, activity, () => IDLE)
     }
 
     return next(e)
@@ -1372,14 +1406,16 @@ export const register: Register = on => {
     const titleSide = Math.max(2, Math.floor((width - titleLabel.length) / 2))
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
     // stay reachable above the newest (track_question scrolls the newest into view).
+    // The rings count the rows shown: a cleared row leaves its ring too. A deferred answer still
+    // waits, so it is not done, and clear completed keeps it.
     const questions = l.questions.filter(q => q.cleared !== true)
-    const qDone = l.questions.filter(q => q.status !== 'open').length
+    const qDone = questions.filter(q => q.status === 'answered').length
     const steps = l.steps.filter(s => s.cleared !== true)
-    const sDone = l.steps.filter(s => s.status === 'completed').length
+    const sDone = steps.filter(s => s.status === 'completed').length
     const clearCompleted = () =>
       void update($, ledger, cur => ({
         ...cur,
-        questions: cur.questions.map(q => (q.status === 'open' ? q : { ...q, cleared: true as const })),
+        questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
     // The steps' two clear controls, in a bar above the steps and a bar below them. Both bars sit
@@ -1434,7 +1470,16 @@ export const register: Register = on => {
       qLast,
       sLast,
     })
-    const bannerText = state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text
+    // Background agents show in the banner while the main turn runs too: the session works and
+    // waits on them at once. Waiting on agents blinks amber.
+    const running = now.background.length
+    const bannerText =
+      running === 0 || (state !== 'agents' && state !== 'working')
+        ? shown.text
+        : state === 'agents'
+          ? `${shown.text.trimEnd()} (${running}) `
+          : `${shown.text.trimEnd()} · agents (${running}) `
+    const bannerColor = state === 'agents' ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
 
     return (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
@@ -1448,8 +1493,8 @@ export const register: Register = on => {
         </Box>
         <Box flexDirection="row">
           <Text bold>Questions </Text>
-          <Text color={qDone === l.questions.length && l.questions.length > 0 ? 'success' : 'warning'}>
-            {ring(qDone, l.questions.length)}
+          <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>
+            {ring(qDone, questions.length)}
           </Text>
           {l.questions.length > 0 && (
             // The gap sits outside the button: the engine draws "q: label", so padding in the
@@ -1510,7 +1555,7 @@ export const register: Register = on => {
         <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
         <Box flexDirection="row">
           <Text bold>Steps </Text>
-          <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
+          <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, steps.length)}</Text>
           {l.steps.length > 0 && (
             // The gap sits outside the buttons: the engine draws "s: label", so padding in the
             // label would land after "s:".
@@ -1564,7 +1609,7 @@ export const register: Register = on => {
           </Box>
         </Box>
         {/* The banner, pinned at the bottom: its color across the whole width, its words centered. */}
-        <Box key="banner" width={width} justifyContent="center" backgroundColor={shown.color}>
+        <Box key="banner" width={width} justifyContent="center" backgroundColor={bannerColor}>
           <Text color="inverseText" bold>
             {bannerText}
           </Text>

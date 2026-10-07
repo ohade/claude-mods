@@ -1,6 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
+import { pane } from './kit'
+
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
 // stand in for $.session.messages() — the transcript as it is after a /rewind.
@@ -99,15 +101,6 @@ const listed = async (ui: { findAll: (q: { type: string }) => Promise<Array<{ te
   ...(await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? '')),
   ...(await ui.findAll({ type: 'Button' })).map(b => String((b.props as { label?: string }).label ?? '')),
 ]
-
-const pane = (placement: 'dock' | 'inline') => ({
-  plugin: 'track',
-  surface: 'terminal' as const,
-  component: 'Pane' as const,
-  requestId: 'track',
-  viewport: { columns: 120, rows: 40, isFullscreen: placement === 'dock' },
-  props: { title: 'Track', isFocused: false, bodyColumns: 60, placement, scroll: { offset: 0, bodyRows: 20 }, view: {} },
-})
 
 test('an answered question stays listed in the inline pane', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
