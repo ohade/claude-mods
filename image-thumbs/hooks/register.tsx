@@ -1,18 +1,19 @@
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Pasted, Shown, Thumb } from '../types'
+import { freshNumbers, imageNumbers } from './numbers.ts'
 
-const ROW = { plugin: 'image-thumbs', key: 'byRow' } as const
+const BY_IMAGE = { plugin: 'image-thumbs', key: 'byImage' } as const
 const SHOWN = { plugin: 'image-thumbs', key: 'shown' } as const
 const PASTED = { plugin: 'image-thumbs', key: 'pasted' } as const
 const EXPANDED = { plugin: 'image-thumbs', key: 'expanded' } as const
+const SENDS = { plugin: 'image-thumbs', key: 'sends' } as const
 
 const PANE = 'image-view'
 
-// The transcript draws a prompt row under the stored row's id with its last
-// group zeroed (b3bcd931-da69-4b4e-9d30-000000000000 for the row stored as
-// b3bcd931-da69-4b4e-9d30-b3f428b5422e), so both sides key on the first four.
-const rowKey = (id: string): string => id.split('-').slice(0, 4).join('-')
+// The rows a pasted picture comes in on: a typed prompt, a slash command's
+// expansion, and the attachment that folds a message sent mid-turn into it.
+const PICTURE_DOORS = ['prompt', 'command', 'attachment'] as const
 
 // Thumbnail height in terminal rows; the width follows the picture's aspect.
 const ROWS = 5
@@ -103,6 +104,22 @@ const deleteOriginal = async ($: EngineInterface, originalPath: string): Promise
   await $.process.run(['/bin/rmdir', folderOf(originalPath)])
 }
 
+// The thumbnail's pixels in other bytes: sips rewrites the resolution tag.
+// The engine sends a picture only when its bytes change, so drawing the twin
+// sends the same pixels again. Undefined when sips fails: the thumbnail is
+// then never sent again, which costs nothing else.
+const makeTwin = async ($: EngineInterface, thumbPath: string, twinPath: string): Promise<string | undefined> => {
+  try {
+    await runOrThrow($, ['/usr/bin/sips', '-s', 'dpiWidth', '73', '-s', 'dpiHeight', '73', thumbPath, '--out', twinPath])
+
+    return await takePng($, twinPath)
+  } catch (error) {
+    $.ui.log(`image-thumbs: no twin for ${thumbPath}: ${String(error)}`, { to: 'debug' })
+
+    return undefined
+  }
+}
+
 // Decodes one pasted image into a private folder of its own under $TMPDIR,
 // kept for the session so the large view can be drawn from the original,
 // and returns its thumbnail; undefined, with the reason in the debug log.
@@ -120,8 +137,9 @@ const makeThumb = async ($: EngineInterface, data: string, n: number): Promise<T
     await runOrThrow($, ['/usr/bin/base64', '-D', '-o', originalPath], data)
     const thumbPath = `${dir}/thumb.png`
     const size = await writePng($, originalPath, thumbPath, { width: THUMB_MAX_WIDTH, height: THUMB_HEIGHT })
+    const twin = await makeTwin($, thumbPath, `${dir}/twin.png`)
 
-    return { png: await takePng($, thumbPath), ...size, n, originalPath }
+    return { png: await takePng($, thumbPath), ...(twin !== undefined && { twin }), ...size, n, originalPath }
   } catch (error) {
     $.ui.log(`image-thumbs: no thumbnail for image #${n}: ${String(error)}`, { to: 'debug' })
     await deleteOriginal($, originalPath)
@@ -189,31 +207,34 @@ export const register: Register = on => {
 
   // Build the thumbnails before the row is stored, so the row's first drawing
   // already has them: a row printed to the terminal's scrollback is not redrawn.
-  on('session.append', { door: 'prompt' }, async ($, e, next) => {
+  on('session.append', { door: PICTURE_DOORS }, async ($, e, next) => {
     const images = e.message.content.filter(isImageBlock)
     if (images.length === 0) {
       return next(e)
     }
     // Claude Code's own numbers, in order, from the row's [Image #n] tags.
     const text = e.message.content.map(block => (block.type === 'text' ? String(block.text) : '')).join('\n')
-    const tags = [...text.matchAll(/\[Image #(\d+)\]/g)].map(match => Number(match[1]))
     const { value: pasted = [] } = await $.state.get(PASTED)
+    const numbers = freshNumbers(text, Math.max(0, ...pasted.map(image => image.n)))
     const made = await Promise.all(
-      images.map((block, index) => makeThumb($, block.source.data, tags[index] ?? pasted.length + index + 1)),
+      numbers.slice(0, images.length).map((n, index) => makeThumb($, images[index]?.source.data ?? '', n)),
     )
     const thumbs = made.filter((thumb): thumb is Thumb => thumb !== undefined)
     if (thumbs.length > 0) {
-      await $.state.set({ ...ROW, id: rowKey(e.uuid) }, thumbs)
-      const added: Pasted[] = thumbs.map(thumb => ({ n: thumb.n ?? 0, originalPath: thumb.originalPath ?? '' }))
+      await Promise.all(thumbs.map(thumb => $.state.set({ ...BY_IMAGE, id: String(thumb.n) }, thumb)))
+      const added: Pasted[] = thumbs.map(({ n, originalPath }) => ({ n, originalPath }))
       await $.state.set(PASTED, [...pasted, ...added])
     }
 
     return next(e)
   })
 
+  // A /clear ends the session too, and the next one may number its pictures
+  // from #1 again.
   on('session.end', async ($, e, next) => {
     const { value: pasted = [] } = await $.state.get(PASTED)
     await Promise.all(pasted.map(image => deleteOriginal($, image.originalPath)))
+    await $.state.set(PASTED, [])
 
     return next(e)
   })
@@ -237,25 +258,31 @@ export const register: Register = on => {
   // pane: a click a Client posts counts as code, and the engine seats a pane
   // code opens only from 144 columns.
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { toggle?: unknown } | null
+    const data = e.data as { toggle?: unknown; resend?: unknown } | null
+    // A click area asking, after its first drawing, for its picture to be
+    // sent again (click-area.ts): the next drawing switches to the other bytes.
+    if (typeof data?.resend === 'number') {
+      const id = String(data.resend)
+      const { value: sends = 0 } = await $.state.get({ ...SENDS, id })
+      await $.state.set({ ...SENDS, id }, sends + 1)
+
+      return {}
+    }
     if (typeof data?.toggle !== 'number') {
       return next(e)
     }
-    const index = data.toggle
-    const key = rowKey(e.requestId)
-    const id = `${key}:${index}`
+    const n = data.toggle
+    const id = String(n)
     const { value: expandedPicture } = await $.state.get({ ...EXPANDED, id })
     if (expandedPicture !== undefined && expandedPicture !== null) {
       await $.state.set({ ...EXPANDED, id }, null)
 
       return {}
     }
-    const { value: thumbs = [] } = await $.state.get({ ...ROW, id: key })
-    const thumb = thumbs[index]
-    if (thumb?.originalPath === undefined) {
+    const { value: thumb } = await $.state.get({ ...BY_IMAGE, id })
+    if (thumb === undefined) {
       return {}
     }
-    const n = thumb.n ?? index + 1
     try {
       await $.state.set({ ...EXPANDED, id }, await largeView($, thumb.originalPath, n))
     } catch (error) {
@@ -269,13 +296,25 @@ export const register: Register = on => {
     if (e.surface !== 'terminal') {
       return next(e)
     }
-    const key = rowKey(e.requestId)
-    const { value: thumbs } = await $.state.get({ ...ROW, id: key })
-    if (thumbs === undefined || thumbs.length === 0) {
+    // By the numbers the row names, not by the row: a slash command's row and
+    // a message sent mid-turn are drawn under ids other than the rows their
+    // pictures came in on. A slash command's row draws before its expansion
+    // brings the pictures; its read here subscribes it, so it redraws when
+    // they are stored.
+    const numbers = imageNumbers(e.props.text)
+    if (numbers.length === 0) {
+      return next(e)
+    }
+    const stored = await Promise.all(numbers.map(async n => (await $.state.get({ ...BY_IMAGE, id: String(n) })).value))
+    const thumbs = stored.filter((thumb): thumb is Thumb => thumb !== undefined)
+    if (thumbs.length === 0) {
       return next(e)
     }
     const expanded = await Promise.all(
-      thumbs.map(async (_, index) => (await $.state.get({ ...EXPANDED, id: `${key}:${index}` })).value ?? null),
+      thumbs.map(async thumb => (await $.state.get({ ...EXPANDED, id: String(thumb.n) })).value ?? null),
+    )
+    const sends = await Promise.all(
+      thumbs.map(async thumb => (await $.state.get({ ...SENDS, id: String(thumb.n) })).value ?? 0),
     )
     const row = await next(e)
     const { Box, Button, Client, Image, Text } = $.ui.resolve(e)
@@ -289,44 +328,40 @@ export const register: Register = on => {
         {row}
         <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginLeft={2}>
           {thumbs.map((thumb, index) => {
-            const n = thumb.n ?? index + 1
-            const originalPath = thumb.originalPath
+            const { n, originalPath } = thumb
             const expandedPicture = expanded[index] ?? null
             const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
-            const png = expandedPicture === null ? thumb.png : expandedPicture.png
+            const isTwin = (sends[index] ?? 0) % 2 === 1 && thumb.twin !== undefined
+            const png = expandedPicture !== null ? expandedPicture.png : isTwin ? (thumb.twin ?? thumb.png) : thumb.png
 
             return (
               <Box flexDirection="column" alignItems="flex-start">
                 <Box borderStyle="round" borderDimColor>
                   <Box>
-                    <Image key={`thumb-${index}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
-                    {originalPath !== undefined && (
-                      <Box position="absolute" top={0} left={0}>
-                        <Client
-                          key={`click-${key}-${index}`}
-                          module="./click-area.ts"
-                          props={{ index }}
-                          width={cells.columns}
-                          height={cells.rows}
-                        />
-                      </Box>
-                    )}
+                    <Image key={`thumb-${n}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
+                    <Box position="absolute" top={0} left={0}>
+                      <Client
+                        key={`click-${n}`}
+                        module="./click-area.ts"
+                        props={{ n }}
+                        width={cells.columns}
+                        height={cells.rows}
+                      />
+                    </Box>
                   </Box>
                 </Box>
-                {originalPath !== undefined && (
-                  <Box flexDirection="row">
-                    <Text dimColor>
-                      #{n} · click the picture to {expandedPicture === null ? 'expand' : 'shrink'} ·{' '}
-                    </Text>
-                    <Button
-                      key={`open-${key}-${index}`}
-                      label="open in pane"
-                      plain
-                      dimColor
-                      onPress={() => openImage($, n, originalPath)}
-                    />
-                  </Box>
-                )}
+                <Box flexDirection="row">
+                  <Text dimColor>
+                    #{n} · click the picture to {expandedPicture === null ? 'expand' : 'shrink'} ·{' '}
+                  </Text>
+                  <Button
+                    key={`open-${n}`}
+                    label="open in pane"
+                    plain
+                    dimColor
+                    onPress={() => openImage($, n, originalPath)}
+                  />
+                </Box>
               </Box>
             )
           })}
