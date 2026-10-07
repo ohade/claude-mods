@@ -495,3 +495,17 @@ test('clearing all steps empties them and keeps the questions', async ($, on) =>
   expect(last?.steps ?? ['not cleared']).toHaveLength(0)
   expect(last?.questions.map(q => q.id)).toEqual([1, 2])
 })
+
+// Ohad, 2026-10-07: a completed step turns green like an answered question, and a line
+// separates the two sections.
+test('a completed step is green, and a separator line divides the sections', async ($, on) => {
+  const done = { ...BOTH, steps: [{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'completed' }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: done, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const texts = await ui.findAll({ type: 'Text' })
+  const step = texts.find(t => String(t.text ?? '').includes('Foo'))
+  expect((step?.props as { color?: string } | undefined)?.color).toBe('success')
+  expect(texts.some(t => /^─{10,}$/.test(String(t.text ?? '')))).toBe(true)
+})

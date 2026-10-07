@@ -822,7 +822,8 @@ export const register: Register = on => {
             </Box>
           )
         })}
-        <Box flexDirection="row" marginTop={1}>
+        <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
+        <Box flexDirection="row">
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
           {l.steps.length > 0 && (
@@ -832,10 +833,10 @@ export const register: Register = on => {
         {steps.length === 0 && (
           <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>
         )}
+        {/* A completed step turns green, as an answered question does. */}
         {steps.map(s => (
-          <Text dimColor={s.status === 'completed'}>
-            {'   '}
-            {s.status === 'completed' ? '◼' : s.status === 'in_progress' ? '◧' : '◻'} {truncate(s.subject, width - 6)}
+          <Text color={s.status === 'completed' ? 'success' : undefined}>
+            {`   ${s.status === 'completed' ? '◼' : s.status === 'in_progress' ? '◧' : '◻'} ${truncate(s.subject, width - 6)}`}
           </Text>
         ))}
         <Box flexDirection="row" marginTop={1}>
