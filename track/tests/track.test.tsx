@@ -322,3 +322,89 @@ test('a subagent TaskCreate is not the user’s step', async ($, on) => {
 
   expect(writes).toHaveLength(0)
 })
+
+// Milestone 5: the diff panel's own rule — git repo, fullscreen, at least 144 columns, and
+// never closed by the person — opens the pane by itself; the ledger outlives the process.
+const REPO = { root: '/repo', remote: null, internal: false, name: 'repo' }
+const hint = (columns: number, isFullscreen: boolean) => ({
+  plugin: 'track',
+  surface: 'terminal' as const,
+  component: 'PromptHint' as const,
+  requestId: 'hint',
+  viewport: { columns, rows: 40, isFullscreen },
+  props: { isDraft: true, isWorking: false, hint: '' },
+})
+
+const autoOpenCase = async (
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  c: { columns: number; isFullscreen: boolean; repo: unknown; closedByPerson: boolean },
+) => {
+  const clock = mock.clock(on)
+  const opens: unknown[] = []
+  on('session.repo', () => ({ value: c.repo as never }))
+  on('store.get', (_, e) => ({ value: e.key === 'closedByPerson' ? c.closedByPerson : undefined }))
+  on('ui.open', (_, e) => {
+    opens.push(e)
+
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Text', props: {}, children: ['hint'] }))
+  await $.ui.mount(hint(c.columns, c.isFullscreen))
+  await clock.advance(500)
+
+  return opens
+}
+
+test('the pane opens by itself in a git repo, fullscreen, at 144+ columns, never closed by hand', async ($, on) => {
+  const opens = await autoOpenCase($, on, { columns: 160, isFullscreen: true, repo: REPO, closedByPerson: false })
+  expect(opens).toHaveLength(1)
+  expect(opens[0]).toMatchObject({ id: 'track' })
+})
+
+for (const [why, c] of [
+  ['under 144 columns', { columns: 120, isFullscreen: true, repo: REPO, closedByPerson: false }],
+  ['outside the fullscreen layout', { columns: 160, isFullscreen: false, repo: REPO, closedByPerson: false }],
+  ['outside a git repository', { columns: 160, isFullscreen: true, repo: null, closedByPerson: false }],
+  ['after the person closed it', { columns: 160, isFullscreen: true, repo: REPO, closedByPerson: true }],
+] as const) {
+  test(`the pane does not open by itself ${why}`, async ($, on) => {
+    expect(await autoOpenCase($, on, { ...c })).toHaveLength(0)
+  })
+}
+
+test('a resumed session gets its saved questions back', async ($, on) => {
+  const saved = { v: 1, savedAt: 1, ledger: OPEN_ONE }
+  const writes: Array<{ questions: QuestionRow[] }> = []
+  on('store.get', (_, e) => ({ value: e.key === 's:S1' ? saved : undefined }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { questions: QuestionRow[] })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+
+  on('classic.SessionStart', () => ({}))
+
+  await $.classic.SessionStart({ hook_event_name: 'SessionStart', source: 'resume', session_id: 'S1', transcript_path: '/t', cwd: '/repo' } as never)
+
+  expect(writes.at(-1)?.questions.map(q => q.id)).toEqual([1])
+})
+
+test('a finished turn saves the ledger under the session id', async ($, on) => {
+  const sets: Array<{ key: string; value: unknown }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))
+  on('session.id', () => ({ value: 'S1' }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', (_, e) => {
+    sets.push(e)
+
+    return { value: undefined }
+  })
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+
+  await $.turn.complete({ answer: 'done', reason: 'answer', turnId: 't1', durationMs: 1, isAborted: false } as never)
+
+  const bucket = sets.find(s => s.key === 's:S1')?.value as { ledger?: { questions: QuestionRow[] } } | undefined
+  expect(bucket?.ledger?.questions.map(q => q.id)).toEqual([1])
+  expect(sets.find(s => s.key === 'sessions')?.value).toEqual(['S1'])
+})

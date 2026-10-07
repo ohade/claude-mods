@@ -57,7 +57,8 @@ export type Turn = { currentId: string | null; gatedTurnId: string | null; compa
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.
-export type Pane = { isOpen: boolean; hidden: boolean; closedByPerson: boolean }
+// `autoOpenDone`: this session already judged the auto-open rule, so prompt redraws stop asking.
+export type Pane = { isOpen: boolean; hidden: boolean; closedByPerson: boolean; autoOpenDone?: true }
 
 declare module 'claude-code' {
   interface PluginState {

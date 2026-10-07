@@ -14,6 +14,13 @@ const SCROLL_AFTER_MS = 150
 const REWIND_CHECK_DELAY_MS = 1000
 const REWIND_CHECK_GAP_MS = 3000
 const rewindCheck = { isScheduled: false, lastAt: -Infinity }
+// The built-in diff panel's rule: it opens by itself only from this width, in the fullscreen
+// layout, in a git repository, and never after the person closed it by hand.
+const AUTO_OPEN_MIN_COLUMNS = 144
+const AUTO_OPEN_DELAY_MS = 50
+const autoOpen = { isScheduled: false }
+// Saved ledgers kept across sessions, newest first; older buckets are deleted.
+const MAX_SESSIONS = 20
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
@@ -166,6 +173,45 @@ const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
     withdrawn: [...(cur.withdrawn ?? []), { id, head: q.head }],
   }))
   $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
+}
+
+// Called from a prompt redraw, which only draws: the cheap viewport test runs here, and the
+// store read, the git read and the open run from a timer, where state may be written.
+const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number; isFullscreen?: boolean } | undefined): Promise<void> => {
+  if (autoOpen.isScheduled || viewport?.isFullscreen !== true || (viewport.columns ?? 0) < AUTO_OPEN_MIN_COLUMNS) {
+    return
+  }
+  const p = await read($, pane)
+  if (p.isOpen || p.hidden || p.autoOpenDone === true) {
+    return
+  }
+  autoOpen.isScheduled = true
+  $.clock.after(AUTO_OPEN_DELAY_MS, () => {
+    void (async () => {
+      const closedByPerson = (await $.store.get('closedByPerson')) === true
+      const inRepo = !closedByPerson && (await $.session.repo()) !== null
+      if (closedByPerson || !inRepo) {
+        await update($, pane, cur => ({ ...cur, closedByPerson, autoOpenDone: true as const }))
+      } else {
+        await openPane($)
+        await update($, pane, cur => ({ ...cur, autoOpenDone: true as const }))
+      }
+    })().finally(() => {
+      autoOpen.isScheduled = false
+    })
+  })
+}
+
+// The ledger survives the process: one bucket per session id, the newest MAX_SESSIONS kept.
+const saveLedger = async ($: EngineInterface): Promise<void> => {
+  const id = await $.session.id()
+  await $.store.set(`s:${id}`, { v: 1, savedAt: Date.now(), ledger: await read($, ledger) })
+  const known = await $.store.get('sessions')
+  const sessions = [id, ...(Array.isArray(known) ? known.filter((s): s is string => typeof s === 'string' && s !== id) : [])]
+  for (const old of sessions.slice(MAX_SESSIONS)) {
+    await $.store.delete(`s:${old}`)
+  }
+  await $.store.set('sessions', sessions.slice(0, MAX_SESSIONS))
 }
 
 const openPane = async ($: EngineInterface): Promise<boolean> => {
@@ -337,6 +383,7 @@ export const register: Register = on => {
   })
 
   // An interrupted turn leaves its questions open and tags them, so the pane shows why.
+  // Each finished main-loop turn also saves the ledger, so /resume finds it.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined && e.reason === 'aborted') {
       await update($, ledger, l => ({
@@ -344,8 +391,12 @@ export const register: Register = on => {
         questions: l.questions.map(q => (q.status === 'open' && q.turnId === e.turnId ? { ...q, interrupted: true as const } : q)),
       }))
     }
+    const done = await next(e)
+    if (e.agentId === undefined) {
+      await saveLedger($)
+    }
 
-    return next(e)
+    return done
   })
 
   // The drawn row's requestId is the authoritative jump target: match it to the prompt by row
@@ -562,6 +613,7 @@ export const register: Register = on => {
       return { text: 'Track pane hidden for this session. /track shows it again.' }
     }
     await update($, pane, cur => ({ ...cur, hidden: false, closedByPerson: false }))
+    await $.store.set('closedByPerson', false)
     const placed = await openPane($)
 
     return { text: placed ? 'Track pane opened.' : 'Track pane could not be placed.' }
@@ -572,6 +624,10 @@ export const register: Register = on => {
     if (closed.deny === undefined && e.id === PANE) {
       const byPerson = e.origin.kind === 'person'
       await update($, pane, cur => ({ ...cur, isOpen: false, closedByPerson: cur.closedByPerson || byPerson }))
+      if (byPerson) {
+        // The persistent off, as the diff panel's: later sessions do not auto-open it.
+        await $.store.set('closedByPerson', true)
+      }
     }
 
     return closed
@@ -591,6 +647,37 @@ export const register: Register = on => {
           await dropRewound($)
         })()
       })
+    }
+    await scheduleAutoOpen($, e.viewport)
+
+    return next(e)
+  })
+
+  // Not every build draws every prompt site, so the band above the prompt reports the layout too.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    await scheduleAutoOpen($, e.viewport)
+
+    return next(e)
+  })
+
+  on('classic.SessionStart', async ($, e, next) => {
+    if (e.source === 'resume') {
+      const saved = (await $.store.get(`s:${e.session_id}`)) as { ledger?: Ledger } | undefined
+      if (saved?.ledger !== undefined && Array.isArray(saved.ledger.questions)) {
+        const restored = saved.ledger
+        await update<Ledger>($, ledger, () => restored)
+      }
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Save the ledger at the end of the session; /clear starts a fresh one.
+  on('session.end', async ($, e, next) => {
+    await saveLedger($)
+    if (e.reason === 'clear') {
+      await update<Ledger>($, ledger, () => EMPTY_LEDGER)
+      await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
     }
 
     return next(e)
