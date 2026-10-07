@@ -583,9 +583,11 @@ export const register: Register = on => {
     return done
   })
 
-  // The drawn row's requestId is the authoritative jump target: match it to the prompt by row
-  // key, else to the first prompt still without one (rows render in append order). State is
-  // written after the draw, from a timer, because a write during a render is refused.
+  // The drawn row's requestId is the authoritative jump target, linked to the prompt whose row key
+  // it carries and to no other. Observed 2026-10-07 (session 68a12838): a fallback that gave an
+  // unmatched row (the engine's `placeholder`, a redraw of an older prompt) to the first prompt
+  // still unlinked sent [ Q ] of the third prompt to the first. A later draw of the right row
+  // repairs a wrong link. State is written from a timer: a write during a render is refused.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const drawn = await next(e)
     if (e.surface !== 'terminal' || e.props.origin.kind !== 'composer') {
@@ -597,15 +599,16 @@ export const register: Register = on => {
     const row = level > 0 ? <Box backgroundColor={shade(level)}>{drawn}</Box> : drawn
     const l = await read($, ledger)
     const key = rowKey(e.requestId)
-    const target = l.prompts.find(p => p.requestId === undefined && p.rowKey === key) ?? l.prompts.find(p => p.requestId === undefined)
-    if (target === undefined || target.requestId === e.requestId) {
+    const isLinked = (requestId: string | undefined) => requestId === e.requestId
+    const stale = l.prompts.some(p => p.rowKey === key && !isLinked(p.requestId)) || l.questions.some(q => q.rowKey === key && !isLinked(q.askedRequestId))
+    if (!stale) {
       return row
     }
     $.clock.after(0, () => {
       void update($, ledger, cur => ({
         ...cur,
-        prompts: cur.prompts.map(p => (p.rowKey === target.rowKey && p.requestId === undefined ? { ...p, requestId: e.requestId } : p)),
-        questions: cur.questions.map(q => (q.rowKey === target.rowKey && q.askedRequestId === undefined ? { ...q, askedRequestId: e.requestId } : q)),
+        prompts: cur.prompts.map(p => (p.rowKey === key ? { ...p, requestId: e.requestId } : p)),
+        questions: cur.questions.map(q => (q.rowKey === key ? { ...q, askedRequestId: e.requestId } : q)),
       }))
     })
 
@@ -1073,7 +1076,8 @@ export const register: Register = on => {
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined
-          const askedAt = q.askedRequestId
+          // A link to another prompt's row (stored before the 2026-10-07 fix) offers no jump.
+          const askedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
           const answerAt = q.answerRequestId
 
           // The dot is a column of its own and the question a wrapping column beside it, so a

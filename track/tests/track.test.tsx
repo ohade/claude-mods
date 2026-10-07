@@ -1066,3 +1066,69 @@ test('turns, a background agent and its notification drive the banner state', as
   await $.prompt.submit({ text: '<task-notification><task-id>ag1</task-id><status>completed</status></task-notification>', origin: { kind: 'task-notification' } } as never)
   expect(activity.background).toEqual([])
 })
+
+// Observed 2026-10-07 (Ohad, session 68a12838): [ Q ] on Q2 ("2+2") jumped to the first "1+1"
+// prompt. The saved ledger showed prompt 1 linked to the engine's `placeholder` row, and prompts
+// 2 and 3 both linked to prompt 1's row: a drawn row that matched no prompt went to the first
+// prompt still unlinked. A prompt is linked only to the row drawn under its own id.
+const A = '3f6ecc74-f6f0-45c2-908e'
+const B = 'ef24fc1c-0e37-4159-9281'
+const C = '13fd2a23-6943-4a0e-96e9'
+const THREE_PROMPTS = {
+  v: 1,
+  nextQuestionId: 3,
+  steps: [],
+  prompts: [A, B, C].map((rowKey, i) => ({ rowKey, head: `prompt ${i + 1}`, turnId: `t${i + 1}`, at: i })),
+  questions: [{ id: 2, head: '2+2?', at: 3, rowKey: C, turnId: 't3', status: 'answered' }],
+}
+
+const drawPrompts = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], ledger: unknown, requestIds: string[]) => {
+  const clock = mock.clock(on)
+  let current = ledger
+  let version = 1
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: current, version } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    current = e.value
+    version += 1
+
+    return { value: { isSet: true as const, version } }
+  })
+  on('state.get', { plugin: 'track', key: 'flash' }, () => ({ value: { value: 0, version: 1 } }))
+  on('ui.render', { component: 'UserMessage' }, () => ({ type: 'Text', props: {}, children: ['a prompt'] }))
+  // Each id is drawn and taken down again, as the transcript redraws a row.
+  for (const requestId of requestIds) {
+    const ui = await $.ui.mount(userRow(requestId) as never)
+    await clock.advance(10)
+    await ui.unmount()
+  }
+
+  return current as typeof THREE_PROMPTS & { prompts: Array<{ rowKey: string; requestId?: string }>; questions: Array<{ askedRequestId?: string }> }
+}
+
+test('a drawn row links only the prompt with its own id; a placeholder or another row links none', async ($, on) => {
+  const ledger = await drawPrompts($, on, THREE_PROMPTS, ['placeholder', `${A}-980eda5aad4b`, `${A}-980eda5aad4b`, `${C}-a6e9b0000001`])
+
+  expect(ledger.prompts.map(p => p.requestId)).toEqual([`${A}-980eda5aad4b`, undefined, `${C}-a6e9b0000001`])
+  expect(ledger.questions[0]?.askedRequestId).toBe(`${C}-a6e9b0000001`)
+})
+
+test('a question linked to the wrong row is repaired when its own prompt row is drawn', async ($, on) => {
+  const wrong = {
+    ...THREE_PROMPTS,
+    prompts: THREE_PROMPTS.prompts.map(p => ({ ...p, requestId: `${A}-980eda5aad4b` })),
+    questions: [{ ...THREE_PROMPTS.questions[0], askedRequestId: `${A}-980eda5aad4b` }],
+  }
+  const ledger = await drawPrompts($, on, wrong, [`${C}-a6e9b0000001`])
+
+  expect(ledger.prompts.find(p => p.rowKey === C)?.requestId).toBe(`${C}-a6e9b0000001`)
+  expect(ledger.questions[0]?.askedRequestId).toBe(`${C}-a6e9b0000001`)
+})
+
+test('[ Q ] is not offered for a question whose stored row is another prompt\'s', async ($, on) => {
+  const wrong = { ...ANSWERED, questions: [{ ...ANSWERED.questions[0], rowKey: C, askedRequestId: `${A}-980eda5aad4b` }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: wrong, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  expect((await ui.findAll({ type: 'Button' })).find(b => b.key === 'q-1')).toBeUndefined()
+})
