@@ -1204,3 +1204,29 @@ test('the pulse ticks only while a step is in progress and the session or its ag
   expect(whileWorking).toBeGreaterThanOrEqual(2)
   expect(ticks.length).toBe(afterIdle)
 })
+
+// Ohad, 2026-10-07: the pane is titled Session Tracker, and the banner sits just above Steps,
+// under the line that ends the questions, not at the top of the pane.
+test('the pane opens as Session Tracker, its title on the first line', async ($, on) => {
+  const opens = await autoOpenCase($, on, { columns: 160, isFullscreen: true, repo: null, closedByPerson: false })
+  expect(opens[0]).toMatchObject({ id: 'track', title: 'Session Tracker' })
+})
+
+test('the first line of the pane is the Session Tracker title', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts[0]).toBe('Session Tracker')
+})
+
+test('the banner sits between the questions and the Steps header', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  const banner = texts.findIndex(t => /Safe to close|Working|Waiting on/.test(t))
+  const questions = texts.findIndex(t => t.startsWith('Questions'))
+  const steps = texts.findIndex(t => t.startsWith('Steps'))
+  expect(questions).toBeGreaterThanOrEqual(0)
+  expect(banner).toBeGreaterThan(questions)
+  expect(banner).toBeLessThan(steps)
+})

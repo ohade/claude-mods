@@ -27,7 +27,7 @@ Check it with `claude plugin validate image-thumbs`, and type-check it with `tsc
 
 ## track
 
-A pane beside the transcript that keeps the session's register: the questions you asked and
+A pane beside the transcript, titled Session Tracker, that keeps the session's register: the questions you asked and
 where each was answered, and the steps the model set itself, each with a completion ring.
 
 - **Questions.** The model sends each question to the pane with `track_question` and closes it
@@ -38,7 +38,7 @@ where each was answered, and the steps the model set itself, each with a complet
   on lights up and fades out over about two seconds: your prompt, or the answer's last text row and
   the `✓ Q<n> answered` line under it. The digits 1–9 press the jumps while the pane has focus
   (ctrl+x tab).
-- **Banner.** A colored line at the top says where the session stands: Working, Waiting on agents
+- **Banner.** A colored line just above the steps says where the session stands: Working, Waiting on agents
   (an Agent call, or background agents and shell tasks still running), Waiting on you (a question
   dialog, or open questions and unfinished steps after the turn), or Safe to close.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved

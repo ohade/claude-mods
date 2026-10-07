@@ -4,6 +4,9 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Activity, Ledger, Pane, Prompt, Question, Step, Turn } from '../types'
 
 const PANE = 'track'
+// The pane's name (Ohad, 2026-10-07): its tab label, and its first line, since a lone pane shows
+// no tab.
+const TITLE = 'Session Tracker'
 const PANE_COLUMNS = 48
 // Rows the pane asks for when it sits inline above the prompt (main screen or narrow terminal).
 const PANE_ROWS = 16
@@ -368,7 +371,7 @@ const clearSteps = async ($: EngineInterface): Promise<void> => {
 }
 
 const openPane = async ($: EngineInterface): Promise<boolean> => {
-  const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS, rows: PANE_ROWS })
+  const opened = await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: PANE_ROWS })
   await update($, pane, p => ({ ...p, isOpen: opened.isPlaced }))
   if (!opened.isPlaced) {
     $.ui.toast(`track: the pane did not open — ${opened.reason}`)
@@ -1082,9 +1085,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Box marginBottom={1}>
-          <Text backgroundColor={shown.color} color="inverseText" bold>
-            {state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text}
-          </Text>
+          <Text bold>{TITLE}</Text>
         </Box>
         <Box flexDirection="row">
           <Text bold>Questions </Text>
@@ -1144,6 +1145,12 @@ export const register: Register = on => {
           )
         })}
         <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
+        {/* The banner sits just above the steps it reports on (Ohad, 2026-10-07). */}
+        <Box marginBottom={1}>
+          <Text backgroundColor={shown.color} color="inverseText" bold>
+            {state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text}
+          </Text>
+        </Box>
         <Box flexDirection="row">
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
