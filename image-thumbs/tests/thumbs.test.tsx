@@ -128,7 +128,17 @@ const savedName = (secondsAgo: number, id: string) => {
 
 // The disk as standInForDisk has it, with these pasted pictures saved in the
 // temp folder; the copies the mod makes of them are recorded in `copied`.
-const standInForSavedPictures = (on: On, saved: string[], copied: string[]) => {
+// The session's own folder is found, and holds images/<n>.png for `inFolder`.
+const standInForSavedPictures = (on: On, saved: string[], copied: string[], inFolder: number[] = []) => {
+  on('session.id', () => ({ value: 'session-folder' }))
+  on('fs.stat', (_, e) => {
+    const n = Number(/\/session-folder\/images\/(\d+)\.png$/.exec(e.path)?.[1])
+    if (!inFolder.includes(n)) {
+      throw new Error(`no such file: ${e.path}`)
+    }
+
+    return { value: { kind: 'file' as const, size: 1000, mtimeMs: 0, isLink: false } }
+  })
   on('process.run', (_, e) => {
     if (e.argv[0] === '/bin/cp') {
       copied.push(e.argv[1] ?? '')
@@ -136,9 +146,13 @@ const standInForSavedPictures = (on: On, saved: string[], copied: string[]) => {
     const stdout =
       e.argv[0] === '/usr/bin/getconf'
         ? '/private/tmp/tmpdir/\n'
-        : e.argv[0] === '/usr/bin/find'
-          ? saved.map(path => `${path}\n`).join('')
-          : e.argv.includes('-g')
+        : e.argv[0] === '/usr/bin/id'
+          ? '501\n'
+          : e.argv[0] === '/usr/bin/find' && e.argv.includes('clipboard-*')
+            ? saved.map(path => `${path}\n`).join('')
+            : e.argv[0] === '/usr/bin/find'
+              ? '/private/tmp/claude-501/-Users-me-git/session-folder\n'
+              : e.argv.includes('-g')
             ? 'pixelWidth: 64\npixelHeight: 32\n'
             : e.argv[0] === '/usr/bin/mktemp'
               ? '/private/tmp/thumbs-test\n'
@@ -175,6 +189,21 @@ test("a slash command's row draws the picture pasted into it, before any row bri
 
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
   expect(copied).toEqual([savedName(2, '6524ECCF')])
+})
+
+test("a picture pasted from the clipboard is drawn from the session's images folder, by its number", async ($, on) => {
+  const copied: string[] = []
+  // A clipboard paste is saved as <session folder>/images/<n>.png; no
+  // clipboard-* file is written for it.
+  standInForSavedPictures(on, [], copied, [5])
+
+  await settle(
+    $.command.run({ command: 'recall', args: 'test [Image #5]', origin: { kind: 'composer' }, presentation: PRESENTATION }),
+  )
+  const ui = await $.ui.mount(userMessage('/recall test [Image #5]'))
+
+  expect(copied).toEqual(['/private/tmp/claude-501/-Users-me-git/session-folder/images/5.png'])
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
 })
 
 test('a prompt sent while Claude works draws its picture from the file saved when it was pasted', async ($, on) => {

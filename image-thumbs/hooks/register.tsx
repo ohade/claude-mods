@@ -293,6 +293,27 @@ const pickFiles = (pastedAt: (number | undefined)[], saved: Saved[], since: numb
   return picked
 }
 
+// A picture pasted from the clipboard is saved under the session's own folder
+// as /private/tmp/claude-<uid>/<project>/<session id>/images/<n>.png, by its
+// number; a picture pasted as a file (a screenshot tool's) is not, and is
+// matched to a clipboard-* file instead. Undefined when there is no folder.
+const sessionImages = async ($: EngineInterface): Promise<string | undefined> => {
+  const uid = (await runOrThrow($, ['/usr/bin/id', '-u'])).trim()
+  const id = await $.session.id()
+  const found = await runOrThrow($, ['/usr/bin/find', `/private/tmp/claude-${uid}`, '-maxdepth', '2', '-type', 'd', '-name', id])
+  const [folder] = found.split('\n').filter(line => line !== '')
+
+  return folder === undefined ? undefined : `${folder}/images`
+}
+
+const isFile = async ($: EngineInterface, path: string): Promise<boolean> => {
+  try {
+    return (await $.fs.stat(path)).kind === 'file'
+  } catch {
+    return false
+  }
+}
+
 // At submit, before any row of the prompt exists: builds the thumbnails of
 // the pictures `text` names that are not built yet, from their saved files.
 const storeSavedThumbs = async ($: EngineInterface, text: string): Promise<void> => {
@@ -304,21 +325,41 @@ const storeSavedThumbs = async ($: EngineInterface, text: string): Promise<void>
   if (wanted.length === 0) {
     return
   }
-  let saved: Saved[]
-  try {
-    saved = await savedPictures($)
-  } catch (error) {
-    $.ui.log(`image-thumbs: no saved pictures listed: ${String(error)}`, { to: 'debug' })
+  const images = await sessionImages($).catch((error: unknown) => {
+    $.ui.log(`image-thumbs: no session folder found: ${String(error)}`, { to: 'debug' })
 
-    return
+    return undefined
+  })
+  const inFolder = await Promise.all(
+    wanted.map(async n => {
+      const path = images === undefined ? undefined : `${images}/${n}.png`
+
+      return path !== undefined && (await isFile($, path)) ? path : undefined
+    }),
+  )
+  let saved: Saved[] = []
+  if (inFolder.includes(undefined)) {
+    try {
+      saved = await savedPictures($)
+    } catch (error) {
+      $.ui.log(`image-thumbs: no saved pictures listed: ${String(error)}`, { to: 'debug' })
+    }
   }
   const { value: used = [] } = await $.state.get(USED)
-  const pastedAt = await Promise.all(wanted.map(async n => (await $.state.get({ ...PASTED_AT, id: String(n) })).value))
-  const files = pickFiles(
+  // The numbers without a file in the folder, matched to clipboard-* files.
+  const needing = wanted.flatMap((_, index) => (inFolder[index] === undefined ? [index] : []))
+  const pastedAt = await Promise.all(
+    needing.map(async index => (await $.state.get({ ...PASTED_AT, id: String(wanted[index]) })).value),
+  )
+  const matched = pickFiles(
     pastedAt,
     saved.filter(file => !used.includes(file.path)),
     since,
   )
+  const files = [...inFolder]
+  needing.forEach((index, order) => {
+    files[index] = matched[order]
+  })
   const made = await Promise.all(
     wanted.map((n, index) => {
       const file = files[index]
