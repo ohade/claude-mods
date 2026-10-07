@@ -1120,11 +1120,19 @@ export const register: Register = on => {
           : row >= regions.sTop && row < regions.sBottom
             ? 'steps'
             : undefined
+    // TEMP probe (2026-10-07, "scroll is stuck"): the last 30 ticks and where they went.
+    const before = await read($, scrollAt)
     if (region !== undefined) {
       regions.last = region
       const from = region === 'questions' ? regions.qStart : regions.sStart
       await update($, scrollAt, cur => ({ ...cur, [region]: Math.max(0, (cur[region] ?? from) + e.by) }))
     }
+    const probe = await $.store.get('scrollProbe')
+    const ticks = Array.isArray(probe) ? probe : []
+    await $.store.set('scrollProbe', [
+      ...ticks.slice(-29),
+      { at: Date.now(), pointer: e.pointer ?? null, by: e.by, offset: e.offset, bodyRows: e.bodyRows, contentRows: e.contentRows, region: region ?? null, regions: { ...regions }, before, after: await read($, scrollAt) },
+    ])
 
     return next({ ...e, offset: 0 })
   })
