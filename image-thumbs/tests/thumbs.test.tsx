@@ -10,12 +10,9 @@ import { expect, test } from 'claude-code/testing'
 
 // A 4x2 PNG: what the Image draws, whatever size the record says.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAEElEQVR4nGM4kWIERwzIHACS+grxS06IwAAAAABJRU5ErkJggg=='
-// The same pixels with a resolution chunk added: other bytes.
-const TWIN =
-  'iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAACXBIWXMAAAs6AAALOgFkf1cNAAAAEElEQVR4nGM4kWIERwzIHACS+grxS06IwAAAAABJRU5ErkJggg=='
 
 // A 64x32 picture: 5 rows in a 94-column room are 21 columns wide.
-const thumb = (n: number) => ({ png: PNG, twin: TWIN, width: 64, height: 32, n, originalPath: `/private/tmp/thumbs-test/${n}` })
+const thumb = (n: number) => ({ png: PNG, width: 64, height: 32, n, originalPath: `/private/tmp/thumbs-test/${n}` })
 
 // Rows drawn under ids the mod never saw: it finds a picture by the number
 // the row's text names, not by the row.
@@ -79,18 +76,24 @@ test('a message sent while Claude works draws its thumbnail', async ($, on) => {
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #4]' })
 })
 
-test('a thumbnail is sent again once, as its twin, shortly after it first draws', async ($, on) => {
+test('a thumbnail frame lights up once shortly after it first draws, and the picture is not sent again', async ($, on) => {
   storeThumbs(on, [1])
 
   const ui = await $.ui.mount(userMessage('look at this [Image #1]'))
-  expect((await ui.find({ type: 'Image' }))?.props.source).toEqual({ png: PNG })
+  const frame = async () => (await ui.findAll({ type: 'Box' })).find(box => box.props.borderStyle === 'round')?.props
+  expect(await frame()).toMatchObject({ borderDimColor: true })
+
+  // The border cells on the picture's rows change, so the terminal paints those rows again.
+  await ui.advance(300)
+  expect(await frame()).toMatchObject({ borderDimColor: false })
 
   await ui.advance(300)
-  expect((await ui.find({ type: 'Image' }))?.props.source).toEqual({ png: TWIN })
+  expect(await frame()).toMatchObject({ borderDimColor: true })
 
-  // Once: later frames do not send it again.
+  // Once, and the picture's bytes never change: sending them again is what can blank it.
   await ui.advance(1000)
-  expect((await ui.find({ type: 'Image' }))?.props.source).toEqual({ png: TWIN })
+  expect(await frame()).toMatchObject({ borderDimColor: true })
+  expect((await ui.find({ type: 'Image' }))?.props.source).toEqual({ png: PNG })
 })
 
 test('a click on the picture expands it in place and a second click shrinks it', async ($, on) => {

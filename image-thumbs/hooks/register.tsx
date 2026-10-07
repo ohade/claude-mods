@@ -7,13 +7,26 @@ const BY_IMAGE = { plugin: 'image-thumbs', key: 'byImage' } as const
 const SHOWN = { plugin: 'image-thumbs', key: 'shown' } as const
 const PASTED = { plugin: 'image-thumbs', key: 'pasted' } as const
 const EXPANDED = { plugin: 'image-thumbs', key: 'expanded' } as const
-const SENDS = { plugin: 'image-thumbs', key: 'sends' } as const
+const REPAINTS = { plugin: 'image-thumbs', key: 'repaints' } as const
 
 const PANE = 'image-view'
 
-// The rows a pasted picture comes in on: a typed prompt, a slash command's
-// expansion, and the attachment that folds a message sent mid-turn into it.
+// The rows that carry a pasted picture among their blocks: a typed prompt and
+// a slash command's expansion. A message sent mid-turn comes in by the
+// delivery door instead, without its pictures (see the delivery hook).
 const PICTURE_DOORS = ['prompt', 'command', 'attachment'] as const
+
+// TEMPORARY (2026-10-07): a log of the rows that name or carry a picture, by
+// door, to find where a slash command's pictures come in. Remove once known.
+const probeLines: string[] = []
+const probe = async ($: EngineInterface, record: Record<string, unknown>): Promise<void> => {
+  probeLines.push(JSON.stringify({ at: new Date().toISOString(), ...record }))
+  try {
+    await $.fs.write(`/tmp/image-thumbs-probe-${await $.session.id()}.log`, `${probeLines.slice(-200).join('\n')}\n`)
+  } catch (error) {
+    $.ui.log(`image-thumbs: probe not written: ${String(error)}`, { to: 'debug' })
+  }
+}
 
 // Thumbnail height in terminal rows; the width follows the picture's aspect.
 const ROWS = 5
@@ -31,11 +44,15 @@ type ImageBlock = {
   source: { type: 'base64'; media_type?: string; data: string }
 }
 
-const isImageBlock = (block: { type: string; [field: string]: unknown }): block is ImageBlock => {
+type Block = { type: string; [field: string]: unknown }
+
+const isImageBlock = (block: Block): block is ImageBlock => {
   const source = block.source as { type?: string; data?: unknown } | undefined
 
   return block.type === 'image' && source?.type === 'base64' && typeof source.data === 'string'
 }
+
+const textOf = (blocks: Block[]): string => blocks.map(block => (block.type === 'text' ? String(block.text) : '')).join('\n')
 
 // Pictures: decoding pasted bytes to disk, resizing with macOS sips, and
 // deleting what is no longer needed. They stay in this file because the
@@ -104,22 +121,6 @@ const deleteOriginal = async ($: EngineInterface, originalPath: string): Promise
   await $.process.run(['/bin/rmdir', folderOf(originalPath)])
 }
 
-// The thumbnail's pixels in other bytes: sips rewrites the resolution tag.
-// The engine sends a picture only when its bytes change, so drawing the twin
-// sends the same pixels again. Undefined when sips fails: the thumbnail is
-// then never sent again, which costs nothing else.
-const makeTwin = async ($: EngineInterface, thumbPath: string, twinPath: string): Promise<string | undefined> => {
-  try {
-    await runOrThrow($, ['/usr/bin/sips', '-s', 'dpiWidth', '73', '-s', 'dpiHeight', '73', thumbPath, '--out', twinPath])
-
-    return await takePng($, twinPath)
-  } catch (error) {
-    $.ui.log(`image-thumbs: no twin for ${thumbPath}: ${String(error)}`, { to: 'debug' })
-
-    return undefined
-  }
-}
-
 // Decodes one pasted image into a private folder of its own under $TMPDIR,
 // kept for the session so the large view can be drawn from the original,
 // and returns its thumbnail; undefined, with the reason in the debug log.
@@ -137,9 +138,8 @@ const makeThumb = async ($: EngineInterface, data: string, n: number): Promise<T
     await runOrThrow($, ['/usr/bin/base64', '-D', '-o', originalPath], data)
     const thumbPath = `${dir}/thumb.png`
     const size = await writePng($, originalPath, thumbPath, { width: THUMB_MAX_WIDTH, height: THUMB_HEIGHT })
-    const twin = await makeTwin($, thumbPath, `${dir}/twin.png`)
 
-    return { png: await takePng($, thumbPath), ...(twin !== undefined && { twin }), ...size, n, originalPath }
+    return { png: await takePng($, thumbPath), ...size, n, originalPath }
   } catch (error) {
     $.ui.log(`image-thumbs: no thumbnail for image #${n}: ${String(error)}`, { to: 'debug' })
     await deleteOriginal($, originalPath)
@@ -183,6 +183,24 @@ const openImage = async ($: EngineInterface, n: number, originalPath: string): P
   }
 }
 
+// Builds and stores the thumbnails of a row's own pictures: those its text
+// names past the last number seen, in order, matched to `images` in order.
+const storeThumbs = async ($: EngineInterface, text: string, images: ImageBlock[]): Promise<number[]> => {
+  const { value: pasted = [] } = await $.state.get(PASTED)
+  const numbers = freshNumbers(text, Math.max(0, ...pasted.map(image => image.n)))
+  const made = await Promise.all(
+    numbers.slice(0, images.length).map((n, index) => makeThumb($, images[index]?.source.data ?? '', n)),
+  )
+  const thumbs = made.filter((thumb): thumb is Thumb => thumb !== undefined)
+  if (thumbs.length > 0) {
+    await Promise.all(thumbs.map(thumb => $.state.set({ ...BY_IMAGE, id: String(thumb.n) }, thumb)))
+    const added: Pasted[] = thumbs.map(({ n, originalPath }) => ({ n, originalPath }))
+    await $.state.set(PASTED, [...pasted, ...added])
+  }
+
+  return numbers
+}
+
 // The largest box of cells inside `room` that keeps the picture's aspect.
 const fitCells = (size: Size, room: { columns: number; rows: number }): { columns: number; rows: number } => {
   const columns = Math.min(room.columns, Math.round((room.rows * CELL_ASPECT * size.width) / size.height), 255)
@@ -213,20 +231,58 @@ export const register: Register = on => {
       return next(e)
     }
     // Claude Code's own numbers, in order, from the row's [Image #n] tags.
-    const text = e.message.content.map(block => (block.type === 'text' ? String(block.text) : '')).join('\n')
-    const { value: pasted = [] } = await $.state.get(PASTED)
-    const numbers = freshNumbers(text, Math.max(0, ...pasted.map(image => image.n)))
-    const made = await Promise.all(
-      numbers.slice(0, images.length).map((n, index) => makeThumb($, images[index]?.source.data ?? '', n)),
-    )
-    const thumbs = made.filter((thumb): thumb is Thumb => thumb !== undefined)
-    if (thumbs.length > 0) {
-      await Promise.all(thumbs.map(thumb => $.state.set({ ...BY_IMAGE, id: String(thumb.n) }, thumb)))
-      const added: Pasted[] = thumbs.map(({ n, originalPath }) => ({ n, originalPath }))
-      await $.state.set(PASTED, [...pasted, ...added])
-    }
+    const numbers = await storeThumbs($, textOf(e.message.content), images)
+    await probe($, { hook: 'picture-row', door: e.door, images: images.length, numbers })
 
     return next(e)
+  })
+
+  // A message sent while Claude works comes in by the delivery door, as a
+  // queued_command attachment, and the engine hands this hook an attachment's
+  // text alone. Once the row is kept, the conversation the next request is
+  // built from carries its pictures, so they are read back from there.
+  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+    const row = await next(e)
+    const text = textOf(e.message.content)
+    const [first] = imageNumbers(text)
+    if (first === undefined) {
+      return row
+    }
+    const messages = await $.session.messages({ as: 'api' })
+    const message = messages.findLast(one => one.role === 'user' && textOf(one.content).includes(`[Image #${first}]`))
+    const images = (message?.content ?? []).filter(isImageBlock)
+    // The newest pictures are the message's last ones.
+    const numbers = await storeThumbs($, text, images.slice(-imageNumbers(text).length))
+    await probe($, {
+      hook: 'delivery',
+      name: e.message.name,
+      numbers,
+      found: images.length,
+      blocks: message?.content.map(block => block.type),
+    })
+
+    return row
+  })
+
+  // TEMPORARY probe: every row that names or carries a picture, by door.
+  on('session.append', async ($, e, next) => {
+    const row = await next(e)
+    const blocks = e.message.content
+    const images = blocks.filter(isImageBlock).length
+    if (images > 0 || imageNumbers(textOf(blocks)).length > 0) {
+      await probe($, {
+        hook: 'any-row',
+        door: e.door,
+        type: e.message.type,
+        name: e.message.name,
+        isMeta: e.message.isMeta,
+        blocks: blocks.map(block => block.type),
+        images,
+        text: textOf(blocks).slice(0, 80),
+      })
+    }
+
+    return row
   })
 
   // A /clear ends the session too, and the next one may number its pictures
@@ -258,13 +314,13 @@ export const register: Register = on => {
   // pane: a click a Client posts counts as code, and the engine seats a pane
   // code opens only from 144 columns.
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { toggle?: unknown; resend?: unknown } | null
-    // A click area asking, after its first drawing, for its picture to be
-    // sent again (click-area.ts): the next drawing switches to the other bytes.
-    if (typeof data?.resend === 'number') {
-      const id = String(data.resend)
-      const { value: sends = 0 } = await $.state.get({ ...SENDS, id })
-      await $.state.set({ ...SENDS, id }, sends + 1)
+    const data = e.data as { toggle?: unknown; repaint?: unknown } | null
+    // A click area asking, after its first drawing, for its frame to light up
+    // or go back (click-area.ts): an odd count draws the border lit.
+    if (typeof data?.repaint === 'number') {
+      const id = String(data.repaint)
+      const { value: repaints = 0 } = await $.state.get({ ...REPAINTS, id })
+      await $.state.set({ ...REPAINTS, id }, repaints + 1)
 
       return {}
     }
@@ -313,8 +369,8 @@ export const register: Register = on => {
     const expanded = await Promise.all(
       thumbs.map(async thumb => (await $.state.get({ ...EXPANDED, id: String(thumb.n) })).value ?? null),
     )
-    const sends = await Promise.all(
-      thumbs.map(async thumb => (await $.state.get({ ...SENDS, id: String(thumb.n) })).value ?? 0),
+    const repaints = await Promise.all(
+      thumbs.map(async thumb => (await $.state.get({ ...REPAINTS, id: String(thumb.n) })).value ?? 0),
     )
     const row = await next(e)
     const { Box, Button, Client, Image, Text } = $.ui.resolve(e)
@@ -331,12 +387,14 @@ export const register: Register = on => {
             const { n, originalPath } = thumb
             const expandedPicture = expanded[index] ?? null
             const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
-            const isTwin = (sends[index] ?? 0) % 2 === 1 && thumb.twin !== undefined
-            const png = expandedPicture !== null ? expandedPicture.png : isTwin ? (thumb.twin ?? thumb.png) : thumb.png
+            const png = expandedPicture === null ? thumb.png : expandedPicture.png
+            // Lit for a moment after the first drawing: the border's cells on
+            // the picture's rows change, so the terminal paints them again.
+            const isLit = (repaints[index] ?? 0) % 2 === 1
 
             return (
               <Box flexDirection="column" alignItems="flex-start">
-                <Box borderStyle="round" borderDimColor>
+                <Box borderStyle="round" borderDimColor={!isLit}>
                   <Box>
                     <Image key={`thumb-${n}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
                     <Box position="absolute" top={0} left={0}>
