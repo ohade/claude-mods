@@ -215,6 +215,26 @@ const saveLedger = async ($: EngineInterface): Promise<void> => {
   await $.store.set('sessions', sessions.slice(0, MAX_SESSIONS))
 }
 
+// Clear all, per section. Unlike Clear completed, the rows leave and the ring restarts. Open
+// and deferred questions are withdrawn, so the model is told not to answer them; ids go on
+// counting up, so a later Q<n> never reuses one the model saw.
+const clearQuestions = async ($: EngineInterface): Promise<void> => {
+  await update<Ledger>($, ledger, cur => ({
+    ...cur,
+    questions: [],
+    withdrawn: [
+      ...(cur.withdrawn ?? []),
+      ...cur.questions.filter(q => q.status !== 'answered').map(q => ({ id: q.id, head: q.head })),
+    ],
+  }))
+  $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
+}
+
+const clearSteps = async ($: EngineInterface): Promise<void> => {
+  await update<Ledger>($, ledger, cur => ({ ...cur, steps: [] }))
+  $.ui.toast('track: steps cleared.')
+}
+
 const openPane = async ($: EngineInterface): Promise<boolean> => {
   const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS, rows: PANE_ROWS })
   await update($, pane, p => ({ ...p, isOpen: opened.isPlaced }))
@@ -771,6 +791,9 @@ export const register: Register = on => {
           <Text color={qDone === l.questions.length && l.questions.length > 0 ? 'success' : 'warning'}>
             {ring(qDone, l.questions.length)}
           </Text>
+          {l.questions.length > 0 && (
+            <Button key="clear-questions" plain dimColor hotkey="q" label="   clear all" onPress={() => clearQuestions($)} />
+          )}
         </Box>
         {questions.length === 0 && (
           <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
@@ -802,6 +825,9 @@ export const register: Register = on => {
         <Box flexDirection="row" marginTop={1}>
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
+          {l.steps.length > 0 && (
+            <Button key="clear-steps" plain dimColor hotkey="s" label="   clear all" onPress={() => clearSteps($)} />
+          )}
         </Box>
         {steps.length === 0 && (
           <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>

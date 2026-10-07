@@ -455,3 +455,43 @@ test('track_steps draws no row and mark_step draws one quiet line', async ($, on
   expect(texts).toHaveLength(1)
   expect(texts[0]).toContain('plan:1 in progress')
 })
+
+// Ohad, 2026-10-07: clear all questions, or all steps, each on its own.
+const BOTH = {
+  ...ANSWERED,
+  questions: [...ANSWERED.questions, { ...OPEN_ONE.questions[0], id: 2 }],
+  steps: [{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'pending' }],
+}
+
+const captureLedger = (on: Parameters<TestBody>[1]) => {
+  const writes: Array<{ questions: QuestionRow[]; steps: StepRow[]; withdrawn?: Array<{ id: number }> }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { questions: QuestionRow[]; steps: StepRow[]; withdrawn?: Array<{ id: number }> })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+
+  return writes
+}
+
+test('clearing all questions empties them, withdraws the open ones and keeps the steps', async ($, on) => {
+  const writes = captureLedger(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-questions' })
+
+  const last = writes.at(-1)
+  expect(last?.questions ?? ['not cleared']).toHaveLength(0)
+  expect((last?.withdrawn ?? []).map(w => w.id)).toEqual([2])
+  expect(last?.steps.map(s => s.id)).toEqual(['plan:1'])
+})
+
+test('clearing all steps empties them and keeps the questions', async ($, on) => {
+  const writes = captureLedger(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-steps' })
+
+  const last = writes.at(-1)
+  expect(last?.steps ?? ['not cleared']).toHaveLength(0)
+  expect(last?.questions.map(q => q.id)).toEqual([1, 2])
+})
