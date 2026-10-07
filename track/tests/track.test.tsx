@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -222,4 +223,102 @@ test('the next prompt tells the model about a withdrawn question, once', async (
 
   expect(context.some(line => line.includes('withdrew Q3'))).toBe(true)
   expect(writes.at(-1)?.withdrawn ?? ['not cleared']).toHaveLength(0)
+})
+
+// Milestone 4: steps come from the model's own Task, todo and plan tools, with no extra call.
+type StepRow = { id: string; source: string; subject: string; status: string; taskId?: string }
+const withSteps = (steps: StepRow[]) => ({ ...ANSWERED, questions: [], steps })
+
+const captureSteps = (on: Parameters<TestBody>[1], ledger: unknown) => {
+  const writes: Array<{ steps: StepRow[] }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ledger, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { steps: StepRow[] })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+
+  return writes
+}
+
+test('TaskCreate adds a pending step', async ($, on) => {
+  const writes = captureSteps(on, withSteps([]))
+  on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: '7', subject: 'Write the parser' } } }))
+
+  await $.tool.call({ tool: 'TaskCreate', subject: 'Write the parser', description: 'x', tool_use_id: 'toolu_tc' })
+
+  expect(writes.at(-1)?.steps).toEqual([
+    { id: 'task:7', source: 'task', subject: 'Write the parser', status: 'pending', taskId: '7', createdRequestId: 'toolu_tc' },
+  ])
+})
+
+test('TaskUpdate completes a step, and deleted removes it', async ($, on) => {
+  const two = [
+    { id: 'task:7', source: 'task', subject: 'A', status: 'pending', taskId: '7' },
+    { id: 'task:8', source: 'task', subject: 'B', status: 'pending', taskId: '8' },
+  ]
+  const writes = captureSteps(on, withSteps(two))
+  on('tool.call', { tool: 'TaskUpdate' }, (_, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
+
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '7', status: 'completed' })
+  expect(writes.at(-1)?.steps.map(s => `${s.id}:${s.status}`)).toEqual(['task:7:completed', 'task:8:pending'])
+
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '8', status: 'deleted' })
+  expect(writes.at(-1)?.steps.map(s => s.id)).toEqual(['task:7'])
+})
+
+test('an approved plan becomes steps: numbered and checkbox lines, not code', async ($, on) => {
+  const writes = captureSteps(on, withSteps([]))
+  const plan = ['## Plan', '', '1. Foo', '2. Bar', '- [x] Baz', '```', '1. not a step', '```', 'Prose line.'].join('\n')
+  on('tool.call', { tool: 'ExitPlanMode' }, () => ({ result: { plan, isAgent: false } }))
+
+  await $.tool.call({ tool: 'ExitPlanMode' })
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
+    'plan:1|Foo|pending',
+    'plan:2|Bar|pending',
+    'plan:3|Baz|completed',
+  ])
+})
+
+test('a Task named like a plan step links to it instead of adding a row', async ($, on) => {
+  const writes = captureSteps(on, withSteps([{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'pending' }]))
+  on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: '9', subject: 'foo.' } } }))
+
+  await $.tool.call({ tool: 'TaskCreate', subject: 'foo.', description: 'x' })
+
+  expect(writes.at(-1)?.steps).toEqual([{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'pending', taskId: '9' }])
+})
+
+test('TodoWrite replaces the todo rows and keeps the others', async ($, on) => {
+  const writes = captureSteps(
+    on,
+    withSteps([
+      { id: 'todo:old', source: 'todo', subject: 'old', status: 'pending' },
+      { id: 'task:7', source: 'task', subject: 'A', status: 'pending', taskId: '7' },
+    ]),
+  )
+  const newTodos = [{ content: 'New one', status: 'in_progress', activeForm: 'Doing the new one' }]
+  on('tool.call', { tool: 'TodoWrite' }, () => ({ result: { oldTodos: [], newTodos } }))
+
+  await $.tool.call({ tool: 'TodoWrite', todos: newTodos as never })
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}:${s.status}`)).toEqual(['task:7:pending', 'todo:new one:in_progress'])
+})
+
+test('mark_step sets a step status', async ($, on) => {
+  const writes = captureSteps(on, withSteps([{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'pending' }]))
+
+  await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'completed' } as never)
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}:${s.status}`)).toEqual(['plan:1:completed'])
+})
+
+test('a subagent TaskCreate is not the user’s step', async ($, on) => {
+  const writes = captureSteps(on, withSteps([]))
+  on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: '7', subject: 'sub' } } }))
+
+  await $.tool.call({ tool: 'TaskCreate', subject: 'sub', description: 'x', agentId: 'agent-1' } as never)
+
+  expect(writes).toHaveLength(0)
 })

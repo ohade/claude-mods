@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ledger, Pane, Prompt, Question, Turn } from '../types'
+import type { Ledger, Pane, Prompt, Question, Step, Turn } from '../types'
 
 const PANE = 'track'
 const PANE_COLUMNS = 48
@@ -16,6 +16,10 @@ const REWIND_CHECK_GAP_MS = 3000
 const rewindCheck = { isScheduled: false, lastAt: -Infinity }
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
+const MARK_STEP = 'mcp__track__mark_step'
+const MAX_STEPS = 300
+const MAX_PLAN_STEPS = 30
+const STEP_STATUSES = ['pending', 'in_progress', 'completed'] as const
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
 const HEAD_CHARS = 80
@@ -62,6 +66,40 @@ const ring = (done: number, total: number): string => {
   const glyph = pct >= 100 ? '●' : pct >= 75 ? '◕' : pct >= 50 ? '◑' : pct >= 25 ? '◔' : '○'
 
   return `${glyph} ${done} of ${total} · ${pct}%`
+}
+
+// A title for matching: lowercase, without a leading number or checkbox, punctuation, or
+// repeated spaces. A Task links to the plan step whose normalized title is the same.
+const norm = (title: string): string =>
+  title
+    .toLowerCase()
+    .replace(/^\s*(?:\d+[.)]|[-*+]\s*\[[ x]\])\s*/, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+// The steps of an approved plan: top-level numbered lines and checkbox lines, outside code
+// fences. Plain bullets and prose are context, not steps. `[x]` marks a step done.
+const parsePlan = (plan: string): Step[] => {
+  const steps: Step[] = []
+  let inFence = false
+  for (const line of plan.split('\n')) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFence = !inFence
+      continue
+    }
+    const match = inFence ? null : /^(?:\d+[.)]|[-*+]\s*\[([ xX])\])\s+(.+)$/.exec(line)
+    if (match !== null && steps.length < MAX_PLAN_STEPS) {
+      steps.push({
+        id: `plan:${steps.length + 1}`,
+        source: 'plan',
+        subject: headOf(match[2] ?? ''),
+        status: match[1] === 'x' || match[1] === 'X' ? 'completed' : 'pending',
+      })
+    }
+  }
+
+  return steps
 }
 
 const statusGlyph = (q: Question): string => (q.status === 'answered' ? '●' : q.status === 'deferred' ? '◌' : '○')
@@ -170,6 +208,18 @@ export const register: Register = on => {
           status: { type: 'string', enum: ['answered', 'deferred'] },
           note: { type: 'string', description: 'For deferred: what the answer waits for' },
         },
+        required: ['id', 'status'],
+      },
+    })
+
+    // Left deferred behind ToolSearch: an override the model rarely needs.
+    await $.tool.register({
+      name: 'mark_step',
+      description:
+        'Correct a step the track pane shows wrong. Ids: plan:1, plan:2, … in the order of the approved plan; task:<taskId> for a Task; todo:<the todo text, lowercased>. Prefer TaskUpdate for Tasks.',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] } },
         required: ['id', 'status'],
       },
     })
@@ -397,6 +447,103 @@ export const register: Register = on => {
     }))
 
     return { result: `Q${id} marked ${status}.` }
+  })
+
+  // Steps come from the model's own tools, read after each call succeeds. A subagent's
+  // calls are its own work, not the session's steps.
+  on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const task = (ran.result as { task?: { id?: unknown } } | undefined)?.task
+    if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || task?.id === undefined) {
+      return ran
+    }
+    const taskId = String(task.id)
+    const subject = headOf(String(e.subject ?? ''))
+    await update<Ledger>($, ledger, cur => {
+      const plan = cur.steps.find(s => s.source === 'plan' && s.taskId === undefined && norm(s.subject) === norm(subject))
+      if (plan !== undefined) {
+        return { ...cur, steps: cur.steps.map(s => (s.id === plan.id ? { ...s, taskId } : s)) }
+      }
+      const step: Step = {
+        id: `task:${taskId}`,
+        source: 'task',
+        subject,
+        status: 'pending',
+        taskId,
+        ...(e.tool_use_id !== undefined && { createdRequestId: e.tool_use_id }),
+      }
+
+      return { ...cur, steps: [...cur.steps, step].slice(-MAX_STEPS) }
+    })
+
+    return ran
+  })
+
+  on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const ran = await next(e)
+    const status = e.status
+    if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || status === undefined) {
+      return ran
+    }
+    const taskId = String(e.taskId)
+    await update<Ledger>($, ledger, cur => ({
+      ...cur,
+      steps:
+        status === 'deleted'
+          ? // A deleted Task leaves; a plan step it was linked to stays, unlinked.
+            cur.steps
+              .filter(s => !(s.source === 'task' && s.taskId === taskId))
+              .map(s => {
+                if (s.taskId !== taskId) return s
+                const { taskId: _unlinked, ...plan } = s
+
+                return plan
+              })
+          : cur.steps.map(s => (s.taskId === taskId ? { ...s, status } : s)),
+    }))
+
+    return ran
+  })
+
+  on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
+    const ran = await next(e)
+    const todos = (ran.result as { newTodos?: Array<{ content: string; status: Step['status'] }> } | undefined)?.newTodos
+    if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || todos === undefined) {
+      return ran
+    }
+    const rows: Step[] = todos.map(t => ({ id: `todo:${norm(t.content)}`, source: 'todo', subject: headOf(t.content), status: t.status }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'todo'), ...rows].slice(-MAX_STEPS) }))
+
+    return ran
+  })
+
+  on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
+    const ran = await next(e)
+    const result = ran.result as { plan?: unknown; isAgent?: unknown } | undefined
+    if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || typeof result?.plan !== 'string' || result.isAgent === true) {
+      return ran
+    }
+    const steps = parsePlan(result.plan)
+    if (steps.length > 0) {
+      await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
+    }
+
+    return ran
+  })
+
+  on('tool.call', { tool: MARK_STEP }, async ($, e) => {
+    if (e.agentId !== undefined) {
+      return { deny: 'track: a subagent cannot mark the session\'s steps.' }
+    }
+    const id = String(e.id)
+    const status = STEP_STATUSES.find(one => one === e.status)
+    const l = await read($, ledger)
+    if (status === undefined || !l.steps.some(s => s.id === id)) {
+      return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
+    }
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? { ...s, status } : s)) }))
+
+    return { result: `Step ${id} marked ${status}.` }
   })
 
   on('command.run', { command: 'track' }, async ($, e) => {
