@@ -1346,3 +1346,21 @@ test('a wheel tick over the questions scrolls the questions alone', async ($, on
   expect(at.questions).not.toBeNull()
   expect(at.steps).toBeNull()
 })
+
+// Ohad, 2026-10-07: "the tracker scroll is stuck". The hook answered every wheel tick itself, so
+// a body left scrolled down (before the layout change, or by a tree one row too tall) could never
+// move back. Each tick now also pins the body at its top.
+test('a wheel tick scrolls a region and pins the pane body at its top', async ($, on) => {
+  const offsets: number[] = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  on('ui.scroll', (_, e) => {
+    offsets.push(Number((e as { offset?: number }).offset))
+
+    return {}
+  })
+  await $.ui.mount(pane('dock'))
+
+  await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 4, by: 1, bodyRows: 20, contentRows: 24, origin: { kind: 'person' }, pointer: { row: 12, column: 5 } } as never)
+
+  expect(offsets).toEqual([0])
+})

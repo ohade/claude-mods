@@ -1105,7 +1105,8 @@ export const register: Register = on => {
   })
 
   // A wheel tick moves the region under the pointer by a row; the scroll keys move the region
-  // last scrolled. The pane body itself stays put: its tree is exactly as tall as the body.
+  // last scrolled. The pane body is pinned at its top (offset 0): its tree is as tall as the body,
+  // and a body left scrolled down could otherwise never come back (Ohad, 2026-10-07: "stuck").
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.origin.kind !== 'person') {
       return next(e)
@@ -1119,14 +1120,13 @@ export const register: Register = on => {
           : row >= regions.sTop && row < regions.sBottom
             ? 'steps'
             : undefined
-    if (region === undefined) {
-      return {}
+    if (region !== undefined) {
+      regions.last = region
+      const from = region === 'questions' ? regions.qStart : regions.sStart
+      await update($, scrollAt, cur => ({ ...cur, [region]: Math.max(0, (cur[region] ?? from) + e.by) }))
     }
-    regions.last = region
-    const from = region === 'questions' ? regions.qStart : regions.sStart
-    await update($, scrollAt, cur => ({ ...cur, [region]: Math.max(0, (cur[region] ?? from) + e.by) }))
 
-    return {}
+    return next({ ...e, offset: 0 })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1195,7 +1195,7 @@ export const register: Register = on => {
     const bannerText = state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text
 
     return (
-      <Box flexDirection="column" height={bodyRows}>
+      <Box flexDirection="column" height={bodyRows} overflow="hidden">
         {/* The title as a centered header bar, rules filling the width (Ohad, 2026-10-07). */}
         <Box key="title" flexDirection="row" justifyContent="center" marginBottom={roomy ? 1 : 0}>
           <Text dimColor>{'─'.repeat(titleSide)}</Text>
