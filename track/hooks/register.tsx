@@ -30,7 +30,8 @@ const MAX_PLAN_STEPS = 30
 const STEP_STATUSES = ['pending', 'in_progress', 'completed'] as const
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
-const HEAD_CHARS = 80
+// Long enough to keep a question whole; the pane wraps it rather than cutting it.
+const HEAD_CHARS = 200
 const MAX_PROMPTS = 200
 const MAX_QUESTIONS = 200
 const HOTKEYS = 9
@@ -810,13 +811,20 @@ export const register: Register = on => {
           // answered row puts its digit on the answer, an open row on the ask.
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
           const answered = q.status === 'answered'
-          const text = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 28)}`
+          const color = answered ? 'success' : undefined
 
+          // The dot is a column of its own and the question a wrapping column beside it, so a
+          // long question is shown whole and its next lines align with the text, not the dot.
           return (
             <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
-              <Text color={answered ? 'success' : undefined} dimColor={q.status === 'deferred'}>
-                {text}
+              <Text color={color} dimColor={q.status === 'deferred'}>
+                {statusGlyph(q)}
               </Text>
+              <Box flexShrink={1}>
+                <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
+                  {`Q${q.id} ${q.head}`}
+                </Text>
+              </Box>
               {q.askedRequestId !== undefined && (
                 <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="asked" onPress={() => jump($, q.askedRequestId as string, 'start')} />
               )}
@@ -845,13 +853,18 @@ export const register: Register = on => {
         )}
         {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
             same left edge, a number S<n> by position, and green once done. */}
-        {steps.map((s, index) => (
-          <Box key={`row-s-${s.id}`} marginLeft={ROW_INDENT}>
-            <Text color={s.status === 'completed' ? 'success' : undefined}>
-              {`${s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'} S${index + 1} ${truncate(s.subject, width - 10)}`}
-            </Text>
-          </Box>
-        ))}
+        {steps.map((s, index) => {
+          const color = s.status === 'completed' ? 'success' : undefined
+
+          return (
+            <Box key={`row-s-${s.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
+              <Text color={color}>{s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'}</Text>
+              <Box flexShrink={1}>
+                <Text color={color} wrap="wrap">{`S${index + 1} ${s.subject}`}</Text>
+              </Box>
+            </Box>
+          )
+        })}
         <Box flexDirection="row" marginTop={1}>
           <Button key="clear" plain hotkey="c" label="Clear completed" onPress={clearCompleted} />
           <Text dimColor>   /track hides · ctrl+x x closes for good</Text>

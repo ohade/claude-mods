@@ -537,8 +537,11 @@ test('step rows are annotated like question rows', async ($, on) => {
 
   const ui = await $.ui.mount(pane('dock'))
 
+  // Updated 2026-10-07 at Ohad's request: the dot is its own column, so a wrapped line
+  // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts.filter(t => /^[○◐●] S\d /.test(t))).toEqual(['● S1 Write', '◐ S2 Print', '○ S3 Count'])
+  expect(texts.filter(t => /^S\d /.test(t))).toEqual(['S1 Write', 'S2 Print', 'S3 Count'])
+  expect(texts.filter(t => /^[○◐●]$/.test(t))).toContain('◐')
 })
 
 // Ohad, 2026-10-07: rows sit one step in under their header, in both sections alike.
@@ -550,4 +553,18 @@ test('question and step rows are indented the same under their headers', async (
   const boxes = await ui.findAll({ type: 'Box' })
   const margin = (key: string) => (boxes.find(b => b.key === key)?.props as { marginLeft?: number } | undefined)?.marginLeft
   expect([margin('row-q-1'), margin('row-s-plan:1')]).toEqual([2, 2])
+})
+
+// Ohad, 2026-10-07: show the whole question; a long one wraps, and its next lines align with
+// the text, not under the dot.
+test('a long question is shown whole, its dot in a column of its own', async ($, on) => {
+  const head = 'Why did I check AMQ when only the agent availability check was asked for in the brief?'
+  const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts).toContain(`Q4 ${head}`)
+  expect(texts).toContain('●')
 })
