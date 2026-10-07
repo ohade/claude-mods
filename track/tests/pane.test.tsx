@@ -136,3 +136,72 @@ test('at the steps cap, a done step goes, not an unfinished one', async ($, on) 
   expect(ids).toContain('plan:1')
   expect(ids).not.toContain('plan:2')
 })
+
+// Layout in a narrow pane: nothing is cut. Text wraps onto more rows, and the scrolling regions
+// give up the rows the wrapping takes, so the banner stays inside the pane.
+type Box = { key?: string; type?: string; text?: string; props: unknown }
+const heightOf = (all: Box[], key: string) => (all.find(el => el.key === key)?.props as { height?: number } | undefined)?.height ?? 0
+
+const layout = async ($: Engine, on: On, ledger: unknown, columns: number, rows = 30) => {
+  atomStore(on, 'ledger', ledger)
+  atomStore(on, 'activity', IDLE)
+  mock.clock(on)
+  const ui = await $.ui.mount(pane('dock', columns, rows))
+
+  return (await ui.findAll({})) as Box[]
+}
+
+test('with no questions and no steps, each placeholder wraps whole in a narrow pane', async ($, on) => {
+  const all = await layout($, on, EMPTY, 30)
+
+  const placeholder = all.find(el => el.type === 'Text' && /none yet — the model adds a question/.test(String(el.text ?? '')))
+  expect((placeholder?.props as { wrap?: string } | undefined)?.wrap).toBe('wrap')
+  expect(heightOf(all, 'questions')).toBeGreaterThanOrEqual(2)
+  expect(heightOf(all, 'steps')).toBeGreaterThanOrEqual(2)
+})
+
+test('a steps header too wide for the pane wraps, and the regions give up the extra row', async ($, on) => {
+  const steps = Array.from({ length: 39 }, (_, i) => step(i + 1, i < 12 ? 'completed' : 'pending'))
+  const narrow = await layout($, on, { ...EMPTY, steps }, 46)
+  const header = narrow.find(el => el.key === 'steps-header')
+  expect((header?.props as { flexWrap?: string } | undefined)?.flexWrap).toBe('wrap')
+  // Each header item keeps its width: the word, the ring and each button wrap whole.
+  const word = narrow.find(el => el.key === 'steps-word')
+  expect((word?.props as { flexShrink?: number } | undefined)?.flexShrink).toBe(0)
+})
+
+test('the regions of a narrow pane are shorter by the rows its wrapped bars take', async ($, on) => {
+  const steps = Array.from({ length: 39 }, (_, i) => step(i + 1, i < 12 ? 'completed' : 'pending'))
+  const ledger = atomStore(on, 'ledger', { ...EMPTY, steps })
+  atomStore(on, 'activity', IDLE)
+  mock.clock(on)
+  const first = await $.ui.mount(pane('dock', 120, 30))
+  const wide = (await first.findAll({})) as Box[]
+  await first.unmount()
+  const narrow = (await (await $.ui.mount(pane('dock', 46, 30))).findAll({})) as Box[]
+  void ledger
+
+  const rowsOf = (all: Box[]) => heightOf(all, 'questions') + heightOf(all, 'steps')
+  expect(rowsOf(narrow)).toBeLessThan(rowsOf(wide))
+})
+
+test('the bottom bar wraps its hint instead of cutting it with an ellipsis', async ($, on) => {
+  const all = await layout($, on, { ...EMPTY, steps: [step(1, 'pending')] }, 46)
+
+  const bar = all.find(el => el.key === 'bottom-bar')
+  expect((bar?.props as { flexWrap?: string } | undefined)?.flexWrap).toBe('wrap')
+  const hint = all.find(el => el.type === 'Text' && /\/track hides/.test(String(el.text ?? '')))
+  expect((hint?.props as { wrap?: string } | undefined)?.wrap).not.toBe('truncate-end')
+})
+
+// A row taller than its whole region had its last lines clipped with no way to scroll to them; it
+// is cut to the region with an ellipsis instead.
+test('a question taller than its region is cut to fit, ending in an ellipsis', async ($, on) => {
+  const long = { ...question(1, 'open'), head: 'why '.repeat(50).trim() }
+  const all = await layout($, on, { ...EMPTY, nextQuestionId: 2, questions: [long], steps: [step(1, 'pending')] }, 46, 16)
+
+  const row = all.find(el => el.type === 'Text' && String(el.text ?? '').startsWith('Q1 why'))
+  const text = String(row?.text ?? '')
+  expect(text.endsWith('…')).toBe(true)
+  expect(text.length).toBeLessThan(long.head.length)
+})

@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
 
 import type { Activity, Ledger, Pane, Prompt, Question, ScrollAt, Step, Turn } from '../types'
 
@@ -102,6 +102,12 @@ const pulsing: { timer?: Timer } = {}
 const QUESTION_SHARE = 0.35
 // Columns a question row spends on its dot, its [ Q ] [ A ] buttons and ✕.
 const QUESTION_CHROME = 18
+// Columns between the items of a header or bar; a narrow pane wraps between items, never inside one.
+const HEADER_GAP = 2
+const HINT = '/track hides · ctrl+x x closes for good'
+const NO_QUESTIONS = '  none yet — the model adds a question with track_question'
+const NO_STEPS = '  none yet — tasks and approved plan steps appear here'
+const ALL_CLEARED = '  all cleared'
 const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0, qLast: 0, sLast: 0, last: 'steps' as 'questions' | 'steps' }
 // Fast wheel ticks are summed and written once per SCROLL_FLUSH_MS, so a quick flick costs one
 // state write and one redraw, not one per tick (one write per tick made the pane lag).
@@ -155,6 +161,58 @@ const capRows = <T extends { cleared?: true }>(rows: T[], max: number, isDone: (
 }
 
 const capSteps = (steps: Step[]): Step[] => capRows(steps, MAX_STEPS, s => s.status === 'completed')
+
+// Lines `text` takes word-wrapped at `width` columns, as the terminal wraps it: a word that does
+// not fit starts a new line, and a word longer than a line is broken.
+const wrappedLines = (text: string, width: number): number => {
+  let lines = 1
+  let used = 0
+  for (const word of text.split(' ')) {
+    if (used > 0 && used + 1 + word.length <= width) {
+      used += 1 + word.length
+    } else if (word.length > 0) {
+      const extra = Math.floor((word.length - 1) / width)
+      lines += (used > 0 ? 1 : 0) + extra
+      used = word.length - extra * width
+    }
+  }
+
+  return lines
+}
+
+// Rows a header or bar takes when its items wrap at `width`: each item stays whole, `gap` apart.
+const flowRows = (items: number[], width: number, gap: number): number => {
+  let rows = 1
+  let used = 0
+  for (const item of items.filter(w => w > 0)) {
+    if (used > 0 && used + gap + item > width) {
+      rows++
+      used = item
+    } else {
+      used = used === 0 ? item : used + gap + item
+    }
+  }
+
+  return rows
+}
+
+// The columns a button takes: the engine draws a hotkey button as "q: label".
+const buttonWidth = (hotkey: string, label: string): number => hotkey.length + 2 + label.length
+
+// A row's text, cut with an ellipsis to the lines it may take: for a row taller than its whole
+// region, whose last lines no scroll could reach.
+const fitLines = (text: string, width: number, lines: number): string => {
+  const most = Math.max(1, lines)
+  if (wrappedLines(text, width) <= most) {
+    return text
+  }
+  let cut = Math.max(1, width * most - 1)
+  while (cut > 1 && wrappedLines(`${text.slice(0, cut).trimEnd()}…`, width) > most) {
+    cut--
+  }
+
+  return `${text.slice(0, cut).trimEnd()}…`
+}
 
 const hidden = (above: number, below: number): string =>
   [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
@@ -1419,53 +1477,77 @@ export const register: Register = on => {
         questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
-    // The steps' two clear controls, in a bar above the steps and a bar below them. Both bars sit
-    // outside the scrolling region, so a scroll never moves them. The copies
-    // share hotkeys: the engine lets the later one win, and both do the same thing.
-    const clearBar = (suffix: '' | '-bottom') => (
-      <Box key={`clear-bar${suffix}`} flexDirection="row" columnGap={2} flexShrink={0}>
-        {l.steps.length > 0 && <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />}
-        <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label="clear completed" onPress={clearCompleted} />
+    // The steps' two clear controls, above the steps and again below them. Both sit outside the
+    // scrolling region, so a scroll never moves them. The copies share hotkeys: the engine lets the
+    // later one win, and both do the same thing. Each is an item of its own, so a narrow pane wraps
+    // between them instead of cutting one.
+    // A header or bar item keeps its width; the header wraps between items.
+    const item = (key: string, child: RenderElement) => (
+      <Box key={key} flexShrink={0}>
+        {child}
       </Box>
     )
+    const clearButtons = (suffix: '' | '-bottom') => [
+      ...(l.steps.length > 0
+        ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />)]
+        : []),
+      item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label="clear completed" onPress={clearCompleted} />),
+    ]
+    const clearWidths = [l.steps.length > 0 ? buttonWidth('s', 'clear all') : 0, buttonWidth('c', 'clear completed')]
 
     const state = sessionState(l, now)
     const shown = BANNERS[state]
+    const qRing = ring(qDone, questions.length)
+    const sRing = ring(sDone, steps.length)
+    const qEmpty = l.questions.length === 0 ? NO_QUESTIONS : ALL_CLEARED
+    const sEmpty = l.steps.length === 0 ? NO_STEPS : ALL_CLEARED
 
-    // The layout: fixed rows (title, two headers, the separator, footer, banner) and the room left
-    // for the two regions, measured in wrapped lines.
+    // The layout: the title, the two headers, the separator, the bottom bar and the banner take
+    // fixed rows, a header or the bar as many as its items wrap onto; the two regions share the
+    // room left, measured in wrapped lines.
     const roomy = bodyRows >= 16
-    const fixedRows = (roomy ? 2 : 1) + 3 + (roomy ? 2 : 1) + 1
-    const room = Math.max(0, bodyRows - fixedRows)
+    const titleRows = roomy ? 2 : 1
+    const bottomRows = flowRows([...clearWidths, HINT.length], width, HEADER_GAP)
+    const qButtons = [l.questions.length > 0 ? buttonWidth('q', 'clear all') : 0]
+    const sButtons = l.steps.length > 0 ? clearWidths : []
     const qWidth = Math.max(8, width - ROW_INDENT - 2 - QUESTION_CHROME)
     const sWidth = Math.max(8, width - ROW_INDENT - 2)
-    const qLines = questions.map(q => Math.max(1, Math.ceil(`Q${q.id} ${q.head}`.length / qWidth)))
-    const sLines = steps.map((s, i) => Math.max(1, Math.ceil(`S${i + 1} ${s.subject}`.length / sWidth)))
-    const needQ = Math.max(1, qLines.reduce((a, b) => a + b, 0))
-    const needS = Math.max(1, sLines.reduce((a, b) => a + b, 0))
-    let qRows = Math.min(needQ, room, Math.max(1, Math.round(room * QUESTION_SHARE)))
-    let sRows = Math.max(0, room - qRows)
-    if (needS < sRows) {
-      qRows = Math.min(needQ, qRows + sRows - needS)
-      sRows = needS
-    }
-    // Where each region starts: the newest questions, the step at work with one done row above.
-    const qLast = lastStart(qLines, qRows)
-    const sLast = lastStart(sLines, sRows)
+    const qLines = questions.map(q => wrappedLines(`Q${q.id} ${q.head}`, qWidth))
+    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1} ${s.subject}`, sWidth))
+    const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
+    const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
-    const qFrom = Math.min(at.questions ?? qLast, qLast)
-    const sFrom = Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast)
-    const [qStart, qEnd] = windowOf(qLines, qRows, qFrom)
-    const [sStart, sEnd] = windowOf(sLines, sRows, sFrom)
-    // The rows out of view, as arrows; cut at the edge, since a header that wraps pushes the banner out.
-    const qHidden = hidden(qStart, questions.length - qEnd)
-    const sHidden = hidden(sStart, steps.length - sEnd)
-    const titleRows = roomy ? 2 : 1
+    const fit = (qArrows: string, sArrows: string) => {
+      const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
+      const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
+      const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + 1))
+      let qRows = Math.min(needQ, room, Math.max(1, Math.round(room * QUESTION_SHARE)))
+      let sRows = Math.max(0, room - qRows)
+      if (needS < sRows) {
+        qRows = Math.min(needQ, qRows + sRows - needS)
+        sRows = needS
+      }
+      // Where each region starts: the newest questions, the step at work with one done row above.
+      const qLast = lastStart(qLines, qRows)
+      const sLast = lastStart(sLines, sRows)
+      const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
+      const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
+
+      return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
+    }
+    // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
+    // row, which takes a row from the regions, so the layout is fitted again with them.
+    const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
+    const first = fit('', '')
+    const [qFirst, sFirst] = arrowsOf(first)
+    const fitted = qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
+    const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
+    const [qHidden, sHidden] = arrowsOf(fitted)
     Object.assign(regions, {
       qTop: titleRows,
-      qBottom: titleRows + 1 + qRows,
-      sTop: titleRows + 1 + qRows,
-      sBottom: titleRows + 3 + qRows + sRows,
+      qBottom: titleRows + qHead + qRows,
+      sTop: titleRows + qHead + qRows,
+      sBottom: titleRows + qHead + qRows + 1 + sHead + sRows,
       qStart,
       sStart,
       qLast,
@@ -1492,23 +1574,18 @@ export const register: Register = on => {
           </Text>
           <Text dimColor>{'─'.repeat(Math.max(2, width - titleLabel.length - titleSide))}</Text>
         </Box>
-        <Box flexDirection="row">
-          <Text bold>Questions </Text>
-          <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>
-            {ring(qDone, questions.length)}
-          </Text>
-          {l.questions.length > 0 && (
-            // The gap sits outside the button: the engine draws "q: label", so padding in the
-            // label would land after "q:".
-            <Box marginLeft={3}>
-              <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />
-            </Box>
-          )}
-          <Text dimColor wrap="truncate-end">{qHidden === '' ? '' : `  ${qHidden}`}</Text>
+        <Box key="questions-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
+          {item('questions-word', <Text bold>Questions</Text>)}
+          {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
+          {/* The engine draws "q: label", so the gap is the header's, not padding in the label. */}
+          {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />)}
+          {qHidden !== '' && item('questions-hidden', <Text dimColor>{qHidden}</Text>)}
         </Box>
         <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
         {questions.length === 0 && (
-          <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
+          <Text dimColor wrap="wrap">
+            {qEmpty}
+          </Text>
         )}
         {questions.slice(qStart, qEnd).map((q, shownAt) => {
           const index = qStart + shownAt
@@ -1519,7 +1596,7 @@ export const register: Register = on => {
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined
-          // A link to another prompt's row (stored before the 2026-10-07 fix) offers no jump.
+          // A link to another prompt's row (stored by an older version) offers no jump.
           const askedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
           const answerAt = q.answerRequestId
 
@@ -1532,7 +1609,7 @@ export const register: Register = on => {
               </Text>
               <Box flexShrink={1}>
                 <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                  {`Q${q.id} ${q.head}`}
+                  {fitLines(`Q${q.id} ${q.head}`, qWidth, qRows)}
                 </Text>
               </Box>
               {askedAt !== undefined && (
@@ -1554,21 +1631,17 @@ export const register: Register = on => {
         })}
         </Box>
         <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
-        <Box flexDirection="row">
-          <Text bold>Steps </Text>
-          <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, steps.length)}</Text>
-          {l.steps.length > 0 && (
-            // The gap sits outside the buttons: the engine draws "s: label", so padding in the
-            // label would land after "s:".
-            <Box marginLeft={3} flexShrink={0}>
-              {clearBar('')}
-            </Box>
-          )}
-          <Text dimColor wrap="truncate-end">{sHidden === '' ? '' : `  ${sHidden}`}</Text>
+        <Box key="steps-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
+          {item('steps-word', <Text bold>Steps</Text>)}
+          {item('steps-ring', <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{sRing}</Text>)}
+          {l.steps.length > 0 && clearButtons('')}
+          {sHidden !== '' && item('steps-hidden', <Text dimColor>{sHidden}</Text>)}
         </Box>
         <Box key="steps" flexDirection="column" height={sRows} overflow="hidden">
         {steps.length === 0 && (
-          <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>
+          <Text dimColor wrap="wrap">
+            {sEmpty}
+          </Text>
         )}
         {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
             same left edge, a number S<n> by position, and green once done. */}
@@ -1596,18 +1669,18 @@ export const register: Register = on => {
             <Box key={`row-s-${s.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
               <Text color={look.glyphColor}>{look.glyph}</Text>
               <Box flexShrink={1}>
-                <Text color={look.textColor} wrap="wrap">{`S${index + 1} ${s.subject}`}</Text>
+                <Text color={look.textColor} wrap="wrap">
+                  {fitLines(`S${index + 1} ${s.subject}`, sWidth, sRows)}
+                </Text>
               </Box>
             </Box>
           )
         })}
         </Box>
         <Box flexGrow={1} />
-        <Box flexDirection="row" marginTop={roomy ? 1 : 0}>
-          {clearBar('-bottom')}
-          <Box marginLeft={3} flexShrink={1}>
-            <Text dimColor wrap="truncate-end">/track hides · ctrl+x x closes for good</Text>
-          </Box>
+        <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={roomy ? 1 : 0}>
+          {clearButtons('-bottom')}
+          {item('hint', <Text dimColor>{HINT}</Text>)}
         </Box>
         {/* The banner, pinned at the bottom: its color across the whole width, its words centered. */}
         <Box key="banner" width={width} justifyContent="center" backgroundColor={bannerColor}>

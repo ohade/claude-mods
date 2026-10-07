@@ -1494,18 +1494,6 @@ test('scrolling the steps leaves the region the same height, so neither bar move
   expect(scrolled).toEqual(top)
 })
 
-// A bar wider than a narrow pane must not wrap: one row too many pushes the banner out of the pane.
-test('the bars truncate their trailing text instead of wrapping onto a second row', async ($, on) => {
-  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
-  on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: { questions: null, steps: 5 }, version: 1 } }))
-  const ui = await $.ui.mount(pane('dock'))
-
-  const hint = await ui.find({ type: 'Text', text: /\/track hides/ })
-  const arrows = await ui.find({ type: 'Text', text: /↑\d/ })
-  expect((hint?.props as { wrap?: string } | undefined)?.wrap).toBe('truncate-end')
-  expect((arrows?.props as { wrap?: string } | undefined)?.wrap).toBe('truncate-end')
-})
-
 test('the bottom clear all empties the steps, like the one above them', async ($, on) => {
   const writes = captureLedger(on)
   const ui = await $.ui.mount(pane('dock'))
