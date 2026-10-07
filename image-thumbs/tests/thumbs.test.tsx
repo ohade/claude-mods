@@ -217,24 +217,23 @@ test('a message sent while Claude works draws its thumbnail', async ($, on) => {
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #4]' })
 })
 
-test('a thumbnail frame lights up once shortly after it first draws, and the picture is not sent again', async ($, on) => {
+test('a thumbnail is drawn again as a new picture once, shortly after it first draws', async ($, on) => {
   storeThumbs(on, [1])
 
   const ui = await $.ui.mount(userMessage('look at this [Image #1]'))
-  const frame = async () => (await ui.findAll({ type: 'Box' })).find(box => box.props.borderStyle === 'round')?.props
-  expect(await frame()).toMatchObject({ borderDimColor: true })
+  const first = await ui.find({ type: 'Image' })
 
-  // The border cells on the picture's rows change, so the terminal paints those rows again.
+  // Live, a thumbnail's first drawing can stay blank until a window resize,
+  // which sends every picture again and writes its cells again. A new key
+  // does that for this picture alone: a new image id, sent, new cells.
   await ui.advance(300)
-  expect(await frame()).toMatchObject({ borderDimColor: false })
+  const second = await ui.find({ type: 'Image' })
+  expect(second?.key).not.toEqual(first?.key)
+  expect(second?.props.source).toEqual({ png: PNG })
 
-  await ui.advance(300)
-  expect(await frame()).toMatchObject({ borderDimColor: true })
-
-  // Once, and the picture's bytes never change: sending them again is what can blank it.
+  // Once: later frames keep it.
   await ui.advance(1000)
-  expect(await frame()).toMatchObject({ borderDimColor: true })
-  expect((await ui.find({ type: 'Image' }))?.props.source).toEqual({ png: PNG })
+  expect((await ui.find({ type: 'Image' }))?.key).toEqual(second?.key)
 })
 
 test('a click on the picture expands it in place and a second click shrinks it', async ($, on) => {

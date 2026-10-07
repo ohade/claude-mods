@@ -20,8 +20,7 @@ declare module 'claude-code' {
     'image-thumbs': {
       // Thumbnails by image number: every row whose text names it draws it.
       byImage: StateFamily<Thumb>
-      // How many times each thumbnail's frame asked to light up or go back;
-      // odd draws the border lit.
+      // How many times each thumbnail asked to be drawn again; part of its key.
       repaints: StateFamily<number>
       shown: Shown | null
       // The large picture a thumbnail expanded into, by image number.

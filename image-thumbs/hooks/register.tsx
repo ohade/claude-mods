@@ -432,8 +432,8 @@ export const register: Register = on => {
   // code opens only from 144 columns.
   on('ui.message', async ($, e, next) => {
     const data = e.data as { toggle?: unknown; repaint?: unknown } | null
-    // A click area asking, after its first drawing, for its frame to light up
-    // or go back (click-area.ts): an odd count draws the border lit.
+    // A click area asking, after its first drawing, for its picture to be
+    // drawn again under a new key (click-area.ts).
     if (typeof data?.repaint === 'number') {
       const id = String(data.repaint)
       const { value: repaints = 0 } = await $.state.get({ ...REPAINTS, id })
@@ -505,15 +505,16 @@ export const register: Register = on => {
             const expandedPicture = expanded[index] ?? null
             const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
             const png = expandedPicture === null ? thumb.png : expandedPicture.png
-            // Lit for a moment after the first drawing: the border's cells on
-            // the picture's rows change, so the terminal paints them again.
-            const isLit = (repaints[index] ?? 0) % 2 === 1
+            // Drawn again under a new key shortly after the first drawing: a new
+            // image id, sent again with its cells written again, as a window
+            // resize does for every picture. The first drawing can stay blank.
+            const drawing = repaints[index] ?? 0
 
             return (
               <Box flexDirection="column" alignItems="flex-start">
-                <Box borderStyle="round" borderDimColor={!isLit}>
+                <Box borderStyle="round" borderDimColor>
                   <Box>
-                    <Image key={`thumb-${n}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
+                    <Image key={`thumb-${n}-${drawing}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
                     <Box position="absolute" top={0} left={0}>
                       <Client
                         key={`click-${n}`}
