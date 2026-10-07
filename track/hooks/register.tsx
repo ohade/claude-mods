@@ -97,7 +97,13 @@ const pulsing: { timer?: Timer } = {}
 const QUESTION_SHARE = 0.35
 // Columns a question row spends on its dot, its [ Q ] [ A ] buttons and ✕.
 const QUESTION_CHROME = 18
-const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0, last: 'steps' as 'questions' | 'steps' }
+const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0, qLast: 0, sLast: 0, last: 'steps' as 'questions' | 'steps' }
+// Fast wheel ticks are summed and written once per SCROLL_FLUSH_MS, so a quick flick costs one
+// state write and one redraw, not one per tick (Ohad, 2026-10-07: "it starts to lag").
+const SCROLL_FLUSH_MS = 30
+const pendingScroll: { questions: number; steps: number; timer?: Timer } = { questions: 0, steps: 0 }
+// A stored position never runs past the last one that shows anything (observed: 733 for 20 steps).
+const clampTo = (last: number, value: number): number => Math.min(last, Math.max(0, value))
 
 // The rows from `start` whose lines fit `rows`: [start, end).
 const windowOf = (lines: number[], rows: number, start: number): [number, number] => {
@@ -1121,22 +1127,19 @@ export const register: Register = on => {
           : row >= regions.sTop && row < regions.sBottom
             ? 'steps'
             : undefined
-    // TEMP probe (2026-10-07, "scroll is stuck"): the last 30 ticks and where they went.
-    const before = await read($, scrollAt)
     if (region !== undefined) {
       regions.last = region
-      const from = region === 'questions' ? regions.qStart : regions.sStart
-      await update($, scrollAt, cur => ({ ...cur, [region]: Math.max(0, (cur[region] ?? from) + e.by) }))
-    }
-    try {
-      const probe = await $.store.get('scrollProbe')
-      const ticks = Array.isArray(probe) ? probe : []
-      await $.store.set('scrollProbe', [
-        ...ticks.slice(-29),
-        { at: Date.now(), pointer: e.pointer ?? null, by: e.by, offset: e.offset, bodyRows: e.bodyRows, contentRows: e.contentRows, region: region ?? null, regions: { ...regions }, before, after: await read($, scrollAt) },
-      ])
-    } catch (error) {
-      $.ui.log(`track: scroll probe failed: ${reason(error)}`, { to: 'debug' })
+      pendingScroll[region] += e.by
+      if (pendingScroll.timer === undefined) {
+        pendingScroll.timer = $.clock.after(SCROLL_FLUSH_MS, () => {
+          const moves = { questions: pendingScroll.questions, steps: pendingScroll.steps }
+          Object.assign(pendingScroll, { questions: 0, steps: 0, timer: undefined })
+          void update($, scrollAt, cur => ({
+            questions: moves.questions === 0 ? cur.questions : clampTo(regions.qLast, (cur.questions ?? regions.qStart) + moves.questions),
+            steps: moves.steps === 0 ? cur.steps : clampTo(regions.sLast, (cur.steps ?? regions.sStart) + moves.steps),
+          })).catch(error => $.ui.log(`track: scroll write failed: ${reason(error)}`, { to: 'debug' }))
+        })
+      }
     }
 
     return next({ ...e, offset: 0 })
@@ -1204,6 +1207,8 @@ export const register: Register = on => {
       sBottom: titleRows + 3 + qRows + sRows,
       qStart,
       sStart,
+      qLast,
+      sLast,
     })
     const bannerText = state === 'agents' && now.background.length > 0 ? `${shown.text.trimEnd()} (${now.background.length}) ` : shown.text
 

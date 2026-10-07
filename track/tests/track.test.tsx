@@ -1331,6 +1331,7 @@ test('crowded regions show the newest questions and the step at work, each in it
 })
 
 test('a wheel tick over the questions scrolls the questions alone', async ($, on) => {
+  const clock = mock.clock(on)
   let at: { questions: number | null; steps: number | null } = { questions: null, steps: null }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
   on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: at, version: 1 } }))
@@ -1344,6 +1345,7 @@ test('a wheel tick over the questions scrolls the questions alone', async ($, on
   await $.ui.mount(pane('dock'))
 
   await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: -1, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 3, column: 5 } } as never)
+  await clock.advance(100)
 
   expect(at.questions).not.toBeNull()
   expect(at.steps).toBeNull()
@@ -1407,4 +1409,32 @@ test('the pane shows a paused step with ⏸ and a waiting step with the purple �
   }
   expect(glyphBefore('S1 Guard fix').text).toBe('⏸')
   expect(glyphBefore('S2 Decide the handoff mod')).toEqual({ text: '◆', color: 'permission' })
+})
+
+// Observed 2026-10-07 (probe on Ohad's pane): ticks past the end of the steps grew the stored
+// position to 733 for about 20 steps, so scrolling back up had hundreds of hidden rows to unwind
+// first ("stuck"). The stored position is clamped to the last one that shows anything.
+test('scrolling past the end and back up moves the window up at once', async ($, on) => {
+  const clock = mock.clock(on)
+  let at: { questions: number | null; steps: number | null } = { questions: null, steps: null }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
+  on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: at, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'scroll' }, (_, e) => {
+    at = e.value as typeof at
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  on('ui.scroll', () => ({}))
+  await $.ui.mount(pane('dock'))
+  const tick = (by: number) =>
+    $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 14, column: 5 } } as never)
+
+  for (let i = 0; i < 10; i++) await tick(12)
+  await clock.advance(100)
+  const atEnd = at.steps as number
+  await tick(-1)
+  await clock.advance(100)
+
+  expect(atEnd).toBeLessThan(20)
+  expect(at.steps).toBe(atEnd - 1)
 })
