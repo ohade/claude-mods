@@ -555,7 +555,7 @@ export const register: Register = on => {
     }
     const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
     const stepsLeft = l.steps.filter(s => s.status !== 'completed').length
-    if (e.origin?.kind !== 'composer' || (open.length === 0 && stepsLeft === 0)) {
+    if (!(typed || fromPlugin) || (open.length === 0 && stepsLeft === 0)) {
       return lines.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...lines] })
     }
     const listed = open
@@ -563,7 +563,15 @@ export const register: Register = on => {
       .map(q => `Q${q.id} "${truncate(q.head, 60)}"${q.status === 'deferred' ? ' (deferred)' : ''}`)
       .join(', ')
     const done = l.steps.length - stepsLeft
-    const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done. Mark a question with mcp__track__mark_answered when you answer it.`
+    // The step still marked in progress, named: observed 2026-10-07 (session 7bbc175c), an approval
+    // and a new request left the retro step pulsing, because nothing told the model it was open.
+    const busy = l.steps.filter(s => s.status === 'in_progress' && s.cleared !== true)
+    const them = busy.length > 1 ? 'them' : 'it'
+    const inProgress =
+      busy.length === 0
+        ? ''
+        : ` In progress: ${busy.map(s => `${s.id} "${truncate(s.subject, 60)}"`).join(', ')}; if this prompt finishes, replaces or drops ${them}, mark ${them} with mcp__track__mark_step first.`
+    const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done.${inProgress} Mark a question with mcp__track__mark_answered when you answer it.`
 
     return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
   })

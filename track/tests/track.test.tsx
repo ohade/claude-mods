@@ -1230,3 +1230,40 @@ test('the banner sits between the questions and the Steps header', async ($, on)
   expect(banner).toBeGreaterThan(questions)
   expect(banner).toBeLessThan(steps)
 })
+
+// Observed 2026-10-07 (session 7bbc175c): after Ohad approved the retro and asked for a plan,
+// the retro step stayed in progress and kept pulsing; the model was never told which step was
+// open. Each typed or plugin prompt now names the step in progress and asks for it to be closed.
+const WITH_STEP = {
+  v: 1,
+  nextQuestionId: 1,
+  prompts: [],
+  questions: [],
+  steps: [
+    { id: 'plan:1', source: 'plan', subject: 'Receive the audit', status: 'completed' },
+    { id: 'plan:2', source: 'plan', subject: 'Fold the design into the retro report', status: 'in_progress' },
+  ],
+}
+
+const contextFor = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], origin: unknown) => {
+  let context: readonly string[] = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: WITH_STEP, version: 1 } }))
+  on('prompt.submit', (_, e) => {
+    context = e.context ?? []
+
+    return { text: e.text }
+  })
+  await $.prompt.submit({ text: 'I want to see a plan to fix based on the retro', origin } as never)
+
+  return context.join('\n')
+}
+
+test('a typed prompt names the step still in progress and asks for it to be marked', async ($, on) => {
+  const context = await contextFor($, on, { kind: 'composer' })
+  expect(context).toContain('plan:2 "Fold the design into the retro report"')
+  expect(context).toContain('mcp__track__mark_step')
+})
+
+test('a plugin prompt (an approval from Plannotator) names the step in progress too', async ($, on) => {
+  expect(await contextFor($, on, { kind: 'plugin', name: 'plannotator' })).toContain('plan:2 "Fold the design into the retro report"')
+})
