@@ -74,10 +74,10 @@ const STEPS_LINE = `track: ${STEPS} If the prompt asks a question, call mcp__tra
 
 // The banner at the top of the pane: what the session is doing, in one colored line.
 const BANNERS = {
-  working: { text: ' ● Working ', color: 'suggestion' },
-  agents: { text: ' ◐ Waiting on agents ', color: 'warning' },
-  you: { text: ' ◆ Waiting on you ', color: 'permission' },
-  done: { text: ' ✓ Safe to close ', color: 'success' },
+  working: { text: ' Working ', color: 'suggestion' },
+  agents: { text: ' Waiting on agents ', color: 'warning' },
+  you: { text: ' Waiting on you ', color: 'permission' },
+  done: { text: ' Safe to close ', color: 'success' },
 } as const
 // The step in progress breathes while work runs (Ohad, 2026-10-07): one phase every PULSE_MS, a
 // spinner and grey shades while the main session works, an hourglass and amber shades while it
@@ -1127,12 +1127,16 @@ export const register: Register = on => {
       const from = region === 'questions' ? regions.qStart : regions.sStart
       await update($, scrollAt, cur => ({ ...cur, [region]: Math.max(0, (cur[region] ?? from) + e.by) }))
     }
-    const probe = await $.store.get('scrollProbe')
-    const ticks = Array.isArray(probe) ? probe : []
-    await $.store.set('scrollProbe', [
-      ...ticks.slice(-29),
-      { at: Date.now(), pointer: e.pointer ?? null, by: e.by, offset: e.offset, bodyRows: e.bodyRows, contentRows: e.contentRows, region: region ?? null, regions: { ...regions }, before, after: await read($, scrollAt) },
-    ])
+    try {
+      const probe = await $.store.get('scrollProbe')
+      const ticks = Array.isArray(probe) ? probe : []
+      await $.store.set('scrollProbe', [
+        ...ticks.slice(-29),
+        { at: Date.now(), pointer: e.pointer ?? null, by: e.by, offset: e.offset, bodyRows: e.bodyRows, contentRows: e.contentRows, region: region ?? null, regions: { ...regions }, before, after: await read($, scrollAt) },
+      ])
+    } catch (error) {
+      $.ui.log(`track: scroll probe failed: ${reason(error)}`, { to: 'debug' })
+    }
 
     return next({ ...e, offset: 0 })
   })

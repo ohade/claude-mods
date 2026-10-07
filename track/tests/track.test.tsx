@@ -1366,3 +1366,11 @@ test('a wheel tick scrolls a region and pins the pane body at its top', async ($
 
   expect(offsets).toEqual([0])
 })
+
+// Ohad, 2026-10-07: the banner says its state in words alone, with no glyph before them.
+test('the banner words carry no glyph before them', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts.at(-1)?.trim()).toBe('Safe to close')
+})
