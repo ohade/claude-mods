@@ -267,7 +267,8 @@ export const register: Register = on => {
       await update($, ledger, l => ({ ...l, questions: l.questions.map(q => (q.id === id ? { ...q, turnId: t.currentId } : q)) }))
     }
 
-    return { result: { id: minted?.id, head: summary } }
+    // A plugin tool's result is text (or content blocks), never a bare object.
+    return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered({ id: ${minted?.id}, status: "answered" }).` }
   })
 
   on('tool.call', { tool: 'mcp__track__mark_answered' }, async ($, e) => {
@@ -279,7 +280,9 @@ export const register: Register = on => {
     const note = typeof e.note === 'string' ? e.note.slice(0, HEAD_CHARS) : undefined
     const l = await read($, ledger)
     if (!l.questions.some(q => q.id === id)) {
-      return { result: { ok: false, known: l.questions.filter(q => q.status === 'open').map(q => ({ id: q.id, head: q.head })) } }
+      const open = l.questions.filter(q => q.status === 'open').map(q => `Q${q.id} "${q.head}"`)
+
+      return { result: `No question with id ${id}. Open: ${open.length > 0 ? open.join('; ') : 'none'}.` }
     }
     await update<Ledger>($, ledger, cur => ({
       ...cur,
@@ -290,7 +293,7 @@ export const register: Register = on => {
       ),
     }))
 
-    return { result: { ok: true, id, status } }
+    return { result: `Q${id} marked ${status}.` }
   })
 
   on('command.run', { command: 'track' }, async ($, e) => {
