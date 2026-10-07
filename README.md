@@ -64,8 +64,9 @@ where each was answered, and the steps the model set itself, each with a complet
   instruction beside it; built-in commands do not.
 - **Handoffs.** A handoff that clears the session and seeds a fresh one leaves the pane empty.
   `restore_steps({ from_session })` copies the previous session's steps back, in order, with
-  their ids and statuses; its questions stay behind. It refuses to overwrite steps the session
-  already has unless `replace: true` is passed.
+  their ids and statuses; its questions stay behind. Task ids start again in each session, so a
+  restored Task step's id gains `restored:` and keeps no link to the old Task. It refuses to
+  overwrite steps the session already has unless `replace: true` is passed.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred. It
@@ -108,9 +109,9 @@ it holds:
   model's optional note (cut to 200 characters); the last 200;
 - the title and status of each step, cut to 200 characters; the last 300.
 
-The store keeps the 20 most recent sessions and deletes older ones. Beside them it holds the list
-of those session ids and one flag: set when you close the pane by hand, cleared when `/track`
-shows it again. The mod makes no network calls of its own; what it tells the model, such as tool
+The store keeps at most the 20 most recent sessions, and at most 3 MiB of them, deleting the
+oldest first. Beside them it holds an index of each session's save time and size, and one flag:
+set when you close the pane by hand, cleared when `/track` shows it again. The mod makes no network calls of its own; what it tells the model, such as tool
 results and the open-question reminder, goes with the rest of the conversation.
 
 Remove it: delete the symlink (`rm ~/.claude/skills/track`), or take the folder out of

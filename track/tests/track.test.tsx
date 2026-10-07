@@ -411,6 +411,7 @@ test('a finished turn saves the ledger under the session id', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))
   on('session.id', () => ({ value: 'S1' }))
   on('store.get', () => ({ value: undefined }))
+  on('store.keys', () => ({ value: [] }))
   on('store.set', (_, e) => {
     sets.push(e)
 
@@ -422,7 +423,8 @@ test('a finished turn saves the ledger under the session id', async ($, on) => {
 
   const bucket = sets.find(s => s.key === 's:S1')?.value as { ledger?: { questions: QuestionRow[] } } | undefined
   expect(bucket?.ledger?.questions.map(q => q.id)).toEqual([1])
-  expect(sets.find(s => s.key === 'sessions')?.value).toEqual(['S1'])
+  // The index lists the bucket with its time and size, so the next save can prune by both.
+  expect(Object.keys((sets.find(s => s.key === 'saved')?.value ?? {}) as object)).toEqual(['S1'])
 })
 
 // An answered question turns green, and the jump to its answer stands out. A change that made

@@ -20,8 +20,13 @@ const rewindCheck = { isScheduled: false, lastAt: -Infinity }
 const AUTO_OPEN_MIN_COLUMNS = 144
 const AUTO_OPEN_DELAY_MS = 50
 const autoOpen = { isScheduled: false }
-// Saved ledgers kept across sessions, newest first; older buckets are deleted.
+// Saved registers kept across sessions, the newest first; older buckets are deleted. The store
+// holds 4 MiB of JSON in all, so the buckets keep under STORE_BUDGET characters together, which
+// leaves room for the index and the closed-by-hand flag.
 const MAX_SESSIONS = 20
+const STORE_BUDGET = 3 * 1024 * 1024
+// The store key of the buckets' index: per session id, when its bucket was saved and its size.
+const SAVED_INDEX = 'saved'
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
@@ -33,6 +38,7 @@ const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
 // paused: started, then parked; waiting: needs the person's answer.
 const STEP_STATUSES = ['pending', 'in_progress', 'completed', 'paused', 'waiting'] as const
+const QUESTION_STATUSES = ['open', 'answered', 'deferred'] as const
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
 // Long enough to keep a question whole; the pane wraps it rather than cutting it.
@@ -214,6 +220,12 @@ const light = ($: EngineInterface, id: string, level: number) => update($, membe
 
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
+const isDefined = <T,>(value: T | undefined): value is T => value !== undefined
+
+// `{ [key]: value }` when value is a string, else nothing: an optional text field of a saved row.
+const textField = <K extends string>(key: K, value: unknown): Partial<Record<K, string>> =>
+  typeof value === 'string' ? ({ [key]: value } as Record<K, string>) : {}
+
 // What the session is doing: the person's question dialog first, then agents, then the turn;
 // after the turn, running background work, then anything still open, else safe to close.
 const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
@@ -310,8 +322,8 @@ const MESSAGES_CAP = 4096
 // mark_answered call is gone was rewound. Only work since the last compaction is judged,
 // since compaction removes old tool calls as well.
 const dropRewound = async ($: EngineInterface): Promise<void> => {
-  const since = (await read($, turn)).compactedAt ?? 0
   const l = await read($, ledger)
+  const since = l.compactedAt ?? 0
   const judged = (q: Question) =>
     (q.trackedBy !== undefined && q.at > since) || (q.answerRequestId !== undefined && (q.answeredAt ?? 0) > since)
   if (!l.questions.some(judged)) {
@@ -382,16 +394,102 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
   })
 }
 
-// The ledger survives the process: one bucket per session id, the newest MAX_SESSIONS kept.
-const saveLedger = async ($: EngineInterface): Promise<void> => {
-  const id = await $.session.id()
-  await $.store.set(`s:${id}`, { v: 1, savedAt: Date.now(), ledger: await read($, ledger) })
-  const known = await $.store.get('sessions')
-  const sessions = [id, ...(Array.isArray(known) ? known.filter((s): s is string => typeof s === 'string' && s !== id) : [])]
-  for (const old of sessions.slice(MAX_SESSIONS)) {
-    await $.store.delete(`s:${old}`)
+type SavedIndex = Record<string, { at: number; bytes: number }>
+
+// Every saved bucket with its time and size. Two sessions saving at once can each write the index
+// without the other's entry; a bucket the index does not list is read once for both, so it is
+// pruned by its age like the rest and never kept for good.
+const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
+  const keys = await $.store.keys()
+  const raw = await $.store.get(SAVED_INDEX)
+  const listed = typeof raw === 'object' && raw !== null ? (raw as Record<string, { at?: unknown; bytes?: unknown } | null>) : {}
+  const index: SavedIndex = {}
+  for (const key of keys.filter(k => k.startsWith('s:'))) {
+    const id = key.slice(2)
+    const row = listed[id]
+    if (typeof row?.at === 'number' && typeof row.bytes === 'number') {
+      index[id] = { at: row.at, bytes: row.bytes }
+      continue
+    }
+    const bucket = (await $.store.get(key)) as { savedAt?: unknown } | undefined
+    index[id] = { at: typeof bucket?.savedAt === 'number' ? bucket.savedAt : 0, bytes: JSON.stringify(bucket ?? null).length }
   }
-  await $.store.set('sessions', sessions.slice(0, MAX_SESSIONS))
+  // The list an earlier version kept: the buckets themselves now say the same.
+  if (keys.includes('sessions')) {
+    await $.store.delete('sessions')
+  }
+
+  return index
+}
+
+// The register survives the process: one bucket per session id. The oldest buckets go before the
+// new one is written, since a write that takes the store past 4 MiB is refused. A failed save is
+// logged and never throws, so the turn and a /clear go on.
+const saveLedger = async ($: EngineInterface): Promise<void> => {
+  try {
+    const id = await $.session.id()
+    const bucket = { v: 1, savedAt: Date.now(), ledger: await read($, ledger) }
+    const bytes = JSON.stringify(bucket).length
+    const others = Object.entries(await savedIndex($))
+      .filter(([other]) => other !== id)
+      .sort(([, a], [, b]) => b.at - a.at)
+    const kept: SavedIndex = {}
+    let used = bytes
+    let isFull = false
+    for (const [other, row] of others) {
+      isFull = isFull || Object.keys(kept).length + 1 >= MAX_SESSIONS || used + row.bytes > STORE_BUDGET
+      if (isFull) {
+        await $.store.delete(`s:${other}`)
+      } else {
+        kept[other] = row
+        used += row.bytes
+      }
+    }
+    await $.store.set(`s:${id}`, bucket)
+    await $.store.set(SAVED_INDEX, { ...kept, [id]: { at: bucket.savedAt, bytes } })
+  } catch (error) {
+    $.ui.log(`track: save failed: ${reason(error)}`, { to: 'debug' })
+  }
+}
+
+// A saved prompt or question as a fresh row, or undefined when the row is not one.
+const savedPrompt = (row: unknown): Prompt | undefined => {
+  if (typeof row !== 'object' || row === null) {
+    return undefined
+  }
+  const r = row as Record<string, unknown>
+  if (typeof r.rowKey !== 'string' || typeof r.head !== 'string' || typeof r.at !== 'number') {
+    return undefined
+  }
+
+  return { rowKey: r.rowKey, head: headOf(r.head), at: r.at, turnId: typeof r.turnId === 'string' ? r.turnId : null, ...textField('requestId', r.requestId) }
+}
+
+const savedQuestion = (row: unknown): Question | undefined => {
+  if (typeof row !== 'object' || row === null) {
+    return undefined
+  }
+  const r = row as Record<string, unknown>
+  const status = QUESTION_STATUSES.find(one => one === r.status)
+  if (typeof r.id !== 'number' || typeof r.head !== 'string' || typeof r.at !== 'number' || status === undefined) {
+    return undefined
+  }
+
+  return {
+    id: r.id,
+    head: headOf(r.head),
+    at: r.at,
+    turnId: typeof r.turnId === 'string' ? r.turnId : null,
+    status,
+    ...textField('rowKey', r.rowKey),
+    ...textField('askedRequestId', r.askedRequestId),
+    ...textField('answerRequestId', r.answerRequestId),
+    ...textField('answerKey', r.answerKey),
+    ...textField('trackedBy', r.trackedBy),
+    ...(typeof r.note === 'string' && { note: r.note.slice(0, HEAD_CHARS) }),
+    ...(typeof r.answeredAt === 'number' && { answeredAt: r.answeredAt }),
+    ...(r.cleared === true && { cleared: true as const }),
+  }
 }
 
 // A saved step as a fresh Step, or undefined when the row is not one: restore_steps reads rows
@@ -414,6 +512,33 @@ const savedStep = (row: unknown): Step | undefined => {
     status,
     ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
     ...(r.cleared === true ? { cleared: true as const } : {}),
+  }
+}
+
+// A saved bucket's register, or undefined when it is not one of this version: a resume reads what
+// an earlier version or a damaged store left. Only well-formed rows are kept, and the next
+// question id stays above every id kept or withdrawn.
+const savedLedger = (raw: unknown): Ledger | undefined => {
+  const bucket = raw as { v?: unknown; ledger?: Record<string, unknown> | null } | undefined
+  const l = bucket?.ledger
+  if (bucket?.v !== 1 || typeof l !== 'object' || l === null) {
+    return undefined
+  }
+  const rows = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
+  const questions = rows(l.questions).map(savedQuestion).filter(isDefined).slice(-MAX_QUESTIONS)
+  const withdrawn = rows(l.withdrawn).filter(
+    (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
+  )
+  const top = Math.max(0, ...questions.map(q => q.id), ...withdrawn.map(w => w.id))
+
+  return {
+    v: 1,
+    nextQuestionId: Math.max(top + 1, typeof l.nextQuestionId === 'number' ? l.nextQuestionId : 1),
+    prompts: rows(l.prompts).map(savedPrompt).filter(isDefined).slice(-MAX_PROMPTS),
+    questions,
+    steps: rows(l.steps).map(savedStep).filter(isDefined).slice(-MAX_STEPS),
+    ...(withdrawn.length > 0 && { withdrawn }),
+    ...(typeof l.compactedAt === 'number' && { compactedAt: l.compactedAt }),
   }
 }
 
@@ -617,12 +742,13 @@ export const register: Register = on => {
     const fromPlugin = e.origin?.kind === 'plugin'
     const needsSteps = (typed || fromPlugin) && (await read($, turn)).composeSeen !== true
     if (e.text.trim().startsWith('/')) {
-      // A skill's slash command starts work of several steps; /track and the built-in commands
-      // reach no main-loop work the steps line could describe.
+      // /track and the built-in commands reach no main-loop work: nothing rides on them, and a
+      // withdrawn question waits for a prompt the model reads. A skill's slash command reaches the
+      // model and starts work, so it carries what a typed prompt carries.
       const name = /^\/([^\s]+)/.exec(e.text.trim())?.[1] ?? ''
-      const isBuiltin = needsSteps && (await $.command.list()).some(c => c.name === name && c.source === 'builtin')
-
-      return needsSteps && name !== 'track' && !isBuiltin ? next({ ...e, context: [...(e.context ?? []), STEPS_LINE] }) : next(e)
+      if (name === 'track' || (await $.command.list()).some(c => c.name === name && c.source === 'builtin')) {
+        return next(e)
+      }
     }
     const lines: string[] = needsSteps ? [STEPS_LINE] : []
     const l = await read($, ledger)
@@ -688,7 +814,7 @@ export const register: Register = on => {
   on('session.compact', async ($, e, next) => {
     const compacted = await next(e)
     if (e.agentId === undefined && !('skip' in compacted)) {
-      await update($, turn, t => ({ ...t, compactedAt: Date.now() }))
+      await update<Ledger>($, ledger, l => ({ ...l, compactedAt: Date.now() }))
     }
 
     return compacted
@@ -848,7 +974,8 @@ export const register: Register = on => {
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
     const ran = await next(e)
     const status = e.status
-    if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || status === undefined) {
+    const failed = (ran.result as { success?: unknown } | undefined)?.success === false
+    if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || failed || status === undefined) {
       return ran
     }
     const taskId = String(e.taskId)
@@ -877,7 +1004,15 @@ export const register: Register = on => {
     if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || todos === undefined) {
       return ran
     }
-    const rows: Step[] = todos.map(t => ({ id: `todo:${norm(t.content)}`, source: 'todo', subject: headOf(t.content), status: t.status }))
+    // Two todos whose titles normalize alike get #2, #3 after the id, so mark_step reaches each.
+    const seen = new Map<string, number>()
+    const rows: Step[] = todos.map(t => {
+      const base = `todo:${norm(t.content)}`
+      const n = (seen.get(base) ?? 0) + 1
+      seen.set(base, n)
+
+      return { id: n === 1 ? base : `${base}#${n}`, source: 'todo', subject: headOf(t.content), status: t.status }
+    })
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'todo'), ...rows].slice(-MAX_STEPS) }))
 
     return ran
@@ -954,15 +1089,16 @@ export const register: Register = on => {
     }
     const after = typeof e.after === 'string' && e.after !== '' ? e.after : undefined
     if (after !== undefined) {
-      // New work joins a running plan: insert after that step, ids after the highest plan id.
+      // New work joins a running plan: insert after that step, ids after the highest plan id. The
+      // ids are taken inside the write, so two calls in flight never take the same ones.
       const l = await read($, ledger)
-      const at = l.steps.findIndex(s => s.id === after)
-      if (at < 0) {
+      if (!l.steps.some(s => s.id === after)) {
         return { result: `No step ${after}. Known steps: ${l.steps.map(s => s.id).join(', ') || 'none'}.` }
       }
-      const top = Math.max(0, ...l.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
-      const added: Step[] = titles.map((subject, i) => ({ id: `plan:${top + i + 1}`, source: 'plan', subject, status: 'pending' }))
+      let added: Step[] = []
       await update<Ledger>($, ledger, cur => {
+        const top = Math.max(0, ...cur.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
+        added = titles.map((subject, k) => ({ id: `plan:${top + k + 1}`, source: 'plan', subject, status: 'pending' }))
         const i = cur.steps.findIndex(s => s.id === after)
         const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
 
@@ -979,7 +1115,9 @@ export const register: Register = on => {
 
   // A handoff seeds a fresh session, whose pane starts empty. One call copies the old session's
   // steps from the store, keyed by its session id; its questions stay behind.
-  // Steps already in the pane are kept unless the call asks to replace them.
+  // Steps already in the pane are kept unless the call asks to replace them. Task ids start again
+  // in every session, so a restored step keeps no link to the old session's Task, and a Task step
+  // takes a restored: id, leaving task:<n> to the new session's own Task.
   on('tool.call', { tool: RESTORE_STEPS }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
@@ -990,16 +1128,30 @@ export const register: Register = on => {
     }
     const saved = (await $.store.get(`s:${from}`)) as { ledger?: { steps?: unknown } } | undefined
     const rows = Array.isArray(saved?.ledger?.steps) ? (saved.ledger.steps as unknown[]) : []
-    const steps = rows.map(savedStep).filter((s): s is Step => s !== undefined).slice(-MAX_STEPS)
+    const steps = rows
+      .map(savedStep)
+      .filter(isDefined)
+      .map(({ taskId: _old, ...s }) => (s.source === 'task' && !s.id.startsWith('restored:') ? { ...s, id: `restored:${s.id}` } : s))
+      .slice(-MAX_STEPS)
     if (steps.length === 0) {
       return { deny: `track: No saved steps for session ${from}; nothing changed.` }
     }
+    const refusal = (count: number) => `track: this session already has ${count} steps; nothing changed. Pass replace: true to replace them.`
     const current = await read($, ledger)
     if (current.steps.length > 0 && e.replace !== true) {
-      return { deny: `track: this session already has ${current.steps.length} steps; nothing changed. Pass replace: true to replace them.` }
+      return { deny: refusal(current.steps.length) }
+    }
+    // Checked again inside the write: a second call in flight finds the first one's steps.
+    let had = 0
+    await update<Ledger>($, ledger, cur => {
+      had = e.replace === true ? 0 : cur.steps.length
+
+      return had > 0 ? cur : { ...cur, steps }
+    })
+    if (had > 0) {
+      return { deny: refusal(had) }
     }
     await update($, scrollAt, cur => ({ ...cur, steps: null }))
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps }))
     const shown = steps.filter(s => s.cleared !== true)
     const at = shown.findIndex(s => s.status === 'in_progress')
     const where = at < 0 ? 'None in progress.' : `In progress: S${at + 1} ${shown[at]?.subject}.`
@@ -1089,15 +1241,18 @@ export const register: Register = on => {
 
   on('classic.SessionStart', async ($, e, next) => {
     if (e.source === 'resume') {
-      const saved = (await $.store.get(`s:${e.session_id}`)) as { ledger?: Ledger } | undefined
-      if (saved?.ledger !== undefined && Array.isArray(saved.ledger.questions)) {
-        const restored = saved.ledger
+      const restored = savedLedger(await $.store.get(`s:${e.session_id}`))
+      if (restored !== undefined) {
         await update<Ledger>($, ledger, () => restored)
       }
     }
 
     return next(e)
-  }).catch(($, e, next) => next(e))
+  }).catch(($, e, next) => {
+    $.ui.log(`track: resume failed: ${reason(next.error)}`, { to: 'debug' })
+
+    return next(e)
+  })
 
   // Save the ledger at the end of the session; /clear starts a fresh one.
   on('session.end', async ($, e, next) => {

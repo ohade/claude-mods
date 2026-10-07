@@ -52,25 +52,26 @@ export type Ledger = {
   steps: Step[]
   // Questions the user withdrew with ✕, told to the model once on the next prompt.
   withdrawn?: Array<{ id: number; head: string }>
+  // When the transcript was last compacted. Questions older than that are never dropped by the
+  // rewind check, because compaction removes their tool calls too. Saved with the register, so a
+  // resumed session keeps it.
+  compactedAt?: number
 }
 
-// `compactedAt`: when the transcript was last compacted. Questions older than that are
-// never dropped by the rewind check, because compaction removes their tool calls too.
 // `lastText`: the main loop's last text row and the turn it was written in. `composeSeen`: the
 // standing rule reached the model this session (prompt.compose ran), so prompts need no steps line.
 export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
-  compactedAt?: number
   lastText?: { row: string; turnId: string | null }
   composeSeen?: true
 }
 
-// What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
-// calls in flight (tool_use ids), and background agents and shell tasks still running (their ids).
 // The first shown row of each pane region, or null to follow the news.
 export type ScrollAt = { questions: number | null; steps: number | null }
 
+// What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
+// calls in flight (tool_use ids), and background agents and shell tasks still running (their ids).
 export type Activity = { isWorking: boolean; agentCalls: string[]; askCalls: string[]; background: string[] }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
