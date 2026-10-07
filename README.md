@@ -2,6 +2,8 @@
 
 Personal customizations for Claude Code: function-hook plugins ("mods") and the status line.
 
+Get them with `git clone https://github.com/ohade/claude-mods.git`; each section says how to load its mod.
+
 ## image-thumbs
 
 Shows each image you paste into a prompt as a small framed thumbnail under your message.
@@ -80,8 +82,39 @@ at once while a turn runs and adds nothing to the session; `/track status` print
 questions. To keep the diff
 panel out of the slot, type `/diff` once.
 
-Load it with `ln -s ../../git/claude-mods/track ~/.claude/skills/track`, or for one session
-`claude --plugin-dir ~/git/claude-mods/track`. Tests: `claude plugin test track`.
+Requirements: Claude Code with function-hook plugins; tested with Claude Code 2.1.292.
+
+Load it from the clone folder (`cd claude-mods`), wherever it sits, with one of:
+
+```sh
+mkdir -p ~/.claude/skills && ln -s "$PWD/track" ~/.claude/skills/track   # every session
+claude --plugin-dir "$PWD/track"                                         # one session
+```
+
+or list the clone's `track` folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
+`~/.claude/settings.json`.
+
+Check it with `claude plugin validate track`, test it with `claude plugin test track`, and
+type-check it with `tsc -p track` once Claude Code has loaded it: `track/tsconfig.json` extends
+the API types that loading writes into `track/.claude-plugin/types/`.
+
+What it saves: at the end of each turn and when the session ends, the register is written to the
+mod's store, a JSON file of its own under Claude Code's configuration directory. For each session
+it holds:
+
+- the first line of each prompt you type, without image tags, cut to 200 characters, with its
+  time; prompts that start with `/` are left out; the last 200 prompts;
+- each tracked question as the model summed it up, cut to 200 characters, with its status and the
+  model's optional note (cut to 200 characters); the last 200;
+- the title and status of each step, cut to 200 characters; the last 300.
+
+The store keeps the 20 most recent sessions and deletes older ones. Beside them it holds the list
+of those session ids and one flag: set when you close the pane by hand, cleared when `/track`
+shows it again. The mod makes no network calls of its own; what it tells the model, such as tool
+results and the open-question reminder, goes with the rest of the conversation.
+
+Remove it: delete the symlink (`rm ~/.claude/skills/track`), or take the folder out of
+`CLAUDE_CODE_PLUGIN_DIRS`. The saved register stays behind in Claude Code's plugin store.
 
 ## statusline
 
