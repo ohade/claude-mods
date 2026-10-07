@@ -40,10 +40,16 @@ where each was answered, and the steps the model set itself, each with a complet
   plan (`ExitPlanMode`: its numbered and checkbox lines). A Task named like a plan step links to it.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
   hides finished rows and keeps them counted.
+- **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions
+  are withdrawn, so the model is told not to answer them.
+- **Chat plans.** When the model lays out steps in chat instead of plan mode or Tasks, it
+  registers them with `track_steps` and ticks them with `mark_step`.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred. It
   runs after your own Stop hooks and never adds a second block.
+  An organization's managed plugin may bypass a user plugin's Stop hook and its system-prompt
+  section; the questions are still tracked, through the tools' own descriptions and the reminder.
 - **Rewind and resume.** A `/rewind` drops the questions asked in the rewound turns. Each finished
   turn saves the register, so `/resume` brings it back.
 

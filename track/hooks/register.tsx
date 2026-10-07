@@ -24,15 +24,19 @@ const MAX_SESSIONS = 20
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
+const TRACK_STEPS = 'mcp__track__track_steps'
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
 const STEP_STATUSES = ['pending', 'in_progress', 'completed'] as const
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
-const HEAD_CHARS = 80
+// Long enough to keep a question whole; the pane wraps it rather than cutting it.
+const HEAD_CHARS = 200
 const MAX_PROMPTS = 200
 const MAX_QUESTIONS = 200
 const HOTKEYS = 9
+// Rows sit this many columns in under their section header, questions and steps alike.
+const ROW_INDENT = 2
 
 // How many open questions the per-turn context row names.
 const OPEN_LISTED = 5
@@ -214,6 +218,26 @@ const saveLedger = async ($: EngineInterface): Promise<void> => {
   await $.store.set('sessions', sessions.slice(0, MAX_SESSIONS))
 }
 
+// Clear all, per section. Unlike Clear completed, the rows leave and the ring restarts. Open
+// and deferred questions are withdrawn, so the model is told not to answer them; ids go on
+// counting up, so a later Q<n> never reuses one the model saw.
+const clearQuestions = async ($: EngineInterface): Promise<void> => {
+  await update<Ledger>($, ledger, cur => ({
+    ...cur,
+    questions: [],
+    withdrawn: [
+      ...(cur.withdrawn ?? []),
+      ...cur.questions.filter(q => q.status !== 'answered').map(q => ({ id: q.id, head: q.head })),
+    ],
+  }))
+  $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
+}
+
+const clearSteps = async ($: EngineInterface): Promise<void> => {
+  await update<Ledger>($, ledger, cur => ({ ...cur, steps: [] }))
+  $.ui.toast('track: steps cleared.')
+}
+
 const openPane = async ($: EngineInterface): Promise<boolean> => {
   const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS, rows: PANE_ROWS })
   await update($, pane, p => ({ ...p, isOpen: opened.isPlaced }))
@@ -258,11 +282,20 @@ export const register: Register = on => {
       },
     })
 
-    // Left deferred behind ToolSearch: an override the model rarely needs.
+    await $.tool.register({
+      name: 'track_steps',
+      description:
+        'Show the steps of a plan you lay out in chat in the track pane. Call it once, before starting, with the step titles in order; they get ids plan:1, plan:2, … Not needed for TaskCreate tasks or an approved plan-mode plan: those appear on their own.',
+      inputSchema: {
+        type: 'object',
+        properties: { steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' } },
+        required: ['steps'],
+      },
+    })
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Correct a step the track pane shows wrong. Ids: plan:1, plan:2, … in the order of the approved plan; task:<taskId> for a Task; todo:<the todo text, lowercased>. Prefer TaskUpdate for Tasks.',
+        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done. Ids: plan:1, plan:2, … (from track_steps or the approved plan), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] } },
@@ -276,6 +309,8 @@ export const register: Register = on => {
   // The two per-turn tools stay in the model's tool list; a deferred tool costs a ToolSearch round trip.
   on('tool.describe', { tool: 'mcp__track__track_question' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: 'mcp__track__mark_answered' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: 'mcp__track__track_steps' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: 'mcp__track__mark_step' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
   // Every typed prompt is recorded before the model runs: its provisional row key and a short head.
   // A subagent's prompt row carries agentId and is not the person's.
@@ -582,6 +617,21 @@ export const register: Register = on => {
     return ran
   })
 
+  // A plan laid out in chat: its steps replace any earlier plan's, as a new approved plan does.
+  on('tool.call', { tool: TRACK_STEPS }, async ($, e) => {
+    if (e.agentId !== undefined) {
+      return { deny: 'track: a subagent cannot set the session\'s steps.' }
+    }
+    const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
+    if (titles.length === 0) {
+      return { result: 'No steps given: pass steps as an array of one-line titles.' }
+    }
+    const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
+
+    return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+  })
+
   on('tool.call', { tool: MARK_STEP }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
@@ -686,10 +736,18 @@ export const register: Register = on => {
   // The model's bookkeeping calls stay quiet in the transcript: track_question draws nothing,
   // mark_answered draws one dim line, which is also where "jump to answer" lands.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION) {
+    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
+    }
+    if (e.props.tool === MARK_STEP) {
+      const { Text } = $.ui.resolve(e)
+      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
+      const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
+      const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : '◻'
+
+      return <Text dimColor>{`${glyph} ${String(input.id ?? '?')} ${status.replace('_', ' ')}`}</Text>
     }
     if (e.props.tool === MARK_ANSWERED) {
       const { Text } = $.ui.resolve(e)
@@ -703,7 +761,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION || e.props.tool === MARK_ANSWERED) {
+    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP].includes(e.props.tool)) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
@@ -736,6 +794,13 @@ export const register: Register = on => {
           <Text color={qDone === l.questions.length && l.questions.length > 0 ? 'success' : 'warning'}>
             {ring(qDone, l.questions.length)}
           </Text>
+          {l.questions.length > 0 && (
+            // The gap sits outside the button: the engine draws "q: label", so padding in the
+            // label would land after "q:".
+            <Box marginLeft={3}>
+              <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />
+            </Box>
+          )}
         </Box>
         {questions.length === 0 && (
           <Text dimColor>{l.questions.length === 0 ? '  none yet — the model adds a question with track_question' : '  all cleared'}</Text>
@@ -746,13 +811,20 @@ export const register: Register = on => {
           // answered row puts its digit on the answer, an open row on the ask.
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
           const answered = q.status === 'answered'
-          const text = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 28)}`
+          const color = answered ? 'success' : undefined
 
+          // The dot is a column of its own and the question a wrapping column beside it, so a
+          // long question is shown whole and its next lines align with the text, not the dot.
           return (
-            <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1}>
-              <Text color={answered ? 'success' : undefined} dimColor={q.status === 'deferred'}>
-                {text}
+            <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
+              <Text color={color} dimColor={q.status === 'deferred'}>
+                {statusGlyph(q)}
               </Text>
+              <Box flexShrink={1}>
+                <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
+                  {`Q${q.id} ${q.head}`}
+                </Text>
+              </Box>
               {q.askedRequestId !== undefined && (
                 <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="asked" onPress={() => jump($, q.askedRequestId as string, 'start')} />
               )}
@@ -764,19 +836,35 @@ export const register: Register = on => {
             </Box>
           )
         })}
-        <Box flexDirection="row" marginTop={1}>
+        <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
+        <Box flexDirection="row">
           <Text bold>Steps </Text>
           <Text color={sDone === l.steps.length && l.steps.length > 0 ? 'success' : 'warning'}>{ring(sDone, l.steps.length)}</Text>
+          {l.steps.length > 0 && (
+            // The gap sits outside the button: the engine draws "s: label", so padding in the
+            // label would land after "s:".
+            <Box marginLeft={3}>
+              <Button key="clear-steps" plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />
+            </Box>
+          )}
         </Box>
         {steps.length === 0 && (
           <Text dimColor>{l.steps.length === 0 ? '  none yet — tasks and approved plan steps appear here' : '  all cleared'}</Text>
         )}
-        {steps.map(s => (
-          <Text dimColor={s.status === 'completed'}>
-            {'   '}
-            {s.status === 'completed' ? '◼' : s.status === 'in_progress' ? '◧' : '◻'} {truncate(s.subject, width - 6)}
-          </Text>
-        ))}
+        {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
+            same left edge, a number S<n> by position, and green once done. */}
+        {steps.map((s, index) => {
+          const color = s.status === 'completed' ? 'success' : undefined
+
+          return (
+            <Box key={`row-s-${s.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
+              <Text color={color}>{s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'}</Text>
+              <Box flexShrink={1}>
+                <Text color={color} wrap="wrap">{`S${index + 1} ${s.subject}`}</Text>
+              </Box>
+            </Box>
+          )
+        })}
         <Box flexDirection="row" marginTop={1}>
           <Button key="clear" plain hotkey="c" label="Clear completed" onPress={clearCompleted} />
           <Text dimColor>   /track hides · ctrl+x x closes for good</Text>

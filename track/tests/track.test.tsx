@@ -428,3 +428,143 @@ test('an answered question is green and its answer button is prominent', async (
   expect(answer?.props).toMatchObject({ variant: 'primary', label: 'answer' })
   expect((answer?.props as { plain?: true } | undefined)?.plain).toBeUndefined()
 })
+
+// Ohad, 2026-10-07: a plan written in chat registered no steps (no Task, todo or plan mode),
+// and mark_step drew the engine's full row. track_steps registers chat-plan steps.
+test('track_steps registers the steps of a plan laid out in chat', async ($, on) => {
+  const writes = captureSteps(on, withSteps([]))
+
+  await $.tool.call({ tool: 'mcp__track__track_steps', steps: ['Create the file', 'Print it', 'Count the lines'] } as never)
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
+    'plan:1|Create the file|pending',
+    'plan:2|Print it|pending',
+    'plan:3|Count the lines|pending',
+  ])
+})
+
+test('track_steps draws no row and mark_step draws one quiet line', async ($, on) => {
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+
+  const steps = await $.ui.mount(toolRow('mcp__track__track_steps', { steps: ['a', 'b'] }))
+  expect(await steps.findAll({ type: 'Text' })).toHaveLength(0)
+
+  const second = toolRow('mcp__track__mark_step', { id: 'plan:1', status: 'in_progress' })
+  const mark = await $.ui.mount({ ...second, requestId: 'toolu_row_2', props: { ...second.props, tool_use_id: 'toolu_row_2' } })
+  const texts = (await mark.findAll({ type: 'Text' })).map(t => t.text)
+  expect(texts).toHaveLength(1)
+  expect(texts[0]).toContain('plan:1 in progress')
+})
+
+// Ohad, 2026-10-07: clear all questions, or all steps, each on its own.
+const BOTH = {
+  ...ANSWERED,
+  questions: [...ANSWERED.questions, { ...OPEN_ONE.questions[0], id: 2 }],
+  steps: [{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'pending' }],
+}
+
+const captureLedger = (on: Parameters<TestBody>[1]) => {
+  const writes: Array<{ questions: QuestionRow[]; steps: StepRow[]; withdrawn?: Array<{ id: number }> }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { questions: QuestionRow[]; steps: StepRow[]; withdrawn?: Array<{ id: number }> })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+
+  return writes
+}
+
+test('clearing all questions empties them, withdraws the open ones and keeps the steps', async ($, on) => {
+  const writes = captureLedger(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-questions' })
+
+  const last = writes.at(-1)
+  expect(last?.questions ?? ['not cleared']).toHaveLength(0)
+  expect((last?.withdrawn ?? []).map(w => w.id)).toEqual([2])
+  expect(last?.steps.map(s => s.id)).toEqual(['plan:1'])
+})
+
+test('clearing all steps empties them and keeps the questions', async ($, on) => {
+  const writes = captureLedger(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-steps' })
+
+  const last = writes.at(-1)
+  expect(last?.steps ?? ['not cleared']).toHaveLength(0)
+  expect(last?.questions.map(q => q.id)).toEqual([1, 2])
+})
+
+// Ohad, 2026-10-07: a completed step turns green like an answered question, and a line
+// separates the two sections.
+test('a completed step is green, and a separator line divides the sections', async ($, on) => {
+  const done = { ...BOTH, steps: [{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'completed' }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: done, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const texts = await ui.findAll({ type: 'Text' })
+  const step = texts.find(t => String(t.text ?? '').includes('Foo'))
+  expect((step?.props as { color?: string } | undefined)?.color).toBe('success')
+  expect(texts.some(t => /^─{10,}$/.test(String(t.text ?? '')))).toBe(true)
+})
+
+// Ohad, 2026-10-07: "q: clear all" sat flush against the ring. The engine draws a hotkey
+// button as "q: label", so spacing inside the label lands after "q:", not before it.
+test('the clear-all buttons carry no padding in their labels', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const labels = (await ui.findAll({ type: 'Button' }))
+    .filter(b => b.key === 'clear-questions' || b.key === 'clear-steps')
+    .map(b => (b.props as { label?: string }).label)
+  expect(labels).toEqual(['clear all', 'clear all'])
+})
+
+// Ohad, 2026-10-07: steps read like questions — same dot glyphs, same left edge, numbered.
+test('step rows are annotated like question rows', async ($, on) => {
+  const three = {
+    ...BOTH,
+    steps: [
+      { id: 'plan:1', source: 'plan', subject: 'Write', status: 'completed' },
+      { id: 'plan:2', source: 'plan', subject: 'Print', status: 'in_progress' },
+      { id: 'plan:3', source: 'plan', subject: 'Count', status: 'pending' },
+    ],
+  }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: three, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  // Updated 2026-10-07 at Ohad's request: the dot is its own column, so a wrapped line
+  // aligns with the text, not under the dot.
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts.filter(t => /^S\d /.test(t))).toEqual(['S1 Write', 'S2 Print', 'S3 Count'])
+  expect(texts.filter(t => /^[○◐●]$/.test(t))).toContain('◐')
+})
+
+// Ohad, 2026-10-07: rows sit one step in under their header, in both sections alike.
+test('question and step rows are indented the same under their headers', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const boxes = await ui.findAll({ type: 'Box' })
+  const margin = (key: string) => (boxes.find(b => b.key === key)?.props as { marginLeft?: number } | undefined)?.marginLeft
+  expect([margin('row-q-1'), margin('row-s-plan:1')]).toEqual([2, 2])
+})
+
+// Ohad, 2026-10-07: show the whole question; a long one wraps, and its next lines align with
+// the text, not under the dot.
+test('a long question is shown whole, its dot in a column of its own', async ($, on) => {
+  const head = 'Why did I check AMQ when only the agent availability check was asked for in the brief?'
+  const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts).toContain(`Q4 ${head}`)
+  expect(texts).toContain('●')
+})
