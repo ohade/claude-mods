@@ -428,3 +428,30 @@ test('an answered question is green and its answer button is prominent', async (
   expect(answer?.props).toMatchObject({ variant: 'primary', label: 'answer' })
   expect((answer?.props as { plain?: true } | undefined)?.plain).toBeUndefined()
 })
+
+// Ohad, 2026-10-07: a plan written in chat registered no steps (no Task, todo or plan mode),
+// and mark_step drew the engine's full row. track_steps registers chat-plan steps.
+test('track_steps registers the steps of a plan laid out in chat', async ($, on) => {
+  const writes = captureSteps(on, withSteps([]))
+
+  await $.tool.call({ tool: 'mcp__track__track_steps', steps: ['Create the file', 'Print it', 'Count the lines'] } as never)
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
+    'plan:1|Create the file|pending',
+    'plan:2|Print it|pending',
+    'plan:3|Count the lines|pending',
+  ])
+})
+
+test('track_steps draws no row and mark_step draws one quiet line', async ($, on) => {
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+
+  const steps = await $.ui.mount(toolRow('mcp__track__track_steps', { steps: ['a', 'b'] }))
+  expect(await steps.findAll({ type: 'Text' })).toHaveLength(0)
+
+  const second = toolRow('mcp__track__mark_step', { id: 'plan:1', status: 'in_progress' })
+  const mark = await $.ui.mount({ ...second, requestId: 'toolu_row_2', props: { ...second.props, tool_use_id: 'toolu_row_2' } })
+  const texts = (await mark.findAll({ type: 'Text' })).map(t => t.text)
+  expect(texts).toHaveLength(1)
+  expect(texts[0]).toContain('plan:1 in progress')
+})

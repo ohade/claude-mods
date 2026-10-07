@@ -24,6 +24,7 @@ const MAX_SESSIONS = 20
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
+const TRACK_STEPS = 'mcp__track__track_steps'
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
 const STEP_STATUSES = ['pending', 'in_progress', 'completed'] as const
@@ -258,11 +259,20 @@ export const register: Register = on => {
       },
     })
 
-    // Left deferred behind ToolSearch: an override the model rarely needs.
+    await $.tool.register({
+      name: 'track_steps',
+      description:
+        'Show the steps of a plan you lay out in chat in the track pane. Call it once, before starting, with the step titles in order; they get ids plan:1, plan:2, … Not needed for TaskCreate tasks or an approved plan-mode plan: those appear on their own.',
+      inputSchema: {
+        type: 'object',
+        properties: { steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' } },
+        required: ['steps'],
+      },
+    })
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Correct a step the track pane shows wrong. Ids: plan:1, plan:2, … in the order of the approved plan; task:<taskId> for a Task; todo:<the todo text, lowercased>. Prefer TaskUpdate for Tasks.',
+        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done. Ids: plan:1, plan:2, … (from track_steps or the approved plan), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] } },
@@ -276,6 +286,8 @@ export const register: Register = on => {
   // The two per-turn tools stay in the model's tool list; a deferred tool costs a ToolSearch round trip.
   on('tool.describe', { tool: 'mcp__track__track_question' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: 'mcp__track__mark_answered' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: 'mcp__track__track_steps' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: 'mcp__track__mark_step' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
   // Every typed prompt is recorded before the model runs: its provisional row key and a short head.
   // A subagent's prompt row carries agentId and is not the person's.
@@ -582,6 +594,21 @@ export const register: Register = on => {
     return ran
   })
 
+  // A plan laid out in chat: its steps replace any earlier plan's, as a new approved plan does.
+  on('tool.call', { tool: TRACK_STEPS }, async ($, e) => {
+    if (e.agentId !== undefined) {
+      return { deny: 'track: a subagent cannot set the session\'s steps.' }
+    }
+    const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
+    if (titles.length === 0) {
+      return { result: 'No steps given: pass steps as an array of one-line titles.' }
+    }
+    const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
+
+    return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+  })
+
   on('tool.call', { tool: MARK_STEP }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
@@ -686,10 +713,18 @@ export const register: Register = on => {
   // The model's bookkeeping calls stay quiet in the transcript: track_question draws nothing,
   // mark_answered draws one dim line, which is also where "jump to answer" lands.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION) {
+    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
+    }
+    if (e.props.tool === MARK_STEP) {
+      const { Text } = $.ui.resolve(e)
+      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
+      const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
+      const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : '◻'
+
+      return <Text dimColor>{`${glyph} ${String(input.id ?? '?')} ${status.replace('_', ' ')}`}</Text>
     }
     if (e.props.tool === MARK_ANSWERED) {
       const { Text } = $.ui.resolve(e)
@@ -703,7 +738,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION || e.props.tool === MARK_ANSWERED) {
+    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP].includes(e.props.tool)) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
