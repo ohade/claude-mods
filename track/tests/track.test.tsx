@@ -176,3 +176,50 @@ test('a prompt-hint redraw after /rewind drops the rewound question without a ne
   expect(writes.length).toBeGreaterThan(0)
   expect((writes.at(-1)?.questions ?? []).map(q => q.id)).toEqual([1])
 })
+
+// Ohad, 2026-10-07: a question can be withdrawn from the pane. It leaves the ledger, and
+// the model is told once, on the next prompt, not to answer it.
+const OPEN_ONE = {
+  ...ANSWERED,
+  questions: [{ id: 1, head: 'how tall am I?', at: 1000, turnId: 't1', status: 'open', askedRequestId: 'row-1', trackedBy: 'toolu_q' }],
+}
+
+test('pressing ✕ on a question removes it and queues a notice for the model', async ($, on) => {
+  const writes: Array<{ questions: QuestionRow[]; withdrawn?: Array<{ id: number }> }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { questions: QuestionRow[]; withdrawn?: Array<{ id: number }> })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'del-1' })
+
+  const last = writes.at(-1)
+  expect(last?.questions ?? [{ id: 1 }]).toHaveLength(0)
+  expect((last?.withdrawn ?? []).map(w => w.id)).toEqual([1])
+})
+
+test('the next prompt tells the model about a withdrawn question, once', async ($, on) => {
+  const withNotice = { ...ANSWERED, questions: [], withdrawn: [{ id: 3, head: 'how tall am I?' }] }
+  const writes: Array<{ withdrawn?: unknown[] }> = []
+  let context: readonly string[] = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: withNotice, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { withdrawn?: unknown[] })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  on('prompt.submit', (_, e) => {
+    context = e.context ?? []
+
+    return { text: e.text }
+  })
+
+  // @ts-expect-error deliberate: a prompt with no origin, the input that crashed the hook in the red run
+  await $.prompt.submit({ text: 'something else' })
+
+  expect(context.some(line => line.includes('withdrew Q3'))).toBe(true)
+  expect(writes.at(-1)?.withdrawn ?? ['not cleared']).toHaveLength(0)
+})

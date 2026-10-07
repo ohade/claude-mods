@@ -47,6 +47,8 @@ export type Ledger = {
   prompts: Prompt[]
   questions: Question[]
   steps: Step[]
+  // Questions the user withdrew with ✕, told to the model once on the next prompt.
+  withdrawn?: Array<{ id: number; head: string }>
 }
 
 // `compactedAt`: when the transcript was last compacted. Questions older than that are

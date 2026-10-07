@@ -115,6 +115,21 @@ const dropRewound = async ($: EngineInterface): Promise<void> => {
   }))
 }
 
+// ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
+// model not to answer it. The Stop gate stops holding the turn for it, as it is gone.
+const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
+  const q = (await read($, ledger)).questions.find(one => one.id === id)
+  if (q === undefined) {
+    return
+  }
+  await update<Ledger>($, ledger, cur => ({
+    ...cur,
+    questions: cur.questions.filter(one => one.id !== id),
+    withdrawn: [...(cur.withdrawn ?? []), { id, head: q.head }],
+  }))
+  $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
+}
+
 const openPane = async ($: EngineInterface): Promise<boolean> => {
   const opened = await $.ui.open({ id: PANE, title: 'Track', columns: PANE_COLUMNS, rows: PANE_ROWS })
   await update($, pane, p => ({ ...p, isOpen: opened.isPlaced }))
@@ -206,14 +221,22 @@ export const register: Register = on => {
   // The per-turn reminder: a short row beside the prompt, only while something is open.
   on('prompt.submit', async ($, e, next) => {
     await dropRewound($)
-    if (e.origin?.kind !== 'composer' || e.text.trim().startsWith('/')) {
+    if (e.text.trim().startsWith('/')) {
       return next(e)
     }
+    const lines: string[] = []
     const l = await read($, ledger)
+    // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
+    const withdrawn = l.withdrawn ?? []
+    if (withdrawn.length > 0) {
+      const named = withdrawn.map(w => `Q${w.id} "${truncate(w.head, 60)}"`).join(', ')
+      lines.push(`track: the user withdrew ${named}; do not answer ${withdrawn.length > 1 ? 'them' : 'it'}.`)
+      await update<Ledger>($, ledger, cur => ({ ...cur, withdrawn: [] }))
+    }
     const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
     const stepsLeft = l.steps.filter(s => s.status !== 'completed').length
-    if (open.length === 0 && stepsLeft === 0) {
-      return next(e)
+    if (e.origin?.kind !== 'composer' || (open.length === 0 && stepsLeft === 0)) {
+      return lines.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...lines] })
     }
     const listed = open
       .slice(-OPEN_LISTED)
@@ -222,7 +245,7 @@ export const register: Register = on => {
     const done = l.steps.length - stepsLeft
     const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done. Mark a question with mcp__track__mark_answered when you answer it.`
 
-    return next({ ...e, context: [...(e.context ?? []), line] })
+    return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
   })
 
   // The gate: after the settings Stop hooks have run (and only when none of them blocked),
@@ -499,6 +522,7 @@ export const register: Register = on => {
                 <Button key={`a-${q.id}`} plain label=" ↩" onPress={() => jump($, q.answerRequestId as string, 'end')} />
               )}
               {q.status === 'deferred' && <Text dimColor> (deferred)</Text>}
+              <Button key={`del-${q.id}`} plain dimColor label=" ✕" onPress={() => withdraw($, q.id)} />
             </Box>
           )
         })}
