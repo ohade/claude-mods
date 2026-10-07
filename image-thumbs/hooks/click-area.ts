@@ -1,22 +1,28 @@
 import type { ClientModule } from 'claude-code'
 
-// How long after a thumbnail first draws its click area asks once for the
-// picture to be sent again: past the few frames of that first drawing.
-const RESEND_MS = 300
+// How long after a thumbnail first draws its click area asks for the frame to
+// light up, and again how long after that for it to go back.
+const REPAINT_MS = 300
 
 // Lies over a picture in a prompt row and draws nothing, so the picture
 // beneath shows, and tells the hooks module the number of the picture a left
 // click landed on.
 //
 // On a new thumbnail's first drawing cmux's terminal can leave the box empty
-// until something redraws it (a scroll, a streaming reply, a click). The same
-// pixels sent again once the cells are on screen make it show.
-const ClickArea: ClientModule<{ n: number }, { isResendAsked: true }> = (props, surface) => {
+// until it paints those rows again (a scroll does it). Shortly after, the
+// click area asks for the frame's border to light up and go back: that
+// changes cells on the picture's rows, so the terminal paints them again.
+// Sending the same picture again would not change a cell.
+const ClickArea: ClientModule<{ n: number }, { isRepaintAsked: true }> = (props, surface) => {
   if (surface.state === undefined) {
-    surface.setState({ isResendAsked: true })
-    const stop = surface.every(RESEND_MS, () => {
-      stop()
-      surface.post({ resend: props.n })
+    surface.setState({ isRepaintAsked: true })
+    let asked = 0
+    const stop = surface.every(REPAINT_MS, () => {
+      asked += 1
+      surface.post({ repaint: props.n })
+      if (asked === 2) {
+        stop()
+      }
     })
   }
   surface.onPointer(event => {
