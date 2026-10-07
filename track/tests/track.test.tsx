@@ -1374,3 +1374,37 @@ test('the banner words carry no glyph before them', async ($, on) => {
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(texts.at(-1)?.trim()).toBe('Safe to close')
 })
+
+// Ohad, 2026-10-07: a step can be paused (started, then parked) or waiting on the person (it
+// needs their answer); the retro session had both and could only show them as pending.
+test('mark_step sets a step paused or waiting', async ($, on) => {
+  const writes = captureSteps(on, withSteps([
+    { id: 'plan:1', source: 'plan', subject: 'Guard fix', status: 'in_progress' },
+    { id: 'plan:2', source: 'plan', subject: 'Decide the handoff mod', status: 'pending' },
+  ]))
+
+  await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'paused' } as never)
+  await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:2', status: 'waiting' } as never)
+
+  expect(writes.map(w => w.steps.map(s => s.status))).toContainEqual(['paused', 'pending'])
+  expect(writes.at(-1)?.steps.find(s => s.id === 'plan:2')?.status).toBe('waiting')
+})
+
+test('the pane shows a paused step with ⏸ and a waiting step with the purple ◆', async ($, on) => {
+  const parked = {
+    ...ANSWERED,
+    steps: [
+      { id: 'plan:1', source: 'plan', subject: 'Guard fix', status: 'paused' },
+      { id: 'plan:2', source: 'plan', subject: 'Decide the handoff mod', status: 'waiting' },
+    ],
+  }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: parked, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = await ui.findAll({ type: 'Text' })
+  const glyphBefore = (label: string) => {
+    const at = texts.findIndex(t => String(t.text ?? '') === label)
+    return { text: String(texts[at - 1]?.text ?? ''), color: (texts[at - 1]?.props as { color?: string } | undefined)?.color }
+  }
+  expect(glyphBefore('S1 Guard fix').text).toBe('⏸')
+  expect(glyphBefore('S2 Decide the handoff mod')).toEqual({ text: '◆', color: 'permission' })
+})

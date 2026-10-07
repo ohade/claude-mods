@@ -38,7 +38,8 @@ export type Step = {
   id: string
   source: 'task' | 'todo' | 'plan'
   subject: string
-  status: 'pending' | 'in_progress' | 'completed'
+  // paused: started, then parked; waiting: needs the person's answer.
+  status: 'pending' | 'in_progress' | 'completed' | 'paused' | 'waiting'
   taskId?: string
   createdRequestId?: string
   cleared?: true

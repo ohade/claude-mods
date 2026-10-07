@@ -31,7 +31,8 @@ const MARK_STEP = 'mcp__track__mark_step'
 const TRACK_STEPS = 'mcp__track__track_steps'
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
-const STEP_STATUSES = ['pending', 'in_progress', 'completed'] as const
+// paused: started, then parked; waiting: needs the person's answer (Ohad, 2026-10-07).
+const STEP_STATUSES = ['pending', 'in_progress', 'completed', 'paused', 'waiting'] as const
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
 // Long enough to keep a question whole; the pane wraps it rather than cutting it.
@@ -58,7 +59,7 @@ const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as
 // The standing rule, sent once per request as a byte-stable system-prompt section.
 // The steps instruction, one wording for the standing rule, the per-prompt line and the tool.
 const STEPS =
-  'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go.'
+  'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
 
 const RULE = [
   'track: if the user\'s prompt is a question, call mcp__track__track_question with a one-line summary before answering',
@@ -468,7 +469,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done. Ids: plan:1, plan:2, … (from track_steps or the approved plan), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
+        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Ids: plan:1, plan:2, … (from track_steps or the approved plan), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] } },
@@ -1058,7 +1059,7 @@ export const register: Register = on => {
       const { Text } = $.ui.resolve(e)
       const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
       const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
-      const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : '◻'
+      const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : status === 'paused' ? '⏸' : status === 'waiting' ? '◆' : '◻'
       // Named as the pane names it, S<n> and the title: an id such as plan:10 can sit third in
       // the pane after an insert, and was read as S10 (Ohad, 2026-10-07).
       const id = String(input.id ?? '?')
@@ -1302,7 +1303,11 @@ export const register: Register = on => {
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
           // hourglass for agents, a still purple mark when it waits on the person.
           const look =
-            s.status !== 'in_progress'
+            s.status === 'paused'
+              ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
+              : s.status === 'waiting'
+                ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
+                : s.status !== 'in_progress'
               ? { glyph: s.status === 'completed' ? '●' : '○', glyphColor: color, textColor: color }
               : state === 'working'
                 ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
