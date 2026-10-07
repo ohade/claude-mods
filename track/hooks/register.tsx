@@ -29,6 +29,9 @@ const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
 const TRACK_STEPS = 'mcp__track__track_steps'
+const RESTORE_STEPS = 'mcp__track__restore_steps'
+// A Claude Code session id; restore_steps reads only the store key of a real one.
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
 // paused: started, then parked; waiting: needs the person's answer (Ohad, 2026-10-07).
@@ -395,6 +398,29 @@ const saveLedger = async ($: EngineInterface): Promise<void> => {
   await $.store.set('sessions', sessions.slice(0, MAX_SESSIONS))
 }
 
+// A saved step as a fresh Step, or undefined when the row is not one: restore_steps reads rows
+// another session saved, and copies only the fields a step has.
+const savedStep = (row: unknown): Step | undefined => {
+  if (typeof row !== 'object' || row === null) {
+    return undefined
+  }
+  const r = row as Record<string, unknown>
+  const source = (['task', 'todo', 'plan'] as const).find(one => one === r.source)
+  const status = STEP_STATUSES.find(one => one === r.status)
+  if (typeof r.id !== 'string' || typeof r.subject !== 'string' || source === undefined || status === undefined) {
+    return undefined
+  }
+
+  return {
+    id: r.id,
+    source,
+    subject: headOf(r.subject),
+    status,
+    ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
+    ...(r.cleared === true ? { cleared: true as const } : {}),
+  }
+}
+
 // Clear all, per section. Unlike Clear completed, the rows leave and the ring restarts. Open
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
 // counting up, so a later Q<n> never reuses one the model saw.
@@ -470,6 +496,19 @@ export const register: Register = on => {
           after: { type: 'string', description: 'Insert after this step id (plan:2, task:7, ...) and keep the plan' },
         },
         required: ['steps'],
+      },
+    })
+    await $.tool.register({
+      name: 'restore_steps',
+      description:
+        'After a handoff (a /clear that seeds a fresh session), copy the previous session\'s steps into this session\'s track pane, in order, with their ids and statuses; its questions are not copied. from_session is the previous session id (the handoff brief\'s session: field). Refuses when this session already has steps, unless replace is true.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from_session: { type: 'string', description: 'The previous session id' },
+          replace: { type: 'boolean', description: 'Replace the steps this session already has' },
+        },
+        required: ['from_session'],
       },
     })
     await $.tool.register({
@@ -948,6 +987,36 @@ export const register: Register = on => {
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: [...cur.steps.filter(s => s.source !== 'plan'), ...steps].slice(-MAX_STEPS) }))
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+  })
+
+  // A handoff seeds a fresh session, whose pane starts empty. One call copies the old session's
+  // steps from the store, keyed by its session id; its questions stay behind (Ohad, 2026-10-07).
+  // Steps already in the pane are kept unless the call asks to replace them.
+  on('tool.call', { tool: RESTORE_STEPS }, async ($, e) => {
+    if (e.agentId !== undefined) {
+      return { deny: 'track: a subagent cannot set the session\'s steps.' }
+    }
+    const from = typeof e.from_session === 'string' ? e.from_session : ''
+    if (!SESSION_ID.test(from)) {
+      return { deny: `track: "${truncate(from, 60)}" is not a session id; nothing changed.` }
+    }
+    const saved = (await $.store.get(`s:${from}`)) as { ledger?: { steps?: unknown } } | undefined
+    const rows = Array.isArray(saved?.ledger?.steps) ? (saved.ledger.steps as unknown[]) : []
+    const steps = rows.map(savedStep).filter((s): s is Step => s !== undefined).slice(-MAX_STEPS)
+    if (steps.length === 0) {
+      return { deny: `track: No saved steps for session ${from}; nothing changed.` }
+    }
+    const current = await read($, ledger)
+    if (current.steps.length > 0 && e.replace !== true) {
+      return { deny: `track: this session already has ${current.steps.length} steps; nothing changed. Pass replace: true to replace them.` }
+    }
+    await update($, scrollAt, cur => ({ ...cur, steps: null }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps }))
+    const shown = steps.filter(s => s.cleared !== true)
+    const at = shown.findIndex(s => s.status === 'in_progress')
+    const where = at < 0 ? 'None in progress.' : `In progress: S${at + 1} ${shown[at]?.subject}.`
+
+    return { result: `Restored ${steps.length} steps from session ${from}. ${where}` }
   })
 
   on('tool.call', { tool: MARK_STEP }, async ($, e) => {

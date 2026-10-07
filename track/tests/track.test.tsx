@@ -1519,3 +1519,79 @@ test('clear completed above the steps hides the done steps and keeps the rest', 
 
   expect(writes.at(-1)?.steps.map(s => `${s.id}:${s.cleared === true ? 'cleared' : 'shown'}`)).toEqual(['plan:1:cleared', 'plan:2:shown'])
 })
+
+// The context-handoff session, 2026-10-07: after a handoff the fresh session's pane is empty.
+// restore_steps copies the old session's steps from the store with one call, keyed by the brief's
+// session id; the questions stay behind (Ohad: "just the steps not the questions").
+const OLD = '3ea22406-d7ef-4e30-841d-429dc2419eb6'
+const SAVED_STEPS = [
+  { id: 'plan:1', source: 'plan', subject: 'Fix the pane', status: 'completed' },
+  { id: 'plan:3', source: 'plan', subject: 'Deploy', status: 'in_progress' },
+  { id: 'plan:2', source: 'plan', subject: 'Clean up', status: 'pending' },
+]
+const SAVED = { v: 1, savedAt: 1, ledger: { ...OPEN_ONE, steps: SAVED_STEPS } }
+
+const restoreCase = (on: Parameters<TestBody>[1], current: unknown, saved: unknown) => {
+  const writes: Array<{ questions: QuestionRow[]; steps: StepRow[] }> = []
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: current, version: 1 } }))
+  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
+    writes.push(e.value as { questions: QuestionRow[]; steps: StepRow[] })
+
+    return { value: { isSet: true as const, version: 2 } }
+  })
+  on('store.get', (_, e) => ({ value: e.key === `s:${OLD}` ? saved : undefined }))
+
+  return writes
+}
+
+const restore = ($: Parameters<TestBody>[0], input: Record<string, unknown>) =>
+  $.tool.call({ tool: 'mcp__track__restore_steps', ...input } as never) as Promise<{ result?: unknown; deny?: string }>
+
+test('restore_steps copies the old steps in order with their ids and statuses, and no questions', async ($, on) => {
+  const writes = restoreCase(on, withSteps([]), SAVED)
+
+  const ran = await restore($, { from_session: OLD })
+
+  expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
+    'plan:1|Fix the pane|completed',
+    'plan:3|Deploy|in_progress',
+    'plan:2|Clean up|pending',
+  ])
+  expect(writes.at(-1)?.questions).toHaveLength(0)
+  expect(String(ran.result)).toContain('Restored 3 steps')
+  expect(String(ran.result)).toContain('In progress: S2 Deploy')
+})
+
+test('restore_steps refuses to replace steps the session already has, unless replace is true', async ($, on) => {
+  const writes = restoreCase(on, withSteps([{ id: 'plan:1', source: 'plan', subject: 'Live step', status: 'in_progress' }]), SAVED)
+
+  const refused = await restore($, { from_session: OLD })
+  expect(refused.deny).toContain('replace: true')
+  expect(writes).toHaveLength(0)
+
+  await restore($, { from_session: OLD, replace: true })
+  expect(writes.at(-1)?.steps.map(s => s.subject)).toEqual(['Fix the pane', 'Deploy', 'Clean up'])
+})
+
+test('restore_steps changes nothing for a session id with nothing saved, or one that is not an id', async ($, on) => {
+  const writes = restoreCase(on, withSteps([]), SAVED)
+
+  const missing = await restore($, { from_session: '00000000-0000-4000-8000-000000000000' })
+  const notAnId = await restore($, { from_session: 'sessions' })
+
+  expect(missing.deny).toContain('No saved steps')
+  expect(notAnId.deny).toContain('session id')
+  expect(writes).toHaveLength(0)
+})
+
+test('restore_steps keeps only well-formed steps, and a subagent cannot call it', async ($, on) => {
+  const odd = { ...SAVED, ledger: { ...SAVED.ledger, steps: [...SAVED_STEPS, { id: 'plan:9', subject: 'Bad status', status: 'done' }, 'not a step', null] } }
+  const writes = restoreCase(on, withSteps([]), odd)
+
+  const fromAgent = await restore($, { from_session: OLD, agentId: 'agent-1' })
+  expect(fromAgent.deny).toContain('subagent')
+  expect(writes).toHaveLength(0)
+
+  await restore($, { from_session: OLD })
+  expect(writes.at(-1)?.steps.map(s => s.id)).toEqual(['plan:1', 'plan:3', 'plan:2'])
+})

@@ -60,6 +60,10 @@ where each was answered, and the steps the model set itself, each with a complet
   inserted with `track_steps({ steps, after })` after the step it follows. While a managed plugin
   bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
   instruction beside it; built-in commands do not.
+- **Handoffs.** A handoff that clears the session and seeds a fresh one leaves the pane empty.
+  `restore_steps({ from_session })` copies the previous session's steps back, in order, with
+  their ids and statuses; its questions stay behind. It refuses to overwrite steps the session
+  already has unless `replace: true` is passed.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred. It
