@@ -278,6 +278,14 @@ const headOf = (text: string): string => {
   return line.length > HEAD_CHARS ? `${line.slice(0, HEAD_CHARS - 1)}…` : line
 }
 
+// A row's text blocks, joined.
+const textOf = (content: ReadonlyArray<{ type: string; text?: unknown }>): string =>
+  content.map(block => (block.type === 'text' ? String(block.text) : '')).join('\n')
+
+// The engine's words around a message typed mid-turn, if the delivered row carries them; they
+// are not the person's, and would hide a slash command from the check on the head.
+const MIDTURN_FRAME = /^\s*(<system-reminder>\s*)?The user sent a new message while you were working:\s*/
+
 const truncate = (text: string, width: number): string =>
   text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text
 
@@ -814,19 +822,34 @@ export const register: Register = on => {
   on('tool.describe', { tool: TRACK_STEPS }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: MARK_STEP }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
-  // Every typed prompt is recorded before the model runs: its provisional row key and a short head.
-  // A subagent's prompt row carries agentId and is not the person's.
-  on('session.append', { door: 'prompt' }, async ($, e, next) => {
-    if (e.agentId !== undefined) {
-      return next(e)
+  // Every message the person typed is recorded before the model reads it: its provisional row key
+  // and a short head. Only the composer's rows count. A subagent's row carries agentId, and a
+  // hand-back or a notification comes in under its sender's origin; its row is never linked, so
+  // as the last prompt it left the next question with no [ Q ].
+  const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: { kind: string }; uuid: string }, text: string) => {
+    if (e.agentId !== undefined || e.origin.kind !== 'composer') {
+      return
     }
-    const text = e.message.content.map(block => (block.type === 'text' ? String(block.text) : '')).join('\n')
     const head = headOf(text)
     if (head === '' || head.startsWith('/')) {
-      return next(e)
+      return
     }
     const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
     await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
+  }
+
+  on('session.append', { door: 'prompt' }, async ($, e, next) => {
+    await recordPrompt($, e, textOf(e.message.content))
+
+    return next(e)
+  })
+
+  // A message typed while a turn runs is no prompt: the engine folds it into that turn as a
+  // queued_command attachment, by the delivery door, and draws it under that row's id.
+  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+    if (e.message.name === 'queued_command') {
+      await recordPrompt($, e, textOf(e.message.content).replace(MIDTURN_FRAME, ''))
+    }
 
     return next(e)
   })
