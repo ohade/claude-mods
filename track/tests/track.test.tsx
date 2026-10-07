@@ -540,3 +540,14 @@ test('step rows are annotated like question rows', async ($, on) => {
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(texts.filter(t => /^[○◐●] S\d /.test(t))).toEqual(['● S1 Write', '◐ S2 Print', '○ S3 Count'])
 })
+
+// Ohad, 2026-10-07: rows sit one step in under their header, in both sections alike.
+test('question and step rows are indented the same under their headers', async ($, on) => {
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
+
+  const ui = await $.ui.mount(pane('dock'))
+
+  const boxes = await ui.findAll({ type: 'Box' })
+  const margin = (key: string) => (boxes.find(b => b.key === key)?.props as { marginLeft?: number } | undefined)?.marginLeft
+  expect([margin('row-q-1'), margin('row-s-plan:1')]).toEqual([2, 2])
+})

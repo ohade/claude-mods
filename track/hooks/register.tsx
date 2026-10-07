@@ -34,6 +34,8 @@ const HEAD_CHARS = 80
 const MAX_PROMPTS = 200
 const MAX_QUESTIONS = 200
 const HOTKEYS = 9
+// Rows sit this many columns in under their section header, questions and steps alike.
+const ROW_INDENT = 2
 
 // How many open questions the per-turn context row names.
 const OPEN_LISTED = 5
@@ -811,7 +813,7 @@ export const register: Register = on => {
           const text = `${statusGlyph(q)} Q${q.id} ${truncate(q.head, width - 28)}`
 
           return (
-            <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1}>
+            <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
               <Text color={answered ? 'success' : undefined} dimColor={q.status === 'deferred'}>
                 {text}
               </Text>
@@ -844,9 +846,11 @@ export const register: Register = on => {
         {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
             same left edge, a number S<n> by position, and green once done. */}
         {steps.map((s, index) => (
-          <Text color={s.status === 'completed' ? 'success' : undefined}>
-            {`${s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'} S${index + 1} ${truncate(s.subject, width - 8)}`}
-          </Text>
+          <Box key={`row-s-${s.id}`} marginLeft={ROW_INDENT}>
+            <Text color={s.status === 'completed' ? 'success' : undefined}>
+              {`${s.status === 'completed' ? '●' : s.status === 'in_progress' ? '◐' : '○'} S${index + 1} ${truncate(s.subject, width - 10)}`}
+            </Text>
+          </Box>
         ))}
         <Box flexDirection="row" marginTop={1}>
           <Button key="clear" plain hotkey="c" label="Clear completed" onPress={clearCompleted} />
