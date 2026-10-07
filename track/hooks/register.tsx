@@ -4,22 +4,19 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Activity, Ledger, Pane, Prompt, Question, ScrollAt, Step, Turn } from '../types'
 
 const PANE = 'track'
-// The pane's name (Ohad, 2026-10-07): its tab label, and its first line, since a lone pane shows
-// no tab.
+// The pane's name: its tab label, and its first line, since a lone pane shows no tab.
 const TITLE = 'Session Tracker'
 const PANE_COLUMNS = 48
 // Rows the pane asks for when it sits inline above the prompt (main screen or narrow terminal).
 const PANE_ROWS = 16
-// The newest question is scrolled into view after the redraw that draws it.
-const SCROLL_AFTER_MS = 150
 // The rewind check a prompt-hint redraw schedules: run after this delay, at most once per gap.
 // Module memory, not $.state: a reload only resets the debounce.
 const REWIND_CHECK_DELAY_MS = 1000
 const REWIND_CHECK_GAP_MS = 3000
 const rewindCheck = { isScheduled: false, lastAt: -Infinity }
-// The built-in diff panel's rule, less its git condition (Ohad, 2026-10-07: most sessions start
-// in ~/git, no repository, and the tracker does not need git): it opens by itself only from
-// this width, in the fullscreen layout, and never after the person closed it by hand.
+// The built-in diff panel's rule, less its git condition (the tracker does not need git, and a
+// session often starts outside a repository): it opens by itself only from this width, in the
+// fullscreen layout, and never after the person closed it by hand.
 const AUTO_OPEN_MIN_COLUMNS = 144
 const AUTO_OPEN_DELAY_MS = 50
 const autoOpen = { isScheduled: false }
@@ -34,7 +31,7 @@ const RESTORE_STEPS = 'mcp__track__restore_steps'
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
-// paused: started, then parked; waiting: needs the person's answer (Ohad, 2026-10-07).
+// paused: started, then parked; waiting: needs the person's answer.
 const STEP_STATUSES = ['pending', 'in_progress', 'completed', 'paused', 'waiting'] as const
 
 // Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
@@ -55,8 +52,8 @@ const FLASH_SHADES = ['#2b2a1e', '#4a4120', '#6e5a1c'] as const
 const FLASH_HOLD_MS = 1200
 const FLASH_STEP_MS = 250
 // The fade's own timers, a generation per jump, and one queue every flash and lit write runs
-// through in order (audit 2026-10-07: a fade step already under way cleared a newer jump's lit
-// list). Module memory, as a reload only cuts a fade short; session.start puts out what is left.
+// through in order, so a fade step already under way cannot clear a newer jump's lit list.
+// Module memory, as a reload only cuts a fade short; session.start puts out what is left.
 const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as Promise<void> }
 
 // The standing rule, sent once per request as a byte-stable system-prompt section.
@@ -70,20 +67,20 @@ const RULE = [
   `or "deferred" with a note if it must wait. ${STEPS}`,
 ].join(' ')
 
-// The managed security plugin bypasses prompt.compose: the debug logs of 2026-10-07 read "track:
-// prompt.compose bypassed by cc-plugin-sec-default", and a /retro ran its steps unlisted until
-// Ohad asked. While the rule has not reached the model this session, each prompt that can start
-// work carries the steps instruction beside it.
+// An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
+// prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
+// not reached the model this session, each prompt that can start work carries the steps
+// instruction beside it.
 const STEPS_LINE = `track: ${STEPS} If the prompt asks a question, call mcp__track__track_question before answering.`
 
-// The banner at the top of the pane: what the session is doing, in one colored line.
+// The banner pinned at the bottom of the pane: what the session is doing, in one colored line.
 const BANNERS = {
   working: { text: ' Working ', color: 'suggestion' },
   agents: { text: ' Waiting on agents ', color: 'warning' },
   you: { text: ' Waiting on you ', color: 'permission' },
   done: { text: ' Safe to close ', color: 'success' },
 } as const
-// The step in progress breathes while work runs (Ohad, 2026-10-07): one phase every PULSE_MS, a
+// The step in progress breathes while work runs: one phase every PULSE_MS, a
 // spinner and grey shades while the main session works, an hourglass and amber shades while it
 // waits on agents. The phase is $.state, so each tick redraws the pane alone.
 const PULSE_MS = 400
@@ -93,16 +90,15 @@ const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a
 const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
 const pulsing: { timer?: Timer } = {}
 
-// The pane's layout (Ohad, 2026-10-07): the title pinned at the top, the banner and footer pinned
-// at the bottom, and between them Questions and Steps, each a fixed region that scrolls alone.
-// Questions get about a third of the room, as Ohad liked it; room one side does not need goes to
-// the other. `regions` is where the last drawing put each region, for routing a wheel tick.
+// The pane's layout: the title pinned at the top, the banner and footer pinned at the bottom,
+// and between them Questions and Steps, each a fixed region that scrolls alone. Questions get
+// about a third of the room; room one side does not need goes to the other. `regions` is where the last drawing put each region, for routing a wheel tick.
 const QUESTION_SHARE = 0.35
 // Columns a question row spends on its dot, its [ Q ] [ A ] buttons and ✕.
 const QUESTION_CHROME = 18
 const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0, qLast: 0, sLast: 0, last: 'steps' as 'questions' | 'steps' }
 // Fast wheel ticks are summed and written once per SCROLL_FLUSH_MS, so a quick flick costs one
-// state write and one redraw, not one per tick (Ohad, 2026-10-07: "it starts to lag").
+// state write and one redraw, not one per tick (one write per tick made the pane lag).
 const SCROLL_FLUSH_MS = 30
 const pendingScroll: { questions: number; steps: number; timer?: Timer } = { questions: 0, steps: 0 }
 // A stored position never runs past the last one that shows anything (observed: 733 for 20 steps).
@@ -454,7 +450,7 @@ const openPane = async ($: EngineInterface): Promise<boolean> => {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
-    // end (Ohad, 2026-10-07), and the toggle answers with no text, so the session gets no row.
+    // end, and the toggle answers with no text, so the session gets no row.
     await $.command.register({
       name: 'track',
       description: 'Show or hide the track pane: questions asked, where answered, and the steps',
@@ -523,11 +519,11 @@ export const register: Register = on => {
     })
 
     // Housekeeping runs after the registrations, so a refused call here never costs the session
-    // /track or the tools (audit 2026-10-07).
+    // /track or the tools.
     try {
       // session.start runs again on a reload, an enable or a worker respawn, while the pane stays
-      // up (Ohad, 2026-10-07: it opened by itself, then closed). Only a pane asked for by code
-      // below 144 columns, which waits unseen, is dropped.
+      // up (closing it here made the pane open by itself, then close). Only a pane asked for by
+      // code below 144 columns, which waits unseen, is dropped.
       const mine = (await $.ui.panes()).find(p => p.id === PANE)
       if (mine !== undefined && !mine.isPlaced) {
         await $.ui.close({ id: PANE })
@@ -546,11 +542,11 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The two per-turn tools stay in the model's tool list; a deferred tool costs a ToolSearch round trip.
-  on('tool.describe', { tool: 'mcp__track__track_question' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
-  on('tool.describe', { tool: 'mcp__track__mark_answered' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
-  on('tool.describe', { tool: 'mcp__track__track_steps' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
-  on('tool.describe', { tool: 'mcp__track__mark_step' }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  // The per-turn tools stay in the model's tool list; a deferred tool costs a ToolSearch round trip.
+  on('tool.describe', { tool: TRACK_QUESTION }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: MARK_ANSWERED }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: TRACK_STEPS }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: MARK_STEP }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
   // Every typed prompt is recorded before the model runs: its provisional row key and a short head.
   // A subagent's prompt row carries agentId and is not the person's.
@@ -647,8 +643,8 @@ export const register: Register = on => {
       .map(q => `Q${q.id} "${truncate(q.head, 60)}"${q.status === 'deferred' ? ' (deferred)' : ''}`)
       .join(', ')
     const done = l.steps.length - stepsLeft
-    // The step still marked in progress, named: observed 2026-10-07 (session 7bbc175c), an approval
-    // and a new request left the retro step pulsing, because nothing told the model it was open.
+    // The step still marked in progress, named: an approval and a new request once left a step
+    // pulsing, because nothing told the model it was open.
     const busy = l.steps.filter(s => s.status === 'in_progress' && s.cleared !== true)
     const them = busy.length > 1 ? 'them' : 'it'
     const inProgress =
@@ -698,8 +694,7 @@ export const register: Register = on => {
     return compacted
   })
 
-  // An interrupted turn leaves its questions open and tags them, so the pane shows why.
-  // Each finished main-loop turn also saves the ledger, so /resume finds it.
+  // Each finished main-loop turn saves the ledger, so /resume finds it.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       await update($, activity, a => ({ ...a, isWorking: false, agentCalls: [], askCalls: [] }))
@@ -707,12 +702,6 @@ export const register: Register = on => {
       // A background agent's loop ended.
       const agentId = e.agentId
       await update($, activity, a => ({ ...a, background: a.background.filter(id => id !== agentId) }))
-    }
-    if (e.agentId === undefined && e.reason === 'aborted') {
-      await update($, ledger, l => ({
-        ...l,
-        questions: l.questions.map(q => (q.status === 'open' && q.turnId === e.turnId ? { ...q, interrupted: true as const } : q)),
-      }))
     }
     const done = await next(e)
     if (e.agentId === undefined) {
@@ -723,9 +712,9 @@ export const register: Register = on => {
   })
 
   // The drawn row's requestId is the authoritative jump target, linked to the prompt whose row key
-  // it carries and to no other. Observed 2026-10-07 (session 68a12838): a fallback that gave an
-  // unmatched row (the engine's `placeholder`, a redraw of an older prompt) to the first prompt
-  // still unlinked sent [ Q ] of the third prompt to the first. A later draw of the right row
+  // it carries and to no other. A fallback that gave an unmatched row (the engine's
+  // `placeholder`, a redraw of an older prompt) to the first prompt still unlinked once sent
+  // [ Q ] of the third prompt to the first. A later draw of the right row
   // repairs a wrong link. State is written from a timer: a write during a render is refused.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const drawn = await next(e)
@@ -754,7 +743,7 @@ export const register: Register = on => {
     return row
   })
 
-  on('tool.call', { tool: 'mcp__track__track_question' }, async ($, e) => {
+  on('tool.call', { tool: TRACK_QUESTION }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot track questions for the user.' }
     }
@@ -765,7 +754,6 @@ export const register: Register = on => {
     let minted: Question | undefined
     await update($, ledger, l => {
       const last = l.prompts.at(-1)
-      const t = { currentId: null as string | null }
       minted = {
         id: l.nextQuestionId,
         head: summary,
@@ -773,7 +761,7 @@ export const register: Register = on => {
         ...(last?.rowKey !== undefined && { rowKey: last.rowKey }),
         ...(last?.requestId !== undefined && { askedRequestId: last.requestId }),
         ...(e.tool_use_id !== undefined && { trackedBy: e.tool_use_id }),
-        turnId: last?.turnId ?? t.currentId,
+        turnId: last?.turnId ?? null,
         status: 'open',
       }
 
@@ -792,7 +780,7 @@ export const register: Register = on => {
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered({ id: ${minted?.id}, status: "answered" }).` }
   })
 
-  on('tool.call', { tool: 'mcp__track__mark_answered' }, async ($, e) => {
+  on('tool.call', { tool: MARK_ANSWERED }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the user\'s questions.' }
     }
@@ -990,7 +978,7 @@ export const register: Register = on => {
   })
 
   // A handoff seeds a fresh session, whose pane starts empty. One call copies the old session's
-  // steps from the store, keyed by its session id; its questions stay behind (Ohad, 2026-10-07).
+  // steps from the store, keyed by its session id; its questions stay behind.
   // Steps already in the pane are kept unless the call asks to replace them.
   on('tool.call', { tool: RESTORE_STEPS }, async ($, e) => {
     if (e.agentId !== undefined) {
@@ -1136,7 +1124,7 @@ export const register: Register = on => {
       const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
       const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : status === 'paused' ? '⏸' : status === 'waiting' ? '◆' : '◻'
       // Named as the pane names it, S<n> and the title: an id such as plan:10 can sit third in
-      // the pane after an insert, and was read as S10 (Ohad, 2026-10-07).
+      // the pane after an insert, and was read as S10.
       const id = String(input.id ?? '?')
       const shown = (await read($, ledger)).steps.filter(s => s.cleared !== true)
       const at = shown.findIndex(s => s.id === id)
@@ -1182,7 +1170,7 @@ export const register: Register = on => {
 
   // A wheel tick moves the region under the pointer by a row; the scroll keys move the region
   // last scrolled. The pane body is pinned at its top (offset 0): its tree is as tall as the body,
-  // and a body left scrolled down could otherwise never come back (Ohad, 2026-10-07: "stuck").
+  // and a body left scrolled down could otherwise never come back.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.origin.kind !== 'person') {
       return next(e)
@@ -1240,7 +1228,7 @@ export const register: Register = on => {
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
     // The steps' two clear controls, in a bar above the steps and a bar below them. Both bars sit
-    // outside the scrolling region, so a scroll never moves them (Ohad, 2026-10-07). The copies
+    // outside the scrolling region, so a scroll never moves them. The copies
     // share hotkeys: the engine lets the later one win, and both do the same thing.
     const clearBar = (suffix: '' | '-bottom') => (
       <Box key={`clear-bar${suffix}`} flexDirection="row" columnGap={2} flexShrink={0}>
@@ -1295,7 +1283,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
-        {/* The title as a centered header bar, rules filling the width (Ohad, 2026-10-07). */}
+        {/* The title as a centered header bar, rules filling the width. */}
         <Box key="title" flexDirection="row" justifyContent="center" marginBottom={roomy ? 1 : 0}>
           <Text dimColor>{'─'.repeat(titleSide)}</Text>
           <Text bold color="claude">
@@ -1323,10 +1311,10 @@ export const register: Register = on => {
         )}
         {questions.slice(qStart, qEnd).map((q, shownAt) => {
           const index = qStart + shownAt
-          // The question is text, green once answered; the jumps are short buttons, [ Q ] to the
-          // prompt and [ A ] to the answer, the answer in the primary style (Ohad, 2026-10-07, after
-          // the audit: keep the green, a Button takes no color). An answered row puts its digit
-          // hotkey on [ A ], an open row on [ Q ].
+          // The question is text, green once answered (a Button takes no color, so the question
+          // is not one); the jumps are short buttons, [ Q ] to the prompt and [ A ] to the answer,
+          // the answer in the primary style. An answered row puts its digit hotkey on [ A ], an
+          // open row on [ Q ].
           const hotkey = index < HOTKEYS ? String(index + 1) : undefined
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined

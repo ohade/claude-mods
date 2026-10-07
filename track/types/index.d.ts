@@ -25,7 +25,6 @@ export type Question = {
   // `mark_answered` row by a jump to the answer.
   answerKey?: string
   note?: string
-  interrupted?: true
   cleared?: true
   // The tool_use_id of the track_question call that minted it, and when it was answered:
   // a /rewind is detected by these ids leaving the transcript.

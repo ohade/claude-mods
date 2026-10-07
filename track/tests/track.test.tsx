@@ -153,7 +153,7 @@ const FOUR = {
   questions: [1, 2, 3, 4].map(id => ({ ...ANSWERED.questions[0], id, head: `question ${id}`, askedRequestId: `row-${id}` })),
 }
 
-// Updated 2026-10-07 at Ohad's request: Questions and Steps are fixed regions that scroll on their
+// Questions and Steps are fixed regions that scroll on their
 // own, so a short pane shows the newest question and says how many sit above it.
 test('a short inline pane shows the newest question and counts the ones above it', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: FOUR, version: 1 } }))
@@ -166,7 +166,7 @@ test('a short inline pane shows the newest question and counts the ones above it
   expect(labels.some(label => /↑\d/.test(label))).toBe(true)
 })
 
-// Ohad, 2026-10-07: a rewound question should leave the pane at the rewind, not at the next
+// A rewound question should leave the pane at the rewind, not at the next
 // prompt. No event marks a rewind; the prompt hint redraws when the rewind puts the old
 // prompt back in the box, so that redraw schedules the same check.
 test('a prompt-hint redraw after /rewind drops the rewound question without a new prompt', async ($, on) => {
@@ -188,7 +188,7 @@ test('a prompt-hint redraw after /rewind drops the rewound question without a ne
   expect((writes.at(-1)?.questions ?? []).map(q => q.id)).toEqual([1])
 })
 
-// Ohad, 2026-10-07: a question can be withdrawn from the pane. It leaves the ledger, and
+// A question can be withdrawn from the pane. It leaves the ledger, and
 // the model is told once, on the next prompt, not to answer it.
 const OPEN_ONE = {
   ...ANSWERED,
@@ -382,8 +382,8 @@ for (const [why, c] of [
   })
 }
 
-// Ohad, 2026-10-07: drop the diff panel's git condition. Most sessions start in ~/git, which is
-// no repository, and questions and steps do not depend on git.
+// The diff panel's git condition is dropped: a session often starts outside a repository, and
+// questions and steps do not depend on git.
 test('the pane opens by itself outside a git repository too', async ($, on) => {
   const opens = await autoOpenCase($, on, { columns: 160, isFullscreen: true, repo: null, closedByPerson: false })
   expect(opens).toHaveLength(1)
@@ -425,9 +425,9 @@ test('a finished turn saves the ledger under the session id', async ($, on) => {
   expect(sets.find(s => s.key === 'sessions')?.value).toEqual(['S1'])
 })
 
-// Ohad, 2026-10-07: an answered question turns green, and the jump to its answer stands out.
-// The audit of the same day found the clickable-question change had dropped the green; Ohad
-// chose green text with short jump buttons, [ Q ] and [ A ], so the original check is restored.
+// An answered question turns green, and the jump to its answer stands out. A change that made
+// the question itself clickable once dropped the green; the text stays green, with short jump
+// buttons [ Q ] and [ A ] beside it.
 test('an answered question is green and its answer button is prominent', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
 
@@ -441,7 +441,7 @@ test('an answered question is green and its answer button is prominent', async (
   expect((answer?.props as { plain?: true } | undefined)?.plain).toBeUndefined()
 })
 
-// Ohad, 2026-10-07: a plan written in chat registered no steps (no Task, todo or plan mode),
+// A plan written in chat registered no steps (no Task, todo or plan mode),
 // and mark_step drew the engine's full row. track_steps registers chat-plan steps.
 test('track_steps registers the steps of a plan laid out in chat', async ($, on) => {
   const writes = captureSteps(on, withSteps([]))
@@ -468,7 +468,7 @@ test('track_steps draws no row and mark_step draws one quiet line', async ($, on
   expect(texts[0]).toContain('plan:1 in progress')
 })
 
-// Ohad, 2026-10-07: clear all questions, or all steps, each on its own.
+// Clear all questions, or all steps, each on its own.
 const BOTH = {
   ...ANSWERED,
   questions: [...ANSWERED.questions, { ...OPEN_ONE.questions[0], id: 2 }],
@@ -508,7 +508,7 @@ test('clearing all steps empties them and keeps the questions', async ($, on) =>
   expect(last?.questions.map(q => q.id)).toEqual([1, 2])
 })
 
-// Ohad, 2026-10-07: a completed step turns green like an answered question, and a line
+// A completed step turns green like an answered question, and a line
 // separates the two sections.
 test('a completed step is green, and a separator line divides the sections', async ($, on) => {
   const done = { ...BOTH, steps: [{ id: 'plan:1', source: 'plan', subject: 'Foo', status: 'completed' }] }
@@ -522,7 +522,7 @@ test('a completed step is green, and a separator line divides the sections', asy
   expect(texts.some(t => /^─{10,}$/.test(String(t.text ?? '')))).toBe(true)
 })
 
-// Ohad, 2026-10-07: "q: clear all" sat flush against the ring. The engine draws a hotkey
+// "q: clear all" sat flush against the ring. The engine draws a hotkey
 // button as "q: label", so spacing inside the label lands after "q:", not before it.
 test('the clear-all buttons carry no padding in their labels', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
@@ -535,7 +535,7 @@ test('the clear-all buttons carry no padding in their labels', async ($, on) => 
   expect(labels).toEqual(['clear all', 'clear all'])
 })
 
-// Ohad, 2026-10-07: steps read like questions — same dot glyphs, same left edge, numbered.
+// Steps read like questions — same dot glyphs, same left edge, numbered.
 test('step rows are annotated like question rows', async ($, on) => {
   const three = {
     ...BOTH,
@@ -549,17 +549,17 @@ test('step rows are annotated like question rows', async ($, on) => {
 
   const ui = await $.ui.mount(pane('dock'))
 
-  // Updated 2026-10-07 at Ohad's request: the dot is its own column, so a wrapped line
+  // The dot is its own column, so a wrapped line
   // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(texts.filter(t => /^S\d /.test(t))).toEqual(['S1 Write', 'S2 Print', 'S3 Count'])
-  // Updated 2026-10-07 at Ohad's request: the step in progress shows who is on it. With nothing
+  // The step in progress shows who is on it. With nothing
   // running the session waits on the person, so its mark is ◆ (a grey spinner while the main
   // session works, an hourglass while agents do: see the pulse tests).
   expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◆', '○'])
 })
 
-// Ohad, 2026-10-07: rows sit one step in under their header, in both sections alike.
+// Rows sit one step in under their header, in both sections alike.
 test('question and step rows are indented the same under their headers', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: BOTH, version: 1 } }))
 
@@ -570,10 +570,10 @@ test('question and step rows are indented the same under their headers', async (
   expect([margin('row-q-1'), margin('row-s-plan:1')]).toEqual([2, 2])
 })
 
-// Ohad, 2026-10-07: show the whole question; a long one wraps, and its next lines align with
+// Show the whole question; a long one wraps, and its next lines align with
 // the text, not under the dot.
 test('a long question is shown whole, its dot in a column of its own', async ($, on) => {
-  const head = 'Why did I check AMQ when only the agent availability check was asked for in the brief?'
+  const head = 'Why did the build fetch the cache when only the lint step was asked for in the brief?'
   const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
 
@@ -584,7 +584,7 @@ test('a long question is shown whole, its dot in a column of its own', async ($,
   expect(texts).toContain('●')
 })
 
-// Observed 2026-10-07 (Ohad): the pane opened by itself at session start, then closed. Every
+// Regression: the pane opened by itself at session start, then closed. Every
 // reload in the debug logs is followed by `ui.close nested in track#0`: session.start runs again
 // on a reload, an enable or a worker respawn, while the pane stays up, and it closed the pane.
 const startSession = async (
@@ -602,7 +602,7 @@ const startSession = async (
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/home/user/work', surface: 'terminal', isInteractive: true })
 
   return closes
 }
@@ -617,7 +617,7 @@ test('session.start drops a pane that waits undrawn', async ($, on) => {
   expect(closes).toEqual(['track'])
 })
 
-// Ohad, 2026-10-07: after a jump, light the question or answer in the transcript and fade it,
+// After a jump, light the question or answer in the transcript and fade it,
 // so the eye finds where the jump landed.
 const lightLog = (on: Parameters<TestBody>[1]) => {
   const levels: Array<[string, number]> = []
@@ -632,8 +632,8 @@ const lightLog = (on: Parameters<TestBody>[1]) => {
   return levels
 }
 
-// Ohad, 2026-10-07: remove [ asked ]; then, after the audit, short jump buttons [ Q ] and [ A ]
-// beside the green question text. The kit cannot raise a transcript scroll: a probe answering
+// Short jump buttons, [ Q ] and [ A ], sit beside the green question text.
+// The kit cannot raise a transcript scroll: a probe answering
 // on('ui.scroll') with {}, { value: {} } and { deny } each still failed "no implementation for
 // ui.scroll". So the test reads the debug line that carries the exact scroll arguments, the
 // toast that reports the refusal, and the row the press lights.
@@ -751,7 +751,7 @@ test('the lit answer mark is drawn on a highlight', async ($, on) => {
 // Audit 2026-10-07 (both engines): a hash of the words matched the stored message's joined text
 // blocks against one drawn block, and lit identical replies together. The answer's text row is
 // now keyed by its row id: the engine draws an assistant row under its uuid with the last group
-// zeroed (debug log of session 7bb54c88, image-thumbs probe), as it draws a prompt row.
+// zeroed (seen in a debug log and in the image-thumbs probe), as it draws a prompt row.
 const ROW = 'aaaa1111-bbbb-cccc-dddd'
 const TURN_WITH_TEXT = { currentId: 't1', gatedTurnId: null, lastText: { row: ROW, turnId: 't1' } }
 
@@ -861,7 +861,7 @@ test('session.start registers /track and the tools even when its pane housekeepi
   on('ui.log', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
 
-  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/home/user/work', surface: 'terminal', isInteractive: true })
 
   expect(commands).toEqual(['track'])
 })
@@ -875,13 +875,13 @@ test('session.start puts out rows a reload left lit', async ($, on) => {
   on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
 
-  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/home/user/work', surface: 'terminal', isInteractive: true })
 
   expect(levels).toEqual([['row-9', 0]])
 })
 
-// Observed 2026-10-07: "do a /retro" ran its steps unlisted until Ohad asked. The debug logs of
-// that day show "track: prompt.compose bypassed by cc-plugin-sec-default", so the standing rule
+// Regression: "do a /retro" ran its steps unlisted. The debug log showed "track:
+// prompt.compose bypassed by <managed plugin>", so the standing rule
 // never reached the model; each prompt carries the steps instruction instead, while the rule is
 // bypassed. Then Plannotator's review comments (a plugin's prompt) added work and no step.
 const submitted = async (
@@ -928,7 +928,7 @@ test('/track carries no steps instruction', async ($, on) => {
 })
 
 test('a plugin\'s prompt (review comments) carries the steps instruction, naming after', async ($, on) => {
-  const context = await submitted($, on, 'Ohad annotated the retro report: fix section 2.', { kind: 'plugin', name: 'plannotator' })
+  const context = await submitted($, on, 'The reviewer annotated the retro report: fix section 2.', { kind: 'plugin', name: 'plannotator' })
   expect(context).toContain('mcp__track__track_steps')
   expect(context).toContain('after')
 })
@@ -941,7 +941,7 @@ test('no steps instruction rides on the prompt once the system rule reached the 
   expect(await submitted($, on, 'do a /retro', { kind: 'composer' }, true)).not.toContain('track_steps')
 })
 
-// Ohad, 2026-10-07: new work mid-plan (review comments) gets a step of its own, in place.
+// New work mid-plan (review comments) gets a step of its own, in place.
 test('track_steps with after inserts steps after that step and keeps the plan', async ($, on) => {
   const writes = captureSteps(
     on,
@@ -952,17 +952,17 @@ test('track_steps with after inserts steps after that step and keeps the plan', 
     ]),
   )
 
-  await $.tool.call({ tool: 'mcp__track__track_steps', steps: ['Apply Ohad\'s review comments'], after: 'plan:2' } as never)
+  await $.tool.call({ tool: 'mcp__track__track_steps', steps: ['Apply the review comments'], after: 'plan:2' } as never)
 
   expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
     'plan:1|Draft the retro|completed',
     'plan:2|Open it in Plannotator|in_progress',
-    'plan:4|Apply Ohad\'s review comments|pending',
+    'plan:4|Apply the review comments|pending',
     'plan:3|Save the retro|pending',
   ])
 })
 
-// Ohad, 2026-10-07: /track should act like /btw, at once while a turn runs and without a row in
+// /track acts like /btw, at once while a turn runs and without a row in
 // the session. The command is registered `immediate`, and the toggle answers with no text.
 test('/track is registered to run at once while a turn is in flight', async ($, on) => {
   const commands: Array<{ name: string; immediate?: true }> = []
@@ -975,7 +975,7 @@ test('/track is registered to run at once while a turn is in flight', async ($, 
   on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
 
-  await $.session.start({ cwd: '/Users/ohad.e/git', surface: 'terminal', isInteractive: true })
+  await $.session.start({ cwd: '/home/user/work', surface: 'terminal', isInteractive: true })
 
   expect(commands.find(c => c.name === 'track')).toMatchObject({ immediate: true })
 })
@@ -1009,7 +1009,7 @@ test('/track opens and hides the pane without writing a transcript row', async (
   expect(calls).toEqual(['open track', 'close track'])
 })
 
-// Ohad, 2026-10-07: a colored banner at the top of the pane says where the session stands:
+// A colored banner pinned at the bottom of the pane says where the session stands:
 // working, waiting on agents, waiting on you, or safe to close.
 const IDLE = { isWorking: false, agentCalls: [], askCalls: [], background: [] }
 
@@ -1073,13 +1073,13 @@ test('turns, a background agent and its notification drive the banner state', as
   expect(activity.background).toEqual([])
 })
 
-// Observed 2026-10-07 (Ohad, session 68a12838): [ Q ] on Q2 ("2+2") jumped to the first "1+1"
+// Regression: [ Q ] on Q2 ("2+2") jumped to the first "1+1"
 // prompt. The saved ledger showed prompt 1 linked to the engine's `placeholder` row, and prompts
 // 2 and 3 both linked to prompt 1's row: a drawn row that matched no prompt went to the first
 // prompt still unlinked. A prompt is linked only to the row drawn under its own id.
-const A = '3f6ecc74-f6f0-45c2-908e'
-const B = 'ef24fc1c-0e37-4159-9281'
-const C = '13fd2a23-6943-4a0e-96e9'
+const A = 'a0000001-0000-4000-8000'
+const B = 'b0000002-0000-4000-8000'
+const C = 'c0000003-0000-4000-8000'
 const THREE_PROMPTS = {
   v: 1,
   nextQuestionId: 3,
@@ -1139,7 +1139,7 @@ test('[ Q ] is not offered for a question whose stored row is another prompt\'s'
   expect((await ui.findAll({ type: 'Button' })).find(b => b.key === 'q-1')).toBeUndefined()
 })
 
-// Ohad, 2026-10-07: the step in progress blinks slowly, and differently by who is working: the
+// The step in progress blinks slowly, and differently by who is working: the
 // main session (grey shades, a turning spinner), agents it waits on (amber, an hourglass); while
 // it waits on the person the row holds still in the banner's purple.
 const IN_PROGRESS = {
@@ -1208,14 +1208,13 @@ test('the pulse ticks only while a step is in progress and the session or its ag
   expect(ticks.length).toBe(afterIdle)
 })
 
-// Ohad, 2026-10-07: the pane is titled Session Tracker, and the banner sits just above Steps,
-// under the line that ends the questions, not at the top of the pane.
+// The pane is titled Session Tracker.
 test('the pane opens as Session Tracker, its title on the first line', async ($, on) => {
   const opens = await autoOpenCase($, on, { columns: 160, isFullscreen: true, repo: null, closedByPerson: false })
   expect(opens[0]).toMatchObject({ id: 'track', title: 'Session Tracker' })
 })
 
-// Updated the same day at Ohad's request: the title is centered, as a header bar.
+// The title is centered, as a header bar.
 test('the first line of the pane is the Session Tracker title, centered as a header bar', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
@@ -1230,7 +1229,7 @@ test('the first line of the pane is the Session Tracker title, centered as a hea
   expect(line.length).toBe(60)
 })
 
-// Updated 2026-10-07 at Ohad's request: the banner is pinned at the bottom of the pane, its color
+// The banner is pinned at the bottom of the pane, its color
 // across the whole width and its words centered.
 test('the banner is pinned at the bottom, full width, its words centered', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
@@ -1244,7 +1243,7 @@ test('the banner is pinned at the bottom, full width, its words centered', async
   expect(texts.at(-1)).toContain('Safe to close')
 })
 
-// Observed 2026-10-07 (session 7bbc175c): after Ohad approved the retro and asked for a plan,
+// Regression: after the person approved the retro and asked for a plan,
 // the retro step stayed in progress and kept pulsing; the model was never told which step was
 // open. Each typed or plugin prompt now names the step in progress and asks for it to be closed.
 const WITH_STEP = {
@@ -1281,7 +1280,7 @@ test('a plugin prompt (an approval from Plannotator) names the step in progress 
   expect(await contextFor($, on, { kind: 'plugin', name: 'plannotator' })).toContain('plan:2 "Fold the design into the retro report"')
 })
 
-// Observed 2026-10-07 (session 7bbc175c): the transcript said "plan:10 in progress" and Ohad read
+// Regression: the transcript said "plan:10 in progress" and the person read
 // it as the pane's S10, a finished step; plan:10 was inserted third, so the pane shows it as S3.
 // The quiet mark_step line names the step as the pane does: its S-number and its title.
 test('a mark_step line names the step by its pane number and title, not its id', async ($, on) => {
@@ -1305,7 +1304,7 @@ test('a mark_step line names the step by its pane number and title, not its id',
   expect(text).not.toContain('plan:10')
 })
 
-// Ohad, 2026-10-07: the title stays put; Questions and Steps are fixed regions, about a third and
+// The title stays put; Questions and Steps are fixed regions, about a third and
 // two thirds, and each scrolls on its own under the wheel.
 const MANY = {
   ...ANSWERED,
@@ -1351,7 +1350,7 @@ test('a wheel tick over the questions scrolls the questions alone', async ($, on
   expect(at.steps).toBeNull()
 })
 
-// Ohad, 2026-10-07: "the tracker scroll is stuck". The hook answered every wheel tick itself, so
+// Regression: the tracker's scroll got stuck. The hook answered every wheel tick itself, so
 // a body left scrolled down (before the layout change, or by a tree one row too tall) could never
 // move back. Each tick now also pins the body at its top.
 test('a wheel tick scrolls a region and pins the pane body at its top', async ($, on) => {
@@ -1369,7 +1368,7 @@ test('a wheel tick scrolls a region and pins the pane body at its top', async ($
   expect(offsets).toEqual([0])
 })
 
-// Ohad, 2026-10-07: the banner says its state in words alone, with no glyph before them.
+// The banner says its state in words alone, with no glyph before them.
 test('the banner words carry no glyph before them', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
@@ -1377,7 +1376,7 @@ test('the banner words carry no glyph before them', async ($, on) => {
   expect(texts.at(-1)?.trim()).toBe('Safe to close')
 })
 
-// Ohad, 2026-10-07: a step can be paused (started, then parked) or waiting on the person (it
+// A step can be paused (started, then parked) or waiting on the person (it
 // needs their answer); the retro session had both and could only show them as pending.
 test('mark_step sets a step paused or waiting', async ($, on) => {
   const writes = captureSteps(on, withSteps([
@@ -1411,7 +1410,7 @@ test('the pane shows a paused step with ⏸ and a waiting step with the purple �
   expect(glyphBefore('S2 Decide the handoff mod')).toEqual({ text: '◆', color: 'permission' })
 })
 
-// Observed 2026-10-07 (probe on Ohad's pane): ticks past the end of the steps grew the stored
+// Regression (a probe on a live pane): ticks past the end of the steps grew the stored
 // position to 733 for about 20 steps, so scrolling back up had hundreds of hidden rows to unwind
 // first ("stuck"). The stored position is clamped to the last one that shows anything.
 test('scrolling past the end and back up moves the window up at once', async ($, on) => {
@@ -1439,7 +1438,7 @@ test('scrolling past the end and back up moves the window up at once', async ($,
   expect(at.steps).toBe(atEnd - 1)
 })
 
-// Ohad, 2026-10-07: "s: clear all" at the bottom too, and "clear completed" at the top and the
+// "s: clear all" at the bottom too, and "clear completed" at the top and the
 // bottom, both stuck in place while the steps scroll. One bar heads the steps, one sits under them.
 const clearBar = (el: { key?: string; props: unknown }) => {
   const p = el.props as { hotkey?: string; label?: string }
@@ -1522,8 +1521,8 @@ test('clear completed above the steps hides the done steps and keeps the rest', 
 
 // The context-handoff session, 2026-10-07: after a handoff the fresh session's pane is empty.
 // restore_steps copies the old session's steps from the store with one call, keyed by the brief's
-// session id; the questions stay behind (Ohad: "just the steps not the questions").
-const OLD = '3ea22406-d7ef-4e30-841d-429dc2419eb6'
+// session id; the questions stay behind.
+const OLD = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 const SAVED_STEPS = [
   { id: 'plan:1', source: 'plan', subject: 'Fix the pane', status: 'completed' },
   { id: 'plan:3', source: 'plan', subject: 'Deploy', status: 'in_progress' },
