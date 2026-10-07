@@ -1299,10 +1299,11 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's bookkeeping calls stay quiet in the transcript: track_question draws nothing,
-  // mark_answered draws one dim line, which is also where "jump to answer" lands.
+  // The model's bookkeeping calls stay quiet in the transcript: track_question, track_steps and
+  // restore_steps draw nothing, mark_answered draws one dim line, which is also where "jump to
+  // answer" lands.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
+    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS || e.props.tool === RESTORE_STEPS) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
@@ -1348,7 +1349,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP].includes(e.props.tool)) {
+    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_STEPS].includes(e.props.tool)) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />

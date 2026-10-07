@@ -128,6 +128,22 @@ test('the track_question call draws no row', async ($, on) => {
   expect(await ui.findAll({ type: 'Text' })).toHaveLength(0)
 })
 
+// After a handoff, the restore_steps call is bookkeeping too: neither its row nor its result shows.
+test('the restore_steps call draws no row and no result', async ($, on) => {
+  on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
+  on('ui.render', { component: 'ToolResult' }, () => ({ type: 'Text', props: {}, children: ['engine result'] }))
+
+  const use = await $.ui.mount(toolRow('mcp__track__restore_steps', { from_session: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))
+  const result = await $.ui.mount({
+    ...toolRow('mcp__track__restore_steps', {}),
+    component: 'ToolResult' as const,
+    props: { tool_use_id: 'toolu_row', tool: 'mcp__track__restore_steps', output: 'Restored 41 steps from session aaaaaaaa.', isErrored: false },
+  } as never)
+
+  expect(await use.findAll({ type: 'Text' })).toHaveLength(0)
+  expect(await result.findAll({ type: 'Text' })).toHaveLength(0)
+})
+
 test('the mark_answered call draws one quiet line naming the question', async ($, on) => {
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
 
