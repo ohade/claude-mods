@@ -46,8 +46,9 @@ where each was answered, and the steps the model set itself, each with a complet
 - **Banner.** A full-width colored line at the bottom says where the session stands: Working, Waiting on agents
   (an Agent call, or background agents and shell tasks still running), Waiting on you (a question
   dialog, or open questions and unfinished steps after the turn), or Safe to close.
-- **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and an approved
-  plan (`ExitPlanMode`: its numbered and checkbox lines). A Task named like a plan step links to it.
+- **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and explicit
+  `track_steps` calls. Successful plan approval adds one reminder to reuse open steps and register
+  missing work. It leaves the entire register unchanged. A Task named like a plan step links to it.
   The step in progress shows who is on it: a spinner breathing in grey while the main session
   works, an amber hourglass while it waits on agents, a still purple `◆` while it waits on you.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
@@ -75,6 +76,9 @@ where each was answered, and the steps the model set itself, each with a complet
   section; the questions are still tracked, through the tools' own descriptions and the reminder.
 - **Rewind and resume.** A `/rewind` drops the questions asked in the rewound turns. Each finished
   turn saves the register, so `/resume` brings it back.
+  Answer jumps use event order within the question's actual tracking turn. Text before the tracking
+  call cannot become its answer, even when wall-clock timestamps are equal. A later turn may answer
+  an older question. Step updates return the affected step's id and title.
 
 It opens by itself by the built-in diff panel's rule, less the git condition: in the fullscreen
 layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). A reload of

@@ -308,29 +308,6 @@ const norm = (title: string): string =>
     .replace(/\s+/g, ' ')
     .trim()
 
-// The steps of an approved plan: top-level numbered lines and checkbox lines, outside code
-// fences. Plain bullets and prose are context, not steps. `[x]` marks a step done.
-const parsePlan = (plan: string): Step[] => {
-  const steps: Step[] = []
-  let inFence = false
-  for (const line of plan.split('\n')) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence
-      continue
-    }
-    const match = inFence ? null : /^(?:\d+[.)]|[-*+]\s*\[([ xX])\])\s+(.+)$/.exec(line)
-    if (match !== null && steps.length < MAX_PLAN_STEPS) {
-      steps.push({
-        id: `plan:${steps.length + 1}`,
-        source: 'plan',
-        subject: headOf(match[2] ?? ''),
-        status: match[1] === 'x' || match[1] === 'X' ? 'completed' : 'pending',
-      })
-    }
-  }
-
-  return steps
-}
 
 const statusGlyph = (q: Question): string => (q.status === 'answered' ? '●' : q.status === 'deferred' ? '◌' : '○')
 
@@ -633,6 +610,7 @@ const savedQuestion = (row: unknown): Question | undefined => {
     ...textField('answerRequestId', r.answerRequestId),
     ...textField('answerKey', r.answerKey),
     ...textField('trackedBy', r.trackedBy),
+    ...(typeof r.trackedOrder === 'number' && Number.isSafeInteger(r.trackedOrder) && r.trackedOrder >= 0 && { trackedOrder: r.trackedOrder }),
     ...(typeof r.note === 'string' && { note: r.note.slice(0, HEAD_CHARS) }),
     ...(typeof r.answeredAt === 'number' && { answeredAt: r.answeredAt }),
     ...(r.cleared === true && { cleared: true as const }),
@@ -800,7 +778,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Ids: plan:1, plan:2, … (from track_steps or the approved plan), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
+        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
         properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] } },
@@ -859,8 +837,11 @@ export const register: Register = on => {
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const hasText = e.message.content.some(block => block.type === 'text' && String(block.text).trim() !== '')
     if (e.agentId === undefined && hasText) {
-      const t = await read($, turn)
-      await update($, turn, cur => ({ ...cur, lastText: { row: rowKey(e.uuid), turnId: t.currentId } }))
+      await update($, turn, cur => {
+        const order = (cur.eventOrder ?? 0) + 1
+
+        return { ...cur, eventOrder: order, lastText: { row: rowKey(e.uuid), turnId: cur.currentId, order } }
+      })
     }
 
     return next(e)
@@ -1049,6 +1030,14 @@ export const register: Register = on => {
     if (summary === '') {
       return { deny: 'track: summary is required.' }
     }
+    let trackedOrder = 0
+    let trackedTurnId: string | null = null
+    await update($, turn, cur => {
+      trackedOrder = (cur.eventOrder ?? 0) + 1
+      trackedTurnId = cur.currentId
+
+      return { ...cur, eventOrder: trackedOrder }
+    })
     let minted: Question | undefined
     await update($, ledger, l => {
       const last = l.prompts.at(-1)
@@ -1056,10 +1045,13 @@ export const register: Register = on => {
         id: l.nextQuestionId,
         head: summary,
         at: Date.now(),
+        trackedOrder,
         ...(last?.rowKey !== undefined && { rowKey: last.rowKey }),
         ...(last?.requestId !== undefined && { askedRequestId: last.requestId }),
         ...(e.tool_use_id !== undefined && { trackedBy: e.tool_use_id }),
-        turnId: last?.turnId ?? null,
+        // The question is created now. A previous composer's turn is only a
+        // possible source location, never the order of this tracking event.
+        turnId: trackedTurnId,
         status: 'open',
       }
 
@@ -1067,12 +1059,6 @@ export const register: Register = on => {
 
       return { ...l, nextQuestionId: l.nextQuestionId + 1, questions }
     })
-    const t = await read($, turn)
-    if (minted !== undefined && minted.turnId === null && t.currentId !== null) {
-      const id = minted.id
-      await update($, ledger, l => ({ ...l, questions: l.questions.map(q => (q.id === id ? { ...q, turnId: t.currentId } : q)) }))
-    }
-
     // The Questions region follows the newest question again.
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
 
@@ -1095,7 +1081,10 @@ export const register: Register = on => {
     }
     // The answer's text row: the last text the model wrote in this turn, if any.
     const t = await read($, turn)
-    const answerKey = status === 'answered' && t.lastText !== undefined && t.lastText.turnId === t.currentId ? t.lastText.row : undefined
+    const question = l.questions.find(q => q.id === id) as Question
+    const text = t.lastText
+    const isAfterQuestion = text?.order !== undefined && (question.turnId !== t.currentId || (question.trackedOrder !== undefined && text.order > question.trackedOrder))
+    const answerKey = status === 'answered' && text !== undefined && text.turnId === t.currentId && isAfterQuestion ? text.row : undefined
     await update<Ledger>($, ledger, cur => ({
       ...cur,
       questions: cur.questions.map(({ answerKey: _old, ...q }) =>
@@ -1208,12 +1197,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || typeof result?.plan !== 'string' || result.isAgent === true) {
       return ran
     }
-    const steps = parsePlan(result.plan)
-    if (steps.length > 0) {
-      await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
-    }
-
-    return ran
+    return { ...ran, context: [...(ran.context ?? []), `track: the plan was approved. Reuse the existing open steps; register meaningful missing work with mcp__track__track_steps. ${STEPS}`] }
   })
 
   // The banner's inputs: an Agent call in flight, a background agent, a background shell task, a
@@ -1261,7 +1245,7 @@ export const register: Register = on => {
     return ran
   })
 
-  // A plan laid out in chat: its steps replace any earlier plan's, as a new approved plan does.
+  // Explicit tracking creates plan rows; approving a plan never imports its text.
   on('tool.call', { tool: TRACK_STEPS }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
@@ -1356,7 +1340,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? withStatus(s, status, now) : s)) }))
 
-    return { result: `Step ${id} marked ${status}.` }
+    return { result: `Step ${id} "${l.steps.find(s => s.id === id)?.subject}" marked ${status}.` }
   })
 
   on('command.run', { command: 'track' }, async ($, e) => {

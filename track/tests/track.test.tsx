@@ -288,18 +288,14 @@ test('TaskUpdate completes a step, and deleted removes it', async ($, on) => {
   expect(writes.at(-1)?.steps.map(s => s.id)).toEqual(['task:7'])
 })
 
-test('an approved plan becomes steps: numbered and checkbox lines, not code', async ($, on) => {
+test('an approved plan leaves steps unchanged, including numbered and checkbox lines', async ($, on) => {
   const writes = captureSteps(on, withSteps([]))
   const plan = ['## Plan', '', '1. Foo', '2. Bar', '- [x] Baz', '```', '1. not a step', '```', 'Prose line.'].join('\n')
   on('tool.call', { tool: 'ExitPlanMode' }, () => ({ result: { plan, isAgent: false } }))
 
   await $.tool.call({ tool: 'ExitPlanMode' })
 
-  expect(writes.at(-1)?.steps.map(s => `${s.id}|${s.subject}|${s.status}`)).toEqual([
-    'plan:1|Foo|pending',
-    'plan:2|Bar|pending',
-    'plan:3|Baz|completed',
-  ])
+  expect(writes).toEqual([])
 })
 
 test('a Task named like a plan step links to it instead of adding a row', async ($, on) => {
@@ -770,13 +766,13 @@ test('the lit answer mark is drawn on a highlight', async ($, on) => {
 // now keyed by its row id: the engine draws an assistant row under its uuid with the last group
 // zeroed (seen in a debug log and in the image-thumbs probe), as it draws a prompt row.
 const ROW = 'aaaa1111-bbbb-cccc-dddd'
-const TURN_WITH_TEXT = { currentId: 't1', gatedTurnId: null, lastText: { row: ROW, turnId: 't1' } }
+const TURN_WITH_TEXT = { currentId: 't1', gatedTurnId: null, eventOrder: 2, lastText: { row: ROW, turnId: 't1', order: 2 } }
 
 const answeredWith = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], turnState: unknown, status = 'answered') => {
   let written: { answerKey?: string } | undefined
   on('state.get', { plugin: 'track', key: 'turn' }, () => ({ value: { value: turnState, version: 1 } }))
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({
-    value: { value: { ...OPEN_ONE, questions: [{ ...OPEN_ONE.questions[0], answerKey: 'stale-key' }] }, version: 1 },
+    value: { value: { ...OPEN_ONE, questions: [{ ...OPEN_ONE.questions[0], trackedOrder: 1, answerKey: 'stale-key' }] }, version: 1 },
   }))
   on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
     written = (e.value as { questions: Array<{ answerKey?: string }> }).questions[0]

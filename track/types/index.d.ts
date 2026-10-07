@@ -29,10 +29,12 @@ export type Question = {
   // The tool_use_id of the track_question call that minted it, and when it was answered:
   // a /rewind is detected by these ids leaving the transcript.
   trackedBy?: string
+  // Monotonic order of the tracking event, compared with text in the same turn.
+  trackedOrder?: number
   answeredAt?: number
 }
 
-// A step the model set itself: a Task, a todo line, or a line of an approved plan.
+// A step the model set itself: a Task, a todo line, or an explicit track_steps row.
 export type Step = {
   id: string
   source: 'task' | 'todo' | 'plan'
@@ -66,7 +68,8 @@ export type Ledger = {
 export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
-  lastText?: { row: string; turnId: string | null }
+  eventOrder?: number
+  lastText?: { row: string; turnId: string | null; order?: number }
   composeSeen?: true
 }
 
