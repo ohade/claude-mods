@@ -63,10 +63,15 @@ where each was answered, and the steps the model set itself, each with a complet
   bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
   instruction beside it; built-in commands do not.
 - **Handoffs.** A handoff that clears the session and seeds a fresh one leaves the pane empty.
-  `restore_steps({ from_session })` copies the previous session's steps back, in order, with
-  their ids and statuses; its questions stay behind. Task ids start again in each session, so a
-  restored Task step's id gains `restored:` and keeps no link to the old Task. It refuses to
-  overwrite steps the session already has unless `replace: true` is passed.
+  `restore_tracker({ from_session })` copies the previous session's steps back, in order, with
+  their ids and statuses, and its questions not cleared, with new ids after this session's own.
+  Task ids start again in each session, so a restored Task step's id gains `restored:` and keeps
+  no link to the old Task. When the model marks a question answered, the mod keeps the answer's
+  text (up to 1,000 characters), and the restore call's row in the transcript shows each restored
+  question with its answer, its deferral note, or "(answer text was not saved)" for one answered
+  before answers were kept. `[ Q ]` and `[ A ]` of a restored question jump to that row. The call
+  refuses to overwrite steps the session already has, or to restore the same session's questions
+  twice, unless `replace: true` is passed.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred. It

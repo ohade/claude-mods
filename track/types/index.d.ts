@@ -30,6 +30,22 @@ export type Question = {
   // a /rewind is detected by these ids leaving the transcript.
   trackedBy?: string
   answeredAt?: number
+  // The answer's words, from that last text row, cut to ANSWER_CHARS: a later session shows them
+  // in its restore row, since the row itself is in this session's transcript.
+  answerText?: string
+  // Brought back after a handoff: the session it came from, and the restore_tracker call whose
+  // row shows it here (that row is where [ Q ] and [ A ] jump).
+  restoredFrom?: string
+  restoredBy?: string
+}
+
+// What one restore_tracker call brought back, fixed at that call: its transcript row is drawn from
+// this, so clearing the pane later leaves the row as it was.
+export type Restore = {
+  by: string
+  from: string
+  steps: number
+  questions: Question[]
 }
 
 // A step the model set itself: a Task, a todo line, or a line of an approved plan.
@@ -59,14 +75,16 @@ export type Ledger = {
   // rewind check, because compaction removes their tool calls too. Saved with the register, so a
   // resumed session keeps it.
   compactedAt?: number
+  // The newest restore_tracker calls, by tool_use_id, for drawing their rows.
+  restores?: Restore[]
 }
 
-// `lastText`: the main loop's last text row and the turn it was written in. `composeSeen`: the
+// `lastText`: the main loop's last text row, its text, and the turn it was written in. `composeSeen`: the
 // standing rule reached the model this session (prompt.compose ran), so prompts need no steps line.
 export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
-  lastText?: { row: string; turnId: string | null }
+  lastText?: { row: string; turnId: string | null; text?: string }
   composeSeen?: true
 }
 

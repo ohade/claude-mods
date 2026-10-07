@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Activity, Ledger, Pane, Prompt, Question, ScrollAt, Step, Turn } from '../types'
+import type { Activity, Ledger, Pane, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -31,8 +31,8 @@ const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
 const TRACK_STEPS = 'mcp__track__track_steps'
-const RESTORE_STEPS = 'mcp__track__restore_steps'
-// A Claude Code session id; restore_steps reads only the store key of a real one.
+const RESTORE_TRACKER = 'mcp__track__restore_tracker'
+// A Claude Code session id; restore_tracker reads only the store key of a real one.
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
@@ -45,6 +45,16 @@ const QUESTION_STATUSES = ['open', 'answered', 'deferred'] as const
 const HEAD_CHARS = 200
 const MAX_PROMPTS = 200
 const MAX_QUESTIONS = 200
+// An answer is kept for the next session to read, cut to this many characters. With
+// MAX_QUESTIONS it bounds the answers in one register near 200 KB, well inside STORE_BUDGET.
+const ANSWER_CHARS = 1000
+// The restore rows a register keeps; each holds a copy of the questions it restored.
+const MAX_RESTORES = 3
+// A restored question's turn: no turn of this session has it, so the Stop gate never holds a
+// turn for it and turn.start does not claim it.
+const RESTORED_TURN = 'restored'
+// Under a restored answered question whose answer was given before answers were kept.
+const NOT_SAVED = '(answer text was not saved)'
 const HOTKEYS = 9
 // Rows sit this many columns in under their section header, questions and steps alike.
 const ROW_INDENT = 2
@@ -278,6 +288,9 @@ const headOf = (text: string): string => {
   return line.length > HEAD_CHARS ? `${line.slice(0, HEAD_CHARS - 1)}…` : line
 }
 
+// "1 step", "2 steps".
+const counted = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
+
 // A row's text blocks, joined.
 const textOf = (content: ReadonlyArray<{ type: string; text?: unknown }>): string =>
   content.map(block => (block.type === 'text' ? String(block.text) : '')).join('\n')
@@ -493,7 +506,7 @@ const dropRewound = async ($: EngineInterface): Promise<void> => {
       .filter(q => !isRewound(q))
       .map(q => {
         if (!answerRewound(q)) return q
-        const { answerRequestId: _a, answeredAt: _t, note: _n, answerKey: _k, ...rest } = q
+        const { answerRequestId: _a, answeredAt: _t, note: _n, answerKey: _k, answerText: _x, ...rest } = q
 
         return { ...rest, status: 'open' as const }
       }),
@@ -633,13 +646,45 @@ const savedQuestion = (row: unknown): Question | undefined => {
     ...textField('answerRequestId', r.answerRequestId),
     ...textField('answerKey', r.answerKey),
     ...textField('trackedBy', r.trackedBy),
+    ...textField('restoredFrom', r.restoredFrom),
+    ...textField('restoredBy', r.restoredBy),
     ...(typeof r.note === 'string' && { note: r.note.slice(0, HEAD_CHARS) }),
+    ...(typeof r.answerText === 'string' && { answerText: truncate(r.answerText, ANSWER_CHARS) }),
     ...(typeof r.answeredAt === 'number' && { answeredAt: r.answeredAt }),
     ...(r.cleared === true && { cleared: true as const }),
   }
 }
 
-// A saved step as a fresh Step, or undefined when the row is not one: restore_steps reads rows
+// A saved restore row's record, or undefined when the row is not one.
+const savedRestore = (row: unknown): Restore | undefined => {
+  if (typeof row !== 'object' || row === null) {
+    return undefined
+  }
+  const r = row as Record<string, unknown>
+  if (typeof r.by !== 'string' || typeof r.from !== 'string' || typeof r.steps !== 'number' || !Array.isArray(r.questions)) {
+    return undefined
+  }
+
+  return { by: r.by, from: r.from, steps: r.steps, questions: r.questions.map(savedQuestion).filter(isDefined).slice(-MAX_QUESTIONS) }
+}
+
+// A question from another session's register, under this session's id `id`. Its old row links
+// and turn are dropped: those rows are in the old transcript. `by` is the restore call whose row
+// shows it here.
+const asRestored = (q: Question, id: number, from: string, by: string | undefined): Question => ({
+  id,
+  head: q.head,
+  at: q.at,
+  turnId: RESTORED_TURN,
+  status: q.status,
+  ...(q.note !== undefined && { note: q.note }),
+  ...(q.answerText !== undefined && { answerText: q.answerText }),
+  ...(q.answeredAt !== undefined && { answeredAt: q.answeredAt }),
+  restoredFrom: from,
+  ...(by !== undefined && { restoredBy: by }),
+})
+
+// A saved step as a fresh Step, or undefined when the row is not one: restore_tracker reads rows
 // another session saved, and copies only the fields a step has.
 const savedStep = (row: unknown): Step | undefined => {
   if (typeof row !== 'object' || row === null) {
@@ -679,6 +724,7 @@ const savedLedger = (raw: unknown): Ledger | undefined => {
     (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
   )
   const top = Math.max(0, ...questions.map(q => q.id), ...withdrawn.map(w => w.id))
+  const restores = rows(l.restores).map(savedRestore).filter(isDefined).slice(-MAX_RESTORES)
 
   return {
     v: 1,
@@ -688,6 +734,7 @@ const savedLedger = (raw: unknown): Ledger | undefined => {
     steps: rows(l.steps).map(savedStep).filter(isDefined).slice(-MAX_STEPS),
     ...(withdrawn.length > 0 && { withdrawn }),
     ...(typeof l.compactedAt === 'number' && { compactedAt: l.compactedAt }),
+    ...(restores.length > 0 && { restores }),
   }
 }
 
@@ -785,14 +832,14 @@ export const register: Register = on => {
       },
     })
     await $.tool.register({
-      name: 'restore_steps',
+      name: 'restore_tracker',
       description:
-        'After a handoff (a /clear that seeds a fresh session), copy the previous session\'s steps into this session\'s track pane, in order, with their ids and statuses; its questions are not copied. from_session is the previous session id (the handoff brief\'s session: field). Refuses when this session already has steps, unless replace is true.',
+        'Call once right after a handoff (a /clear that seeds a fresh session), with from_session set to the handoff brief\'s session: id. Copies the previous session\'s steps into this session\'s track pane, in order, with their ids and statuses, and its questions not cleared, with new ids, their statuses, deferral notes and saved answers; the user reads those answers in this call\'s row. Refuses when this session already has steps, or already restored questions from that session, unless replace is true.',
       inputSchema: {
         type: 'object',
         properties: {
           from_session: { type: 'string', description: 'The previous session id' },
-          replace: { type: 'boolean', description: 'Replace the steps this session already has' },
+          replace: { type: 'boolean', description: 'Replace the steps this session already has, and the questions already restored from that session' },
         },
         required: ['from_session'],
       },
@@ -837,6 +884,7 @@ export const register: Register = on => {
   on('tool.describe', { tool: MARK_ANSWERED }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: TRACK_STEPS }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: MARK_STEP }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: RESTORE_TRACKER }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
   on('session.append', { door: 'prompt' }, async ($, e, next) => {
     await recordPrompt($, e, textOf(e.message.content))
@@ -854,13 +902,18 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's last text row, by its row key: the answer a mark_answered call follows. The
-  // engine draws an assistant row under its uuid with the last group zeroed, as a prompt row.
+  // The model's last text row, by its row key, and its text: the answer a mark_answered call
+  // follows. The engine draws an assistant row under its uuid with the last group zeroed, as a
+  // prompt row. The text is cut here, so a long answer never sits whole in the session's state.
   on('session.append', { door: 'response' }, async ($, e, next) => {
-    const hasText = e.message.content.some(block => block.type === 'text' && String(block.text).trim() !== '')
-    if (e.agentId === undefined && hasText) {
+    const text = e.message.content
+      .filter(block => block.type === 'text')
+      .map(block => String(block.text))
+      .join('\n')
+      .trim()
+    if (e.agentId === undefined && text !== '') {
       const t = await read($, turn)
-      await update($, turn, cur => ({ ...cur, lastText: { row: rowKey(e.uuid), turnId: t.currentId } }))
+      await update($, turn, cur => ({ ...cur, lastText: { row: rowKey(e.uuid), turnId: t.currentId, text: truncate(text, ANSWER_CHARS) } }))
     }
 
     return next(e)
@@ -1093,12 +1146,15 @@ export const register: Register = on => {
 
       return { result: `No question with id ${id}. Open: ${open.length > 0 ? open.join('; ') : 'none'}.` }
     }
-    // The answer's text row: the last text the model wrote in this turn, if any.
+    // The answer's text row: the last text the model wrote in this turn, if any. Its words go with
+    // it, so a later session can show the answer after a handoff.
     const t = await read($, turn)
-    const answerKey = status === 'answered' && t.lastText !== undefined && t.lastText.turnId === t.currentId ? t.lastText.row : undefined
+    const last = status === 'answered' && t.lastText !== undefined && t.lastText.turnId === t.currentId ? t.lastText : undefined
+    const answerKey = last?.row
+    const answerText = last?.text
     await update<Ledger>($, ledger, cur => ({
       ...cur,
-      questions: cur.questions.map(({ answerKey: _old, ...q }) =>
+      questions: cur.questions.map(({ answerKey: _old, answerText: _oldText, ...q }) =>
         q.id === id
           ? {
               ...q,
@@ -1107,8 +1163,9 @@ export const register: Register = on => {
               ...(note !== undefined && { note }),
               ...(e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
               ...(answerKey !== undefined && { answerKey }),
+              ...(answerText !== undefined && { answerText }),
             }
-          : { ...q, ...(_old !== undefined && { answerKey: _old }) },
+          : { ...q, ...(_old !== undefined && { answerKey: _old }), ...(_oldText !== undefined && { answerText: _oldText }) },
       ),
     }))
 
@@ -1298,11 +1355,16 @@ export const register: Register = on => {
   })
 
   // A handoff seeds a fresh session, whose pane starts empty. One call copies the old session's
-  // steps from the store, keyed by its session id; its questions stay behind.
+  // steps and its questions from the store, keyed by its session id.
   // Steps already in the pane are kept unless the call asks to replace them. Task ids start again
-  // in every session, so a restored step keeps no link to the old session's Task, and a Task step
-  // takes a restored: id, leaving task:<n> to the new session's own Task.
-  on('tool.call', { tool: RESTORE_STEPS }, async ($, e) => {
+  // in every session, so a restored step keeps no link to the old Task, and a Task step takes a
+  // restored: id, leaving task:<n> to the new session's own Task.
+  // Every question not cleared comes back after this session's own, with this session's next ids.
+  // Its old row links are dropped, since those rows are in the old transcript; this call's row
+  // shows it instead, drawn from a copy kept with the register, so clearing the pane leaves the
+  // row as it was. A second call from the same session replaces those questions, never adds them
+  // again.
+  on('tool.call', { tool: RESTORE_TRACKER }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
     }
@@ -1310,37 +1372,67 @@ export const register: Register = on => {
     if (!SESSION_ID.test(from)) {
       return { deny: `track: "${truncate(from, 60)}" is not a session id; nothing changed.` }
     }
-    const saved = (await $.store.get(`s:${from}`)) as { ledger?: { steps?: unknown } } | undefined
+    const saved = (await $.store.get(`s:${from}`)) as { ledger?: { steps?: unknown; questions?: unknown } } | undefined
     const rows = Array.isArray(saved?.ledger?.steps) ? (saved.ledger.steps as unknown[]) : []
     const steps = rows
       .map(savedStep)
       .filter(isDefined)
       .map(({ taskId: _old, ...s }) => (s.source === 'task' && !s.id.startsWith('restored:') ? { ...s, id: `restored:${s.id}` } : s))
       .slice(-MAX_STEPS)
-    if (steps.length === 0) {
-      return { deny: `track: No saved steps for session ${from}; nothing changed.` }
+    const questionRows = Array.isArray(saved?.ledger?.questions) ? (saved.ledger.questions as unknown[]) : []
+    const questions = questionRows
+      .map(savedQuestion)
+      .filter(isDefined)
+      .filter(q => q.cleared !== true)
+      .slice(-MAX_QUESTIONS)
+    if (steps.length === 0 && questions.length === 0) {
+      return { deny: `track: No saved steps or questions for session ${from}; nothing changed.` }
     }
-    const refusal = (count: number) => `track: this session already has ${count} steps; nothing changed. Pass replace: true to replace them.`
-    const current = await read($, ledger)
-    if (current.steps.length > 0 && e.replace !== true) {
-      return { deny: refusal(current.steps.length) }
+    const replace = e.replace === true
+    const refusalOf = (cur: Ledger): string | undefined =>
+      replace
+        ? undefined
+        : steps.length > 0 && cur.steps.length > 0
+          ? `track: this session already has ${cur.steps.length} steps; nothing changed. Pass replace: true to replace them.`
+          : questions.length > 0 && cur.questions.some(q => q.restoredFrom === from)
+            ? `track: questions from session ${from} were already restored; nothing changed. Pass replace: true to replace them.`
+            : undefined
+    const before = refusalOf(await read($, ledger))
+    if (before !== undefined) {
+      return { deny: before }
     }
-    // Checked again inside the write: a second call in flight finds the first one's steps.
-    let had = 0
+    // Checked again inside the write: a second call in flight finds the first one's rows. The ids
+    // are taken inside the write too.
+    let refusal: string | undefined
+    let restored: Question[] = []
     await update<Ledger>($, ledger, cur => {
-      had = e.replace === true ? 0 : cur.steps.length
+      refusal = refusalOf(cur)
+      if (refusal !== undefined) {
+        return cur
+      }
+      restored = questions.map((q, k) => asRestored(q, cur.nextQuestionId + k, from, e.tool_use_id))
+      const kept = replace ? cur.questions.filter(q => q.restoredFrom !== from) : cur.questions
+      const by = e.tool_use_id
 
-      return had > 0 ? cur : { ...cur, steps }
+      return {
+        ...cur,
+        steps: steps.length > 0 ? steps : cur.steps,
+        questions: capRows([...kept, ...restored], MAX_QUESTIONS, q => q.status === 'answered'),
+        nextQuestionId: cur.nextQuestionId + restored.length,
+        ...(by !== undefined && { restores: [...(cur.restores ?? []), { by, from, steps: steps.length, questions: restored }].slice(-MAX_RESTORES) }),
+      }
     })
-    if (had > 0) {
-      return { deny: refusal(had) }
+    if (refusal !== undefined) {
+      return { deny: refusal }
     }
-    await update($, scrollAt, cur => ({ ...cur, steps: null }))
+    await update($, scrollAt, cur => ({ steps: steps.length > 0 ? null : cur.steps, questions: restored.length > 0 ? null : cur.questions }))
     const shown = steps.filter(s => s.cleared !== true)
     const at = shown.findIndex(s => s.status === 'in_progress')
     const where = at < 0 ? 'None in progress.' : `In progress: S${at + 1} ${shown[at]?.subject}.`
+    // The model reads the ids and where each question stands; the answers are for the person.
+    const listed = restored.map(q => `\nQ${q.id} ${q.status} ${q.head}`).join('')
 
-    return { result: `Restored ${steps.length} steps from session ${from}. ${where}` }
+    return { result: `Restored ${counted(steps.length, 'step')} and ${counted(restored.length, 'question')} from session ${from}. ${where}${listed}` }
   })
 
   on('tool.call', { tool: MARK_STEP }, async ($, e) => {
@@ -1451,14 +1543,57 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's bookkeeping calls stay quiet in the transcript: track_question, track_steps and
-  // restore_steps draw nothing, mark_answered draws one dim line, which is also where "jump to
-  // answer" lands.
+  // The model's bookkeeping calls stay quiet in the transcript: track_question and track_steps
+  // draw nothing, mark_answered draws one dim line, which is also where "jump to answer" lands.
+  // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS || e.props.tool === RESTORE_STEPS) {
+    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
+    }
+    if (e.props.tool === RESTORE_TRACKER) {
+      const { Box, Text } = $.ui.resolve(e)
+      // Drawn from the copy the call kept, never from the pane's questions; a refused call kept
+      // none and draws nothing.
+      const restore = (await read($, ledger)).restores?.find(r => r.by === e.props.tool_use_id)
+      if (restore === undefined) {
+        return <Box />
+      }
+      // [ Q ] and [ A ] of a restored question jump here and light the row, as they light an answer.
+      const level = await read($, memberOf(flash, e))
+      const block = (
+        <Box flexDirection="column">
+          <Text bold>{`Restored from the previous session: ${counted(restore.steps, 'step')}, ${counted(restore.questions.length, 'question')}`}</Text>
+          {restore.questions.map(q => {
+            // Under an answered question its answer, under a deferred one what it waits for.
+            const below = q.status === 'answered' ? (q.answerText ?? NOT_SAVED) : q.status === 'deferred' ? q.note : undefined
+            const color = q.status === 'answered' ? 'success' : undefined
+
+            return (
+              <Box key={`restored-${q.id}`} flexDirection="column" marginLeft={ROW_INDENT}>
+                <Box flexDirection="row" columnGap={1}>
+                  <Box flexShrink={1}>
+                    <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
+                      {`Q${q.id} ${q.head}`}
+                    </Text>
+                  </Box>
+                  <Text dimColor>{q.status}</Text>
+                </Box>
+                {below !== undefined && (
+                  <Box marginLeft={ROW_INDENT}>
+                    <Text dimColor={below === NOT_SAVED} wrap="wrap">
+                      {below}
+                    </Text>
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+        </Box>
+      )
+
+      return level > 0 ? <Box backgroundColor={shade(level)}>{block}</Box> : block
     }
     if (e.props.tool === MARK_STEP) {
       const { Text } = $.ui.resolve(e)
@@ -1501,7 +1636,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_STEPS].includes(e.props.tool)) {
+    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER].includes(e.props.tool)) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
@@ -1707,8 +1842,17 @@ export const register: Register = on => {
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined
           // A link to another prompt's row (stored by an older version) offers no jump.
-          const askedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
+          // A restored question's rows are in the old transcript, so [ Q ] and, once it was
+          // answered or deferred there, [ A ] go to the restore row that shows it.
+          const linkedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
+          const askedAt = linkedAt ?? q.restoredBy
           const answerAt = q.answerRequestId
+          const answerJump: { ids: string[]; block: 'start' | 'end' } | undefined =
+            answerAt !== undefined
+              ? { ids: q.answerKey !== undefined ? [answerAt, q.answerKey] : [answerAt], block: 'end' }
+              : q.restoredBy !== undefined && q.status !== 'open'
+                ? { ids: [q.restoredBy], block: 'start' }
+                : undefined
 
           // The dot is a column of its own and the question a wrapping column beside it, so a
           // long question is shown whole and its next lines align with the text, not the dot.
@@ -1725,13 +1869,13 @@ export const register: Register = on => {
               {askedAt !== undefined && (
                 <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />
               )}
-              {answerAt !== undefined && (
+              {answerJump !== undefined && (
                 <Button
                   key={`a-${q.id}`}
                   variant="primary"
                   hotkey={answered ? hotkey : undefined}
                   label="A"
-                  onPress={() => jump($, q.answerKey !== undefined ? [answerAt, q.answerKey] : [answerAt], 'end')}
+                  onPress={() => jump($, answerJump.ids, answerJump.block)}
                 />
               )}
               {q.status === 'deferred' && <Text dimColor>(deferred)</Text>}
