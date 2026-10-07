@@ -1,0 +1,9 @@
+{
+  "name": "track",
+  "version": "0.1.0",
+  "description": "A pane beside the transcript: the questions you asked (jump to where each was asked and answered) and the steps the model set itself, with completion rings",
+  "author": {
+    "name": "Ohad Edelstein"
+  },
+  "types": "./types/index.d.ts"
+}
