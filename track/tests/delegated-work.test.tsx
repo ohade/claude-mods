@@ -57,6 +57,25 @@ test('main work remains grey while unrelated shell tasks run', async ($, on) => 
   expect(texts.some(text => text.text === '⧗')).toBe(false)
 })
 
+test('delegated ownership never invents an agent count from step counts', async ($, on) => {
+  mock.clock(on)
+  const activity = atomStore(on, 'activity', MAIN as any)
+  const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] } as any)
+  const banner = async () => {
+    const ui = await $.ui.mount(pane('dock'))
+    const text = (await ui.findAll({ type: 'Text' })).at(-1)?.text ?? ''
+    await ui.unmount()
+    return text
+  }
+  expect((await banner()).trim()).toBe('Waiting on agents')
+  ledger.value.steps.push({ ...STEP, id: 'plan:2', delegated: false })
+  expect(await banner()).toContain('Working · agents')
+  expect(await banner()).not.toContain('agents (1)')
+  activity.value = { ...MAIN, isWorking: false, tasks: [], background: ['native-a', 'native-b'] }
+  ledger.value.steps = [{ ...STEP, status: 'pending' }]
+  expect(await banner()).toContain('Waiting on agents (2)')
+})
+
 test('mark_step saves delegation and clears it when the main session resumes', async ($, on) => {
   mock.clock(on)
   const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [STEP] } as any)

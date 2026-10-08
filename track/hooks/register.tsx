@@ -2285,14 +2285,17 @@ export const register: Register = on => {
     // Background agents and tasks show in the banner while the main turn runs too: the session
     // works and waits on them at once, and names each kind apart. Waiting on either blinks amber.
     const delegatedCount = steps.filter(s => s.delegated === true && s.status !== 'completed').length
-    const agentCount = Math.max(now.background.length, delegatedCount)
+    // Ownership identifies agents without telling how many. Count only native
+    // activity when no explicit ownership with an unknown count is present.
+    const agentCount = now.background.length
+    const agents = delegatedCount > 0 ? 'agents' : agentCount > 0 ? `agents (${agentCount})` : undefined
     const taskCount = (now.tasks ?? []).length
     const title = shown.text.trimEnd()
     const parts =
       state === 'working'
-        ? [title, agentCount > 0 && `agents (${agentCount})`, taskCount > 0 && `tasks (${taskCount})`]
+        ? [title, agents, taskCount > 0 && `tasks (${taskCount})`]
         : state === 'agents'
-          ? [agentCount > 0 ? `${title} (${agentCount})` : title, delegatedCount === 0 && taskCount > 0 && `tasks (${taskCount})`]
+          ? [delegatedCount === 0 && agentCount > 0 ? `${title} (${agentCount})` : title, delegatedCount === 0 && taskCount > 0 && `tasks (${taskCount})`]
           : state === 'tasks'
             ? [`${title} (${taskCount})`]
             : [title]
