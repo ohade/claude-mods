@@ -45,6 +45,13 @@ running turn. Doorbells and informational notifications alone need no row. Track
   an acknowledgement or an older answer with no saved text does not make it ready.
   Question and step labels use `Q1.` and `S1.`. The digits 1–9 press the jumps while the pane has focus
   (ctrl+x tab).
+  Groups containing an uncleared question's tracking source or displayed restore stay unfolded;
+  unrelated groups retain their native collapsed state. This exposes the ToolUse child that owns
+  the target and changes how those groups appear in the transcript. Composer rows always have
+  an owned wrapper. When an answer's exact host render instance was observed on this load, a jump
+  resolves it before selecting the answer text. The bounded presentation cache is lost on reload;
+  an unseen target still gets a key attempt and a visible refusal if unavailable. Native jumps
+  after reload remain an acceptance gate, including oldest and middle rows away from the viewport.
 - **Layout.** The title stays at the top and the banner at the bottom. Questions and Steps are
   fixed regions, about a third and two thirds; each scrolls on its own under the wheel, and its
   header counts the rows hidden above and below (`↑2 ↓5`). Empty sections say only "None yet."
@@ -82,6 +89,8 @@ running turn. Doorbells and informational notifications alone need no row. Track
   bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
   instruction beside it; built-in commands do not. After reload, only the exact current composed
   instruction suppresses this fallback. A legacy boolean delivery flag is insufficient.
+  Requests found in read content count as work even when they need one command. Claude reuses
+  an open step for that same work. This is a generic instruction, not transport parsing.
 - **Handoffs.** A handoff that clears the session and seeds a fresh one leaves the pane empty.
   `restore_tracker({ from_session })` copies the previous session's steps back, in order, with
   their ids and statuses, and its questions not cleared, with new ids after this session's own.

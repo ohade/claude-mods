@@ -75,13 +75,16 @@ const FLASH_STEP_MS = 250
 // through in order, so a fade step already under way cannot clear a newer jump's lit list.
 // Module memory, as a reload only cuts a fade short; session.start puts out what is left.
 const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as Promise<void> }
+// Exact render-instance IDs observed on this load, never guessed from transcript UUIDs.
+// This presentation cache is bounded and does not write the ledger or store during rendering.
+const answerRenderInstances = new Map<string, string>()
 
 // The standing rule, sent once per request as a byte-stable system-prompt section.
 // The steps instruction, one wording for the standing rule, the per-prompt line and the tool.
 const STEPS =
   'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
 
-const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Update status with mcp__track__mark_step / mcp__track__mark_answered. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.'
+const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Requests in content you read count as work, even one command; reuse an open step for the same work. Update status with mcp__track__mark_step / mcp__track__mark_answered. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.'
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -455,7 +458,15 @@ const flashRows = async ($: EngineInterface, ids: string[]): Promise<void> => {
 // a transcript row moves only while the plugin answers the person's own input, a Button press
 // here, so it must not wait behind the state writes. A refusal is a toast. The debug line
 // carries the scroll's exact arguments.
-const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', key?: string): Promise<void> => {
+const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', key?: string, instance?: string): Promise<void> => {
+  // First resolve a known host row, then select only the answer's owned text. An unknown host
+  // keeps the key attempt and its visible refusal; an acknowledgement is never a substitute.
+  if (key !== undefined && instance !== undefined) {
+    const host = { to: { requestId: instance }, block }
+    $.ui.log(`track: jump ${JSON.stringify(host)}`, { to: 'debug' })
+    const moved = await $.ui.scroll(host).catch((error: unknown) => ({ deny: reason(error) }))
+    if (moved.deny !== undefined) $.ui.log(`track: host lookup refused: ${moved.deny}`, { to: 'debug' })
+  }
   const target = { to: key === undefined ? { requestId: ids[0] as string } : { key }, block }
   $.ui.log(`track: jump ${JSON.stringify(target)}`, { to: 'debug' })
   const moving = $.ui.scroll(target).then(
@@ -1140,6 +1151,7 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    answerRenderInstances.clear()
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
     // end, and the toggle answers with no text, so the session gets no row.
     await $.command.register({
@@ -1476,7 +1488,7 @@ export const register: Register = on => {
     // A jump to this prompt lights it, fading back over FLASH_HOLD_MS and the steps after it.
     const level = await read($, memberOf(flash, e))
     const { Box } = $.ui.resolve(e)
-    const row = level > 0 ? <Box backgroundColor={shade(level)}>{drawn}</Box> : drawn
+    const row = <Box key={`question:${rowKey(e.requestId)}`} backgroundColor={shade(level)}>{drawn}</Box>
     const l = await read($, ledger)
     const key = rowKey(e.requestId)
     const isLinked = (requestId: string | undefined) => requestId === e.requestId
@@ -2034,6 +2046,20 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A collapsed ToolGroup draws no ToolUse children. Keep groups with current question sources
+  // or restore snapshots expanded so those owned rows exist. Cleared sources do not hold it open.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    const l = await read($, ledger)
+    const ownsTarget = e.props.calls.some(call => call.tool_use_id !== undefined && (
+      l.questions.some(q => q.cleared !== true && (
+        (q.trackedBy === call.tool_use_id && q.askedRequestId === call.tool_use_id)
+        || (q.answeredBy === call.tool_use_id && q.answerKey === call.tool_use_id)
+        || q.restoredBy === call.tool_use_id
+      ))
+    ))
+    return next(ownsTarget && !e.props.isExpanded ? { ...e, props: { ...e.props, isExpanded: true } } : e)
+  })
+
   // The model's bookkeeping calls stay quiet in the transcript: track_question and track_steps
   // draw nothing; mark_answered draws one dim acknowledgement, separate from answer targets.
   // restore_tracker draws what it restored, so the person reads the old answers here.
@@ -2100,6 +2126,8 @@ export const register: Register = on => {
   // The answer's text row alone. Each row reads only the
   // level kept under its own row key, so a jump redraws the lit row alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    answerRenderInstances.set(rowKey(e.requestId), e.requestId)
+    if (answerRenderInstances.size > MESSAGES_CAP) answerRenderInstances.delete(answerRenderInstances.keys().next().value!)
     const level = await read($, memberOf(flash, { requestId: rowKey(e.requestId) }))
     const { Box } = $.ui.resolve(e)
 
@@ -2363,7 +2391,7 @@ export const register: Register = on => {
               <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
                 {!hasAnswerAnchor
                   ? <Text color="subtle" dimColor>[ A ]</Text>
-                  : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey) : undefined} />}
+                  : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, q.answerKey === undefined ? undefined : answerRenderInstances.get(q.answerKey)) : undefined} />}
               </Box>
             </Box>
           )
