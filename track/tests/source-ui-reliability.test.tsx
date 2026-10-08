@@ -34,7 +34,7 @@ test('unknown-source tracking call renders a visible jump destination', async ($
   prepare(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Question from later content', tool_use_id: 'tracking-call' } as never)
   const ui = await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'ToolUse', requestId: 'tracking-call', props: { tool_use_id: 'tracking-call', tool: 'mcp__track__track_question', input: { summary: 'Question from later content' }, isRunning: false, isErrored: false, isInterrupted: false } } as never)
-  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' ')).toContain('Q1 Question from later content')
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' ')).toContain('Q1. Question from later content')
 })
 
 test('explicit clearing saves immediately and refreshes the Stop snapshot without rendering writes', async ($, on) => {

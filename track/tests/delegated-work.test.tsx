@@ -1,0 +1,71 @@
+// FIXTURE: 2026-10-08 two external-agent shell launches showed Working and
+// a grey spinner. Explicit delegated work must be brown without an AMQ parser.
+import { expect, mock, test } from 'claude-code/testing'
+import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+
+const MAIN = { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: ['external-1', 'external-2'] }
+const STEP = { id: 'plan:1', source: 'plan', subject: 'Consult peers', status: 'in_progress' }
+
+test('an explicitly delegated step is brown with an hourglass and an agents banner', async ($, on) => {
+  mock.clock(on)
+  atomStore(on, 'activity', MAIN)
+  atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] })
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = await ui.findAll({ type: 'Text' })
+  expect(texts.at(-1)?.text).toContain('Waiting on agents')
+  const glyph = texts.find(text => text.text === '⧗')
+  expect(glyph?.props.color).toBe('#7a5410')
+  expect((await ui.find({ key: 'banner' }))?.props.backgroundColor).toBe('#7a5410')
+})
+
+test('delegated state participates in checkpoint validation and survives restoration', async ($, on) => {
+  const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] } as any)
+  pluginStore(on)
+  let session = SESSION
+  on('session.id', () => ({ value: session }))
+  const checkpoint = async () => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: session } as never)).result))
+  const first = await checkpoint()
+  ledger.value.steps[0].delegated = false
+  const second = await checkpoint()
+  expect(first.checksum).not.toBe(second.checksum)
+  ledger.value.steps[0].delegated = true
+  const expected = await checkpoint()
+  session = '11111111-2222-4333-8444-555555555555'
+  ledger.value = { ...EMPTY }
+  const result = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__restore_tracker', from_session: SESSION, expected_checkpoint: expected, tool_use_id: 'toolu_restore' } as never)).result))
+  expect(result.ok).toBe(true)
+  expect(result.applied_checksum).toBe(expected.checksum)
+  expect(ledger.value.steps[0].delegated).toBe(true)
+})
+
+test('invalid delegation metadata is refused without changing the ledger', async ($, on) => {
+  const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [STEP] })
+  const before = JSON.stringify(ledger.value)
+  const result = await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: 'yes' } as never)
+  expect(result.deny).toContain('delegated')
+  expect(JSON.stringify(ledger.value)).toBe(before)
+})
+
+test('main work remains grey while unrelated shell tasks run', async ($, on) => {
+  mock.clock(on)
+  atomStore(on, 'activity', MAIN)
+  atomStore(on, 'ledger', { ...EMPTY, steps: [STEP] })
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = await ui.findAll({ type: 'Text' })
+  expect(texts.at(-1)?.text).toContain('Working')
+  expect(texts.find(text => text.text === '◐')?.props.color).toBe('#5f6670')
+  expect(texts.some(text => text.text === '⧗')).toBe(false)
+})
+
+test('mark_step saves delegation and clears it when the main session resumes', async ($, on) => {
+  mock.clock(on)
+  const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [STEP] } as any)
+  const store = pluginStore(on)
+  on('session.id', () => ({ value: SESSION }))
+  await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: true, note: 'Peer work is running' } as never)
+  expect(ledger.value.steps[0].delegated).toBe(true)
+  expect((store.held.get(`s:${SESSION}`) as any).ledger.steps[0].delegated).toBe(true)
+  await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: false } as never)
+  expect(ledger.value.steps[0].delegated).not.toBe(true)
+  expect((store.held.get(`s:${SESSION}`) as any).ledger.steps[0].delegated).not.toBe(true)
+})

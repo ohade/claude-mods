@@ -22,6 +22,7 @@ export const checkpointValues = (l: Ledger, session: string) => ({
   steps: l.steps.filter(s => s.cleared !== true).map(s => ({
     sourceId: s.sourceId ?? `${session}:${s.id}`, subject: s.subject, status: s.status,
     note: s.note ?? null, startedAt: s.startedAt ?? null, endedAt: s.endedAt ?? null,
+    ...(s.delegated === true && { delegated: true }),
   })),
 })
 

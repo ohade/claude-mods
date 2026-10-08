@@ -10,8 +10,8 @@ export type Prompt = {
 }
 
 // A question the model sent to the panel with `track_question`. `askedRequestId` is
-// the prompt row it was asked in; `answerRequestId` is the `mark_answered` tool row,
-// which sits right under the answer text.
+// the prompt row it was asked in; `answerRequestId` identifies verified answer text.
+// Legacy ledgers may still have the acknowledgement there; jumps use answerKey.
 export type Question = {
   id: number
   head: string
@@ -26,8 +26,7 @@ export type Question = {
   // A mark before the real text can bind only a later response in this same turn.
   answerTurnId?: string
   answerOrder?: number
-  // The answer's last text row, by its row key (the row uuid's first four groups): lit with the
-  // `mark_answered` row by a jump to the answer.
+  // The answer's last text row, by its row key (the row uuid's first four groups).
   answerKey?: string
   note?: string
   cleared?: true
@@ -68,6 +67,8 @@ export type Step = {
   createdRequestId?: string
   sourceId?: string
   note?: string
+  // Explicit work ownership, independent of whether agents run through Agent or a shell.
+  delegated?: true
   cleared?: true
   // The step's wall clock: when it first went in progress, and when it was done.
   startedAt?: number
@@ -91,14 +92,15 @@ export type Ledger = {
   restoredIds?: Record<string, number>
 }
 
-// `lastText`: the main loop's last text row, its text, and the turn it was written in. `composeSeen`: the
-// standing rule reached the model this session (prompt.compose ran), so prompts need no steps line.
+// `lastText`: the main loop's last text row, its text, and the turn it was written in.
+// Only the exact composedRule proves that the current instruction reached the model.
 export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
   eventOrder?: number
   lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string }
   composeSeen?: true
+  composedRule?: string
 }
 
 // The first shown row of each pane region, or null to follow the news.

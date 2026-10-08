@@ -37,10 +37,13 @@ running turn. Doorbells and informational notifications alone need no row. Track
   with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
   A question with a verified user source links to that source. Otherwise its tracking call is the
   visible source. The answer update draws one dim
-  `✓ Q<n> answered` line. An answered question turns green.
+  `✓ Q<n>. answered` line. An answered question turns green. The instruction explicitly includes
+  short follow-up questions before answering; a row still requires Claude to register it.
 - **Jump.** The fixed `[ Q ]` and `[ A ]` columns scroll to the verified source and answer. The row you land
-  on lights up and fades out over about two seconds: your prompt, or the answer's last text row and
-  the `✓ Q<n> answered` line under it. The digits 1–9 press the jumps while the pane has focus
+  on lights up and fades out over about two seconds: your prompt or the actual answer text alone.
+  The acknowledgement is a separate row. `[ A ]` stays faded until captured answer text exists;
+  an acknowledgement or an older answer with no saved text does not make it ready.
+  Question and step labels use `Q1.` and `S1.`. The digits 1–9 press the jumps while the pane has focus
   (ctrl+x tab).
 - **Layout.** The title stays at the top and the banner at the bottom. Questions and Steps are
   fixed regions, about a third and two thirds; each scrolls on its own under the wheel, and its
@@ -54,6 +57,10 @@ running turn. Doorbells and informational notifications alone need no row. Track
   (an Agent call or background agents), Waiting on tasks (background shell tasks), Waiting on you
   (a question dialog or an explicit waiting step), Paused, Activity unknown, Unsaved, or Idle.
   Use `waiting` only when the user must act; peer waits use `paused` or `pending` with an optional note.
+  `mark_step({ delegated: true })` identifies work owned by agents, including agents launched
+  through other tools. It shows the brown hourglass and agents banner. Use `delegated: false`
+  when the main session resumes that step. This is explicit ownership, not a peer-liveness probe.
+  Completed steps clear it. Concurrent main work stays grey on its own row.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and explicit
   `track_steps` calls. Successful plan approval adds one reminder to reuse open steps and register
   missing work. It leaves the entire register unchanged. A Task named like a plan step links to it.
@@ -70,7 +77,8 @@ running turn. Doorbells and informational notifications alone need no row. Track
   `mark_step`. Work that joins a running plan, such as review comments from Plannotator, is
   inserted with `track_steps({ steps, after })` after the step it follows. While a managed plugin
   bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
-  instruction beside it; built-in commands do not.
+  instruction beside it; built-in commands do not. After reload, only the exact current composed
+  instruction suppresses this fallback. A legacy boolean delivery flag is insufficient.
 - **Handoffs.** A handoff that clears the session and seeds a fresh one leaves the pane empty.
   `restore_tracker({ from_session })` copies the previous session's steps back, in order, with
   their ids and statuses, and its questions not cleared, with new ids after this session's own.
@@ -78,11 +86,14 @@ running turn. Doorbells and informational notifications alone need no row. Track
   no link to the old Task. When the model marks a question answered, the mod keeps the answer's
   text (up to 1,000 characters), and the restore call's row in the transcript shows each restored
   question with its answer, its deferral note, or "(answer text was not saved)" for one answered
-  before answers were kept. `[ Q ]` and `[ A ]` of a restored question jump to that row. The call
+  before answers were kept. `[ Q ]` and `[ A ]` target their own question or answer inside that row. The call
   refuses to overwrite unrelated steps unless `replace: true` is passed. Repeated restoration
   reuses stable source identities and keeps local progress. A model call supplies its displayed
   restore row; a programmatic call first appends and validates a visible system snapshot. A refused
   or altered snapshot leaves the ledger unchanged. Repeat calls reuse its native message UUID.
+  A matching saved snapshot receives separate keyed targets through the native `InfoNotice`
+  render hook. Active target records stay while their questions are uncleared; only inactive
+  snapshot history is capped at three. Store capacity failures remain visible.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred.
@@ -161,7 +172,8 @@ JSON **as tool-result text**, with `v`, `ok`, `source_session`, `revision`, `che
 `mcp__track__restore_tracker({ from_session, replace?, expected_checkpoint? })` validates an
 expected checkpoint before restoring. Its receipt also names `destination_session` and
 `applied_checksum`, calculated from the actual destination questions, answer text, notes, and
-steps in source order. A successful attempted call alone does not prove complete restoration.
+steps in source order, including explicit delegated ownership. The optional true field participates
+in the checksum; absent fields preserve prior v1 checksums. A successful attempted call alone does not prove complete restoration.
 Source links and display ids are not authority. Track works independently of handoff.
 
 Run `claude plugin test track` for engine **FIXTURE** checks and, from the Track root,

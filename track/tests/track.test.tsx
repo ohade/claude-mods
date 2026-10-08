@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { pane, SESSION } from './kit'
+import { atomStore, pane, SESSION } from './kit'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -94,7 +94,7 @@ const ANSWERED = {
   prompts: [],
   steps: [],
   questions: [
-    { id: 1, head: 'what is the capital of Australia?', at: 1000, turnId: 't1', status: 'answered', askedRequestId: 'row-1', trackedBy: 'toolu_q', answerRequestId: 'toolu_a', answeredAt: 1100 },
+    { id: 1, head: 'what is the capital of Australia?', at: 1000, turnId: 't1', status: 'answered', askedRequestId: 'row-1', trackedBy: 'toolu_q', answerRequestId: 'toolu_a', answerKey: 'aaaa1111-bbbb-cccc-dddd', answerText: 'Canberra is the capital of Australia.', answeredAt: 1100 },
   ],
 }
 
@@ -154,7 +154,7 @@ test('the mark_answered call draws one quiet line naming the question', async ($
 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
   expect(texts).toHaveLength(1)
-  expect(texts[0]).toContain('Q2 answered')
+  expect(texts[0]).toContain('Q2. answered')
 })
 
 // Observed 2026-10-07: an inline pane about 7 rows tall listed only the newest of four
@@ -174,7 +174,7 @@ test('a short inline pane shows the newest question and counts the ones above it
   const ui = await $.ui.mount(short)
 
   const labels = await listed(ui)
-  expect(labels.some(label => label.includes('Q4 '))).toBe(true)
+  expect(labels.some(label => label.includes('Q4. '))).toBe(true)
   expect(labels.some(label => /↑\d/.test(label))).toBe(true)
 })
 
@@ -573,7 +573,7 @@ test('step rows are annotated like question rows', async ($, on) => {
   // The dot is its own column, so a wrapped line
   // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts.filter(t => /^S\d /.test(t))).toEqual(['S1 Write', 'S2 Print', 'S3 Count'])
+  expect(texts.filter(t => /^S\d\. /.test(t))).toEqual(['S1. Write', 'S2. Print', 'S3. Count'])
   // Without current runtime activity, an in-progress row holds a neutral glyph.
   // It does not imply that the person must act.
   expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◐', '○'])
@@ -600,7 +600,7 @@ test('a long question is shown whole, its dot in a column of its own', async ($,
   const ui = await $.ui.mount(pane('dock'))
 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts).toContain(`Q4 ${head}`)
+  expect(texts).toContain(`Q4. ${head}`)
   expect(texts).toContain('●')
 })
 
@@ -691,7 +691,7 @@ test('[ Q ] jumps to where the question was asked; there is no asked button', as
   expect(levels.filter(([, level]) => level > 0).map(([id]) => id)).toEqual(['row-1'])
 })
 
-test('[ A ] jumps to the end of the answer', async ($, on) => {
+test('[ A ] jumps to the actual answer text', async ($, on) => {
   mock.clock(on)
   const { logs } = jumpLog(on)
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
@@ -699,7 +699,7 @@ test('[ A ] jumps to the end of the answer', async ($, on) => {
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
 
-  expect(logs).toContain('track: jump {"to":{"requestId":"toolu_a"},"block":"end"}')
+  expect(logs).toContain('track: jump {"to":{"key":"answer:aaaa1111-bbbb-cccc-dddd"},"block":"start"}')
 })
 
 test('a jump to the question lights its prompt row, then fades it out', async ($, on) => {
@@ -719,7 +719,7 @@ test('a jump to the question lights its prompt row, then fades it out', async ($
   expect(seen.every((level, i) => i === 0 || level < (seen[i - 1] as number))).toBe(true)
 })
 
-test('a jump to the answer lights the answer text and the mark under it', async ($, on) => {
+test('a jump to the answer lights only the answer text', async ($, on) => {
   mock.clock(on)
   const levels = lightLog(on)
   const withText = { ...ANSWERED, questions: [{ ...ANSWERED.questions[0], answerKey: 'aaaa1111-bbbb-cccc-dddd' }] }
@@ -729,7 +729,7 @@ test('a jump to the answer lights the answer text and the mark under it', async 
   await ui.press({ key: 'a-1' })
 
   const lit = levels.filter(([, level]) => level > 0).map(([id]) => id)
-  expect(lit).toContain('toolu_a')
+  expect(lit).not.toContain('toolu_a')
   expect(lit).toContain('aaaa1111-bbbb-cccc-dddd')
 })
 
@@ -863,8 +863,8 @@ test('a fade step under way when a new jump lands does not undo the new jump', a
   await pressed
   await clock.advance(0)
 
-  expect(lit).toEqual(['toolu_a'])
-  expect(flash.get('toolu_a')).toBe(3)
+  expect(lit).toEqual(['aaaa1111-bbbb-cccc-dddd'])
+  expect(flash.get('aaaa1111-bbbb-cccc-dddd')).toBe(3)
 })
 
 // Audit 2026-10-07: session.start did its housekeeping before registering /track and the tools,
@@ -913,7 +913,8 @@ const submitted = async (
 ) => {
   let context: readonly string[] = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }, version: 1 } }))
-  on('state.get', { plugin: 'track', key: 'turn' }, () => ({ value: { value: { currentId: null, gatedTurnId: null, ...(composeSeen && { composeSeen: true }) }, version: 1 } }))
+  atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
+  on('prompt.compose', () => ({ sections: [] }))
   on('command.list', () => ({
     value: [
       { name: 'retro', description: 'retro', source: 'plugin' as const },
@@ -926,6 +927,7 @@ const submitted = async (
 
     return { text: e.text }
   })
+  if (composeSeen) await $.prompt.compose({ model: 'fixture', promptModel: 'fixture', surfaces: ['terminal'], tools: [], traits: [], outputStyle: null })
   await $.prompt.submit({ text, origin } as never)
 
   return context.join('\n')
@@ -1180,7 +1182,7 @@ const stepRow = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], 
   mock.clock(on)
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
-  const at = texts.findIndex(t => String(t.text ?? '') === 'S2 Print')
+  const at = texts.findIndex(t => String(t.text ?? '') === 'S2. Print')
   const color = (t: { props: unknown } | undefined) => (t?.props as { color?: string } | undefined)?.color
 
   return { glyph: String(texts[at - 1]?.text ?? ''), glyphColor: color(texts[at - 1]), textColor: color(texts[at]) }
@@ -1321,7 +1323,7 @@ test('a mark_step line names the step by its pane number and title, not its id',
   const mark = await $.ui.mount(toolRow('mcp__track__mark_step', { id: 'plan:10', status: 'in_progress' }))
 
   const text = String((await mark.findAll({ type: 'Text' }))[0]?.text ?? '')
-  expect(text).toContain('S3 Write the retro-fix plan')
+  expect(text).toContain('S3. Write the retro-fix plan')
   expect(text).toContain('in progress')
   expect(text).not.toContain('plan:10')
 })
@@ -1430,8 +1432,8 @@ test('the pane shows a paused step with ⏸ and a waiting step with the purple �
     const at = texts.findIndex(t => String(t.text ?? '') === label)
     return { text: String(texts[at - 1]?.text ?? ''), color: (texts[at - 1]?.props as { color?: string } | undefined)?.color }
   }
-  expect(glyphBefore('S1 Guard fix').text).toBe('⏸')
-  expect(glyphBefore('S2 Decide the handoff mod')).toEqual({ text: '◆', color: 'permission' })
+  expect(glyphBefore('S1. Guard fix').text).toBe('⏸')
+  expect(glyphBefore('S2. Decide the handoff mod')).toEqual({ text: '◆', color: 'permission' })
 })
 
 // Regression (a probe on a live pane): ticks past the end of the steps grew the stored

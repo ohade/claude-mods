@@ -200,7 +200,7 @@ test('a question taller than its region is cut to fit, ending in an ellipsis', a
   const long = { ...question(1, 'open'), head: 'why '.repeat(50).trim() }
   const all = await layout($, on, { ...EMPTY, nextQuestionId: 2, questions: [long], steps: [step(1, 'pending')] }, 46, 16)
 
-  const row = all.find(el => el.type === 'Text' && String(el.text ?? '').startsWith('Q1 why'))
+  const row = all.find(el => el.type === 'Text' && String(el.text ?? '').startsWith('Q1. why'))
   const text = String(row?.text ?? '')
   expect(text.endsWith('…')).toBe(true)
   expect(text.length).toBeLessThan(long.head.length)

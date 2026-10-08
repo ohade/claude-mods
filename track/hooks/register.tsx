@@ -51,7 +51,8 @@ const MAX_QUESTIONS = 200
 // An answer is kept for the next session to read, cut to this many characters. With
 // MAX_QUESTIONS it bounds the answers in one register near 200 KB, well inside STORE_BUDGET.
 const ANSWER_CHARS = 1000
-// The restore rows a register keeps; each holds a copy of the questions it restored.
+// Recent inactive restore rows. A record that still owns a shown question's
+// target stays too; the question and store budgets bound those active copies.
 const MAX_RESTORES = 3
 // A restored question's turn: no turn of this session has it, so the Stop gate never holds a
 // turn for it and turn.start does not claim it.
@@ -80,7 +81,7 @@ const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as
 const STEPS =
   'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
 
-const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items; insert additions with after. Update status with mcp__track__mark_step / mcp__track__mark_answered. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits.'
+const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Update status with mcp__track__mark_step / mcp__track__mark_answered. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.'
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -183,11 +184,11 @@ const capSteps = (steps: Step[]): Step[] => capRows(steps, MAX_STEPS, s => s.sta
 // A step at a new status. Its clock starts the first time it goes in progress and stops when it
 // is done; a done step that is opened again runs on from its first start.
 const withStatus = (s: Step, status: Step['status'], now: number): Step => {
-  const { endedAt: _ended, ...rest } = s
+  const { endedAt: _ended, delegated, ...rest } = s
   const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
 
-  return { ...rest, status, ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
+  return { ...rest, status, ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
 }
 
 // A stretch of wall-clock time: m:ss under an hour, then 1h 05m.
@@ -358,6 +359,8 @@ const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
   const unfinished = l.questions.some(q => q.cleared !== true && q.status !== 'answered') || steps.some(s => s.status !== 'completed')
   if (now.askCalls.length > 0 || steps.some(s => s.status === 'waiting')) return 'you'
   if (now.agentCalls.length > 0) return 'agents'
+  const delegated = steps.some(s => s.delegated === true && s.status !== 'completed')
+  if (delegated && !(now.isWorking && steps.some(s => s.status === 'in_progress' && s.delegated !== true))) return 'agents'
   if (now.isWorking) return 'working'
   if (now.background.length > 0) return 'agents'
   if ((now.tasks ?? []).length > 0) return 'tasks'
@@ -452,8 +455,8 @@ const flashRows = async ($: EngineInterface, ids: string[]): Promise<void> => {
 // a transcript row moves only while the plugin answers the person's own input, a Button press
 // here, so it must not wait behind the state writes. A refusal is a toast. The debug line
 // carries the scroll's exact arguments.
-const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end'): Promise<void> => {
-  const target = { to: { requestId: ids[0] as string }, block }
+const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', key?: string): Promise<void> => {
+  const target = { to: key === undefined ? { requestId: ids[0] as string } : { key }, block }
   $.ui.log(`track: jump ${JSON.stringify(target)}`, { to: 'debug' })
   const moving = $.ui.scroll(target).then(
     moved => moved,
@@ -950,6 +953,55 @@ const asRestored = (q: Question, id: number, from: string, by: string | undefine
   ...(by !== undefined && { restoredBy: by }),
 })
 
+// Keep the acknowledged transcript snapshots needed by uncleared rows before
+// pruning recent history. Rendering never saves or reads the transcript.
+const keepRestores = (restores: Restore[], questions: Question[]): Restore[] => {
+  const active = new Set(questions.filter(q => q.cleared !== true).map(q => q.restoredBy).filter(isDefined))
+  const recent = new Set(restores.filter(r => !active.has(r.by)).slice(-MAX_RESTORES))
+  return restores.filter(r => active.has(r.by) || recent.has(r))
+}
+
+// Byte-stable notice text also recognizes snapshots written by the previous
+// version. Only a saved, acknowledged snapshot receives native render targets.
+const restoreNotice = (r: Restore): string => [
+  `Track source snapshot from session ${r.from}: ${counted(r.steps, 'step')}, ${counted(r.questions.length, 'question')}`,
+  'Restore status is confirmed by the tool receipt.',
+  ...r.questions.flatMap(q => [
+    `Q${q.id} ${q.status}: ${q.head}`,
+    ...(q.note !== undefined ? [`Note: ${q.note}`] : []),
+    ...(q.status === 'answered' ? [q.answerText ?? NOT_SAVED] : []),
+  ]),
+].join('\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+
+const restoreKey = (q: Question, kind: 'q' | 'a'): string => `restored-${kind}:${q.restoredBy}:${q.id}`
+
+const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface['ui']['resolve']>, r: Restore): Promise<RenderElement> => {
+  const { Box, Text } = ui
+  const rows = await Promise.all(r.questions.map(async q => {
+    const questionKey = restoreKey({ ...q, restoredBy: q.restoredBy ?? r.by }, 'q')
+    const answerKey = restoreKey({ ...q, restoredBy: q.restoredBy ?? r.by }, 'a')
+    const questionLevel = await read($, memberOf(flash, { requestId: questionKey }))
+    const answerLevel = await read($, memberOf(flash, { requestId: answerKey }))
+    const below = q.status === 'answered' ? (q.answerText ?? NOT_SAVED) : q.status === 'deferred' ? q.note : undefined
+    return (
+      <Box key={`restored-${q.id}`} flexDirection="column" marginLeft={ROW_INDENT}>
+        <Box key={questionKey} backgroundColor={shade(questionLevel)} flexDirection="row" columnGap={1}>
+          <Box flexShrink={1}>
+            <Text color={q.status === 'answered' ? 'success' : undefined} dimColor={q.status === 'deferred'} wrap="wrap">{`Q${q.id}. ${q.head}`}</Text>
+          </Box>
+          <Text dimColor>{q.status}</Text>
+        </Box>
+        {below !== undefined && (
+          <Box key={answerKey} backgroundColor={shade(answerLevel)} marginLeft={ROW_INDENT}>
+            <Text dimColor={below === NOT_SAVED} wrap="wrap">{below}</Text>
+          </Box>
+        )}
+      </Box>
+    )
+  }))
+  return <Box flexDirection="column"><Text bold>{`Restored from the previous session: ${counted(r.steps, 'step')}, ${counted(r.questions.length, 'question')}`}</Text>{rows}</Box>
+}
+
 // A saved step as a fresh Step, or undefined when the row is not one: restore_tracker reads rows
 // another session saved, and copies only the fields a step has.
 const savedStep = (row: unknown): Step | undefined => {
@@ -970,6 +1022,7 @@ const savedStep = (row: unknown): Step | undefined => {
     status,
     ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
     ...(r.cleared === true ? { cleared: true as const } : {}),
+    ...(r.delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }),
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
     ...textField('sourceId', r.sourceId),
@@ -992,7 +1045,7 @@ const savedLedger = (raw: unknown): Ledger | undefined => {
     (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
   )
   const top = Math.max(0, ...questions.map(q => q.id), ...withdrawn.map(w => w.id))
-  const restores = rows(l.restores).map(savedRestore).filter(isDefined).slice(-MAX_RESTORES)
+  const restores = keepRestores(rows(l.restores).map(savedRestore).filter(isDefined), questions)
 
   return {
     v: 1,
@@ -1151,10 +1204,10 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
+        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional short generic note, including a peer or background wait.' } },
+        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional short generic note, including a peer or background wait.' }, delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' } },
         required: ['id', 'status'],
       },
     })
@@ -1285,8 +1338,8 @@ export const register: Register = on => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     // The rule reaches the model this session, so prompts need not carry the steps line.
-    if ((await read($, turn)).composeSeen !== true) {
-      await update($, turn, t => ({ ...t, composeSeen: true as const }))
+    if ((await read($, turn)).composedRule !== RULE) {
+      await update($, turn, t => ({ ...t, composedRule: RULE }))
     }
 
     return { sections: [...composed.sections, { id: 'track:rule', text: RULE, scope: 'session' as const }] }
@@ -1305,7 +1358,7 @@ export const register: Register = on => {
     const typed = e.origin?.kind === 'composer'
     // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
     const fromPlugin = e.origin?.kind === 'plugin'
-    const needsSteps = (await read($, turn)).composeSeen !== true
+    const needsSteps = (await read($, turn)).composedRule !== RULE
     if (e.text.trim().startsWith('/')) {
       // /track and the built-in commands reach no main-loop work: nothing rides on them, and a
       // withdrawn question waits for a prompt the model reads. A skill's slash command reaches the
@@ -1532,7 +1585,9 @@ export const register: Register = on => {
               status,
               answeredAt: Date.now(),
               ...(note !== undefined && { note }),
-              ...(e.tool_use_id !== undefined && { answerRequestId: e.answer_request_id === undefined ? e.tool_use_id : last!.requestId, answeredBy: e.tool_use_id }),
+              ...(last?.requestId !== undefined && { answerRequestId: last.requestId }),
+              ...(last?.requestId === undefined && e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
+              ...(e.tool_use_id !== undefined && { answeredBy: e.tool_use_id }),
               ...(answerKey !== undefined && { answerKey }),
               ...(answerText !== undefined && { answerText }),
               ...(status === 'answered' && last === undefined && t.currentId !== null && { answerTurnId: t.currentId, answerOrder }),
@@ -1815,7 +1870,7 @@ export const register: Register = on => {
         questions: combined,
         nextQuestionId: Math.max(nextId, ...restored.map(q => q.id + 1)),
         restoredIds: ids,
-        ...(by !== undefined && !(mechanical && wasRestored(cur)) && { restores: [...(cur.restores ?? []), { by, from, steps: steps.length, questions: restored }].slice(-MAX_RESTORES) }),
+        ...(by !== undefined && !(mechanical && wasRestored(cur)) && { restores: keepRestores([...(cur.restores ?? []), { by, from, steps: steps.length, questions: restored }], combined) }),
       }
     }
     let proposed = propose(before)
@@ -1827,15 +1882,7 @@ export const register: Register = on => {
       // bounded archive ring cannot evict a live question's jump target.
       const existing = !replace && restored.every(q => q.restoredBy !== undefined && SESSION_ID.test(q.restoredBy))
       if (!existing) {
-        const text = [
-          `Track source snapshot from session ${from}: ${counted(steps.length, 'step')}, ${counted(restored.length, 'question')}`,
-          'Restore status is confirmed by the tool receipt.',
-          ...restored.flatMap(q => [
-            `Q${q.id} ${q.status}: ${q.head}`,
-            ...(q.note !== undefined ? [`Note: ${q.note}`] : []),
-            ...(q.status === 'answered' ? [q.answerText ?? NOT_SAVED] : []),
-          ]),
-        ].join('\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+        const text = restoreNotice({ by: '', from, steps: steps.length, questions: restored })
         const notice = await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
         if (notice.deny !== undefined) return failed(`track: visible restore receipt refused: ${notice.deny}`)
         if (!SESSION_ID.test(notice.uuid) || notice.message.type !== 'system' || textOf(notice.message.content) !== text) return failed('track: visible restore receipt is incompatible')
@@ -1844,7 +1891,7 @@ export const register: Register = on => {
         proposed = {
           ...proposed,
           questions: proposed.questions.map(q => restored.find(one => one.id === q.id) ?? q),
-          restores: [...(proposed.restores ?? []).filter(r => r.by !== e.tool_use_id), { by: notice.uuid, from, steps: steps.length, questions: restored }].slice(-MAX_RESTORES),
+          restores: keepRestores([...(proposed.restores ?? []).filter(r => r.by !== e.tool_use_id), { by: notice.uuid, from, steps: steps.length, questions: restored }], proposed.questions.map(q => restored.find(one => one.id === q.id) ?? q)),
         }
       }
     }
@@ -1873,6 +1920,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
     }
+    if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
     const id = String(e.id)
     const status = STEP_STATUSES.find(one => one === e.status)
     const l = await read($, ledger)
@@ -1880,7 +1928,11 @@ export const register: Register = on => {
       return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     }
     const now = await $.clock.now()
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? { ...withStatus(s, status, now), ...(typeof e.note === 'string' && { note: truncate(e.note, HEAD_CHARS) }) } : s)) }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => {
+      if (s.id !== id) return s
+      const { delegated: _delegated, ...changed } = withStatus(s, status, now)
+      return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: truncate(e.note, HEAD_CHARS) }) }
+    }) }))
 
     return { result: `Step ${id} "${l.steps.find(s => s.id === id)?.subject}" marked ${status}.` }
   })
@@ -1983,7 +2035,7 @@ export const register: Register = on => {
   })
 
   // The model's bookkeeping calls stay quiet in the transcript: track_question and track_steps
-  // draw nothing, mark_answered draws one dim line, which is also where "jump to answer" lands.
+  // draw nothing; mark_answered draws one dim acknowledgement, separate from answer targets.
   // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (e.props.tool === TRACK_QUESTION) {
@@ -1992,7 +2044,7 @@ export const register: Register = on => {
       if (q !== undefined) {
         const { Text } = $.ui.resolve(e)
         const level = await read($, memberOf(flash, e))
-        return <Text dimColor backgroundColor={shade(level)}>{`Q${q.id} ${q.head}`}</Text>
+        return <Text dimColor backgroundColor={shade(level)}>{`Q${q.id}. ${q.head}`}</Text>
       }
     }
     if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
@@ -2001,47 +2053,14 @@ export const register: Register = on => {
       return <Box />
     }
     if (e.props.tool === RESTORE_TRACKER) {
-      const { Box, Text } = $.ui.resolve(e)
+      const { Box } = $.ui.resolve(e)
       // Drawn from the copy the call kept, never from the pane's questions; a refused call kept
       // none and draws nothing.
       const restore = (await read($, ledger)).restores?.find(r => r.by === e.props.tool_use_id)
       if (restore === undefined) {
         return <Box />
       }
-      // [ Q ] and [ A ] of a restored question jump here and light the row, as they light an answer.
-      const level = await read($, memberOf(flash, e))
-      const block = (
-        <Box flexDirection="column">
-          <Text bold>{`Restored from the previous session: ${counted(restore.steps, 'step')}, ${counted(restore.questions.length, 'question')}`}</Text>
-          {restore.questions.map(q => {
-            // Under an answered question its answer, under a deferred one what it waits for.
-            const below = q.status === 'answered' ? (q.answerText ?? NOT_SAVED) : q.status === 'deferred' ? q.note : undefined
-            const color = q.status === 'answered' ? 'success' : undefined
-
-            return (
-              <Box key={`restored-${q.id}`} flexDirection="column" marginLeft={ROW_INDENT}>
-                <Box flexDirection="row" columnGap={1}>
-                  <Box flexShrink={1}>
-                    <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                      {`Q${q.id} ${q.head}`}
-                    </Text>
-                  </Box>
-                  <Text dimColor>{q.status}</Text>
-                </Box>
-                {below !== undefined && (
-                  <Box marginLeft={ROW_INDENT}>
-                    <Text dimColor={below === NOT_SAVED} wrap="wrap">
-                      {below}
-                    </Text>
-                  </Box>
-                )}
-              </Box>
-            )
-          })}
-        </Box>
-      )
-
-      return level > 0 ? <Box backgroundColor={shade(level)}>{block}</Box> : block
+      return renderRestore($, $.ui.resolve(e), restore)
     }
     if (e.props.tool === MARK_STEP) {
       const { Text } = $.ui.resolve(e)
@@ -2054,7 +2073,7 @@ export const register: Register = on => {
       const shown = (await read($, ledger)).steps.filter(s => s.cleared !== true)
       const at = shown.findIndex(s => s.id === id)
       const step = shown[at]
-      const name = step === undefined ? id : `S${at + 1} ${truncate(step.subject, 60)}`
+      const name = step === undefined ? id : `S${at + 1}. ${truncate(step.subject, 60)}`
 
       return <Text dimColor>{`${glyph} ${name} ${status.replace('_', ' ')}`}</Text>
     }
@@ -2063,7 +2082,7 @@ export const register: Register = on => {
       const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
       const status = input.status === 'deferred' ? 'deferred' : 'answered'
       const level = await read($, memberOf(flash, e))
-      const label = `✓ Q${String(input.id ?? '?')} ${status}`
+      const label = `✓ Q${String(input.id ?? '?')}. ${status}`
 
       return level > 0 ? <Text backgroundColor={shade(level)}>{` ${label} `}</Text> : <Text dimColor>{label}</Text>
     }
@@ -2071,16 +2090,20 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The answer's text row, lit with its ✓ row by a jump to the answer. Each row reads only the
+  // Mechanical notices have no ToolUse row. Give each saved question and answer
+  // its own rendered target; transcript UUIDs need not equal render-instance IDs.
+  on('ui.render', { component: 'InfoNotice' }, async ($, e, next) => {
+    const restore = (await read($, ledger)).restores?.find(r => restoreNotice(r) === e.props.text)
+    return restore === undefined ? next(e) : renderRestore($, $.ui.resolve(e), restore)
+  })
+
+  // The answer's text row alone. Each row reads only the
   // level kept under its own row key, so a jump redraws the lit row alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const level = await read($, memberOf(flash, { requestId: rowKey(e.requestId) }))
-    if (level === 0) {
-      return next(e)
-    }
     const { Box } = $.ui.resolve(e)
 
-    return <Box backgroundColor={shade(level)}>{await next(e)}</Box>
+    return <Box key={`answer:${rowKey(e.requestId)}`} backgroundColor={shade(level)}>{await next(e)}</Box>
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
@@ -2214,10 +2237,10 @@ export const register: Register = on => {
     const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))
     const sWidth = Math.max(1, width - rowIndent - 2)
     const qControlsRows = compact ? 1 : 0
-    const qLines = questions.map(q => wrappedLines(`Q${q.id} ${q.head}`, qWidth) + qControlsRows)
+    const qLines = questions.map(q => wrappedLines(`Q${q.id}. ${q.head}`, qWidth) + qControlsRows)
     const clockRows = (s: Step) => compact && s.startedAt !== undefined ? 1 : 0
     const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || s.startedAt === undefined ? 0 : clockOf(s).length + 1))
-    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1} ${s.subject}`, stepWidth(s)) + clockRows(s))
+    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepWidth(s)) + clockRows(s))
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
@@ -2261,14 +2284,15 @@ export const register: Register = on => {
     })
     // Background agents and tasks show in the banner while the main turn runs too: the session
     // works and waits on them at once, and names each kind apart. Waiting on either blinks amber.
-    const agentCount = now.background.length
+    const delegatedCount = steps.filter(s => s.delegated === true && s.status !== 'completed').length
+    const agentCount = Math.max(now.background.length, delegatedCount)
     const taskCount = (now.tasks ?? []).length
     const title = shown.text.trimEnd()
     const parts =
       state === 'working'
         ? [title, agentCount > 0 && `agents (${agentCount})`, taskCount > 0 && `tasks (${taskCount})`]
         : state === 'agents'
-          ? [agentCount > 0 ? `${title} (${agentCount})` : title, taskCount > 0 && `tasks (${taskCount})`]
+          ? [agentCount > 0 ? `${title} (${agentCount})` : title, delegatedCount === 0 && taskCount > 0 && `tasks (${taskCount})`]
           : state === 'tasks'
             ? [`${title} (${taskCount})`]
             : [title]
@@ -2314,13 +2338,11 @@ export const register: Register = on => {
           // answered or deferred there, [ A ] go to the restore row that shows it.
           const linkedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
           const askedAt = linkedAt ?? q.restoredBy
-          const answerAt = q.answerRequestId
-          const answerJump: { ids: string[]; block: 'start' | 'end' } | undefined =
-            answerAt !== undefined
-              ? { ids: q.answerKey !== undefined ? [answerAt, q.answerKey] : [answerAt], block: 'end' }
-              : q.restoredBy !== undefined && q.status !== 'open'
-                ? { ids: [q.restoredBy], block: 'start' }
-                : undefined
+          const questionKey = linkedAt === undefined && q.restoredBy !== undefined ? restoreKey(q, 'q') : undefined
+          const answerKey = q.answerKey !== undefined ? `answer:${q.answerKey}` : q.restoredBy !== undefined && q.status !== 'open' ? restoreKey(q, 'a') : undefined
+          const ready = answered && (q.answerText?.trim().length ?? 0) > 0 && answerKey !== undefined
+          const hasAnswerAnchor = answerKey !== undefined || q.answerRequestId !== undefined
+          const answerIds = q.answerKey !== undefined ? [q.answerKey] : answerKey !== undefined ? [answerKey] : []
 
           const dot = (
             <Text color={color} dimColor={q.status === 'deferred'}>
@@ -2332,19 +2354,19 @@ export const register: Register = on => {
               <Box key={`q-question-slot-${q.id}`} width={6} flexShrink={0}>
                 {askedAt === undefined
                   ? <Text dimColor>[ Q ]</Text>
-                  : <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />}
+                  : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey)} />}
               </Box>
               <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
-                {answerJump === undefined
-                  ? <Text dimColor>[ A ]</Text>
-                  : <Button key={`a-${q.id}`} variant="primary" hotkey={answered ? hotkey : undefined} label="A" onPress={() => jump($, answerJump.ids, answerJump.block)} />}
+                {!hasAnswerAnchor
+                  ? <Text color="subtle" dimColor>[ A ]</Text>
+                  : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey) : undefined} />}
               </Box>
             </Box>
           )
           const text = (
             <Box key={`q-text-${q.id}`} flexShrink={1} width={qWidth}>
               <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                {fitLines(`Q${q.id} ${q.head}`, qWidth, qRows - qControlsRows)}
+                {fitLines(`Q${q.id}. ${q.head}`, qWidth, qRows - qControlsRows)}
               </Text>
             </Box>
           )
@@ -2383,7 +2405,9 @@ export const register: Register = on => {
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
           // hourglass for background agents or tasks, a still purple mark when it waits on the person.
           const look =
-            s.status === 'paused'
+            s.delegated === true && s.status !== 'completed' && s.status !== 'waiting'
+              ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
+              : s.status === 'paused'
               ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
               : s.status === 'waiting'
                 ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
@@ -2401,7 +2425,7 @@ export const register: Register = on => {
           const text = (
             <Box flexShrink={1} flexGrow={1}>
               <Text color={look.textColor} wrap="wrap">
-                {fitLines(`S${index + 1} ${s.subject}`, stepWidth(s), sRows - clockRows(s))}
+                {fitLines(`S${index + 1}. ${s.subject}`, stepWidth(s), sRows - clockRows(s))}
               </Text>
             </Box>
           )

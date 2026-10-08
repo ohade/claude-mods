@@ -49,7 +49,7 @@ test('narrow truncation never splits an emoji or a combined grapheme', async ($,
   setup(on, [], [{ id: 1, head: '😀e\u0301שלום'.repeat(80), at: 1, turnId: 't', status: 'open' }])
   for (let width = 30; width <= 42; width++) {
     const ui = await $.ui.mount(pane('dock', width, 16))
-    const text = (await ui.findAll({ type: 'Text' })).find(el => el.text.startsWith('Q1 '))?.text ?? ''
+    const text = (await ui.findAll({ type: 'Text' })).find(el => el.text.startsWith('Q1. '))?.text ?? ''
     expect(text.endsWith('…')).toBe(true)
     expect(Array.from(text).some(c => c.length === 1 && c.charCodeAt(0) >= 0xd800 && c.charCodeAt(0) <= 0xdfff)).toBe(false)
     expect(text.endsWith('e…')).toBe(false)

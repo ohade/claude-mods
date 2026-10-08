@@ -243,8 +243,8 @@ test('the restore row shows the counts, each question, and its answer, its note,
   const texts = await rowTexts($)
 
   expect(texts).toContain('Restored from the previous session: 2 steps, 4 questions')
-  expect(texts).toContain('Q2 what is the capital of Australia?')
-  expect(texts).toContain('Q5 is the cache warm?')
+  expect(texts).toContain('Q2. what is the capital of Australia?')
+  expect(texts).toContain('Q5. is the cache warm?')
   expect(texts).toContain(ANSWER)
   expect(texts).toContain(NOTE)
   expect(texts).toContain('(answer text was not saved)')
@@ -269,7 +269,7 @@ test('the restore row still shows the answers after the questions are cleared fr
 })
 
 // A restored question's rows are in the old transcript; the restore row is where it shows here.
-test('[ A ] of a restored question jumps to the restore row', async ($, on) => {
+test('[ A ] of a restored question jumps to its own restored answer', async ($, on) => {
   mock.clock(on)
   setUp(on)
   const lines = logs(on)
@@ -278,10 +278,10 @@ test('[ A ] of a restored question jumps to the restore row', async ($, on) => {
 
   await ui.press({ key: 'a-2' })
 
-  expect(lines).toContain(`track: jump {"to":{"requestId":"${RESTORE}"},"block":"start"}`)
+  expect(lines).toContain(`track: jump {"to":{"key":"restored-a:${RESTORE}:2"},"block":"start"}`)
 })
 
-test('[ Q ] of a restored question jumps to the restore row', async ($, on) => {
+test('[ Q ] of a restored question jumps to its own restored question', async ($, on) => {
   mock.clock(on)
   setUp(on)
   const lines = logs(on)
@@ -290,5 +290,5 @@ test('[ Q ] of a restored question jumps to the restore row', async ($, on) => {
 
   await ui.press({ key: 'q-5' })
 
-  expect(lines).toContain(`track: jump {"to":{"requestId":"${RESTORE}"},"block":"start"}`)
+  expect(lines).toContain(`track: jump {"to":{"key":"restored-q:${RESTORE}:5"},"block":"start"}`)
 })
