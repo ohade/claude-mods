@@ -2235,7 +2235,8 @@ export const register: Register = on => {
     const qButtons = [l.questions.length > 0 ? buttonWidth('q', allLabel) : 0]
     const sButtons = l.steps.length > 0 ? clearWidths : []
     const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))
-    const sWidth = Math.max(1, width - rowIndent - 2)
+    // Status owns two cells, including the paused/hourglass glyphs, then a gap.
+    const sWidth = Math.max(1, width - rowIndent - 3)
     const qControlsRows = compact ? 1 : 0
     const qLines = questions.map(q => wrappedLines(`Q${q.id}. ${q.head}`, qWidth) + qControlsRows)
     const clockRows = (s: Step) => compact && s.startedAt !== undefined ? 1 : 0
@@ -2378,11 +2379,12 @@ export const register: Register = on => {
           // The text gets the pane's width when its fixed jump column would crowd it out.
           // Both layouts use the same controls and sources; the extra row is budgeted above.
           return (
-            <Box key={`row-q-${q.id}`} flexDirection={compact ? 'column' : 'row'} columnGap={1} marginLeft={rowIndent}>
-              {compact ? <>
-                <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>
-                <Box flexDirection="row" columnGap={1}>{markers}{remove}</Box>
-              </> : <>{dot}{markers}{text}{remove}</>}
+            <Box key={`row-q-${q.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
+              {/* Native Fragment is a column Box, so arrays keep row children flat. */}
+              {compact ? [
+                <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>,
+                <Box flexDirection="row" columnGap={1}>{markers}{remove}</Box>,
+              ] : [dot, markers, text, remove]}
             </Box>
           )
         })}
@@ -2424,9 +2426,9 @@ export const register: Register = on => {
                     ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
                     : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
-          const dot = <Text color={look.glyphColor}>{look.glyph}</Text>
+          const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
           const text = (
-            <Box flexShrink={1} flexGrow={1}>
+            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={stepWidth(s)}>
               <Text color={look.textColor} wrap="wrap">
                 {fitLines(`S${index + 1}. ${s.subject}`, stepWidth(s), sRows - clockRows(s))}
               </Text>
@@ -2441,8 +2443,8 @@ export const register: Register = on => {
           )
 
           return (
-            <Box key={`row-s-${s.id}`} flexDirection={compact ? 'column' : 'row'} columnGap={1} marginLeft={rowIndent}>
-              {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : <>{dot}{text}</>}
+            <Box key={`row-s-${s.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
+              {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : [dot, text]}
               {clock}
             </Box>
           )

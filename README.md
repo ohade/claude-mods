@@ -53,6 +53,8 @@ running turn. Doorbells and informational notifications alone need no row. Track
   keeps the state on one line and omits background counts when space is tight.
   Claude Code owns the draggable transcript/dock divider. Its 2.1.293 plugin API exposes no
   hover mouse-cursor control for that divider; Track cannot set a horizontal resize cursor there.
+  For plugin authors: native JSX `Fragment` is a column Box. Horizontal row children must
+  stay flat; wrapping them in a fragment stacks their labels and clips the measured region.
 - **Banner.** A full-width colored line at the bottom says where the session stands: Working, Waiting on agents
   (an Agent call or background agents), Waiting on tasks (background shell tasks), Waiting on you
   (a question dialog or an explicit waiting step), Paused, Activity unknown, Unsaved, or Idle.
