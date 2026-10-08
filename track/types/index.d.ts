@@ -57,6 +57,8 @@ export type Restore = {
   from: string
   steps: number
   questions: Question[]
+  // Acknowledged plugin user note; absent for older system notices or model tool rows.
+  display?: 'user'
 }
 
 // A step the model set itself: a Task, a todo line, or an explicit track_steps row.

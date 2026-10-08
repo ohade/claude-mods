@@ -105,10 +105,17 @@ running turn. Doorbells and informational notifications alone need no row. Track
   before answers were kept. `[ Q ]` and `[ A ]` target their own question or answer inside that row. The call
   refuses to overwrite unrelated steps unless `replace: true` is passed. Repeated restoration
   reuses stable source identities and keeps local progress. A model call supplies its displayed
-  restore row; a programmatic call first appends and validates a visible system snapshot. A refused
-  or altered snapshot leaves the ledger unchanged. Repeat calls reuse its native message UUID.
-  A matching saved snapshot has separate keyed targets in the `InfoNotice` render fixture.
-  Native routing of a system snapshot to that hook is unverified. After plugin reload, the user
+  restore row; a programmatic call first appends and validates a plugin-owned user note.
+  This note is model-visible and can repeat saved answer tokens, but does not submit a turn.
+  It labels the saved words as passive tracking data, not a new request or authority.
+  A refused or altered note leaves the ledger unchanged. Only the exact acknowledged body,
+  stamped Track sender and matching native UUID family can acquire its `UserMessage` targets.
+  Separate question and answer keys use an observed host instance when available, with no
+  ledger or store writes during rendering. Repeat calls reuse the native message UUID.
+  A repeat repairs an older system-notice target once, preserves local progress, and omits
+  user-cleared questions. The supported note marker survives resume. The old `InfoNotice`
+  fixture remains for legacy compatibility; it is not a native system-transcript route.
+  Native note visibility and jumps still need acceptance. After plugin reload, the user
   also observed failures for older native question and answer targets; only the newest pair jumped.
   Restored data and passing render fixtures do not prove native jump behavior.
   Active target records stay while their questions are uncleared; only inactive

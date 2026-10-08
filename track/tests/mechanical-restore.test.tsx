@@ -32,7 +32,9 @@ test('mechanical restoration creates one visible acknowledged Q/A target and reu
   const restored = receipt(await $.tool.call({ tool: 'fixture__restore', from_session: OLD, expected_checkpoint: expected, tool_use_id: 'toolu_plugin_fixture' } as never))
   expect(restored).toMatchObject({ ok: true, applied_checksum: expected.checksum })
   expect(notices).toHaveLength(1)
-  expect(notices[0].type).toBe('system')
+  // A user-role plugin note has the documented UserMessage render path;
+  // the old system expectation encoded the unsupported InfoNotice assumption.
+  expect(notices[0].type).toBe('user')
   expect(notices[0].content[0].text).toContain('שאלה 😀')
   expect(notices[0].content[0].text).toContain('תשובה נשמרת 😀')
   expect(notices[0].content[0].text).toContain('A saved note')
