@@ -48,7 +48,7 @@ const draw = async ($: Engine, clock: { advance: (ms: number) => Promise<unknown
   await ui.unmount()
 }
 
-const track = ($: Engine, summary: string) => $.tool.call({ tool: 'mcp__track__track_question', tool_use_id: 'toolu_q', summary } as never)
+const track = ($: Engine, summary: string, source = MIDTURN) => $.tool.call({ tool: 'mcp__track__track_question', tool_use_id: 'toolu_q', summary, source_request_id: `${source}-000000000000` } as never)
 
 const setUp = (on: On) => {
   const clock = mock.clock(on)
@@ -128,7 +128,7 @@ test('a question in a typed prompt links to its own prompt row', async ($, on) =
   await append($, typed(TYPED, 'what is the capital of Australia?'))
   await draw($, clock, TYPED)
 
-  await track($, 'What is the capital of Australia?')
+  await track($, 'What is the capital of Australia?', TYPED)
 
   expect(ledger.value.questions.at(-1)).toMatchObject({ rowKey: TYPED, askedRequestId: `${TYPED}-000000000000` })
   expect((await qButton($))?.props).toMatchObject({ label: 'Q' })

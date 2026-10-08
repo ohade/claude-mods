@@ -54,11 +54,45 @@ export const atomStore = <T>(on: On, key: string, initial: T, options: { holdRea
 
 // The plugin's $.store, in a Map. A set that would take the JSON text of the whole store past
 // `capBytes` rejects, as the engine's store does past 4 MiB.
-export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024) => {
+export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void } = {}) => {
+  // FIXTURE: helper lock receipt. The real flock/exclusion is exercised by helper tests.
+  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
+    const text = JSON.stringify(e.argv[2] === 'lease' && options.leaseFailure !== undefined ? { ok: false, reason: options.leaseFailure } : { ok: true, mode: e.argv[2], token: e.argv[4] })
+    if (e.argv[2] === 'lease' && options.leaseEnding !== undefined) options.leaseEnding.count++
+    if (options.splitLockReceipt) {
+      yield { stream: 'stderr' as const, text: 'A harmless diagnostic\n' }
+      yield { stream: 'stdout' as const, text: text.slice(0, 5) }
+      yield { stream: 'stdout' as const, text: text.slice(5) + '\n' }
+    } else {
+      yield { stream: 'stdout' as const, text }
+    }
+    if (e.argv[2] === 'lease' && options.leaseEnding !== undefined) await options.leaseEnding.wait
+    // Testing hooks wrap their final noun result in { value }; production
+    // process.spawn hooks return the result directly. The consumer must be
+    // able to reach a real, valid end-of-stream result.
+    return { value: { code: options.leaseEnding !== undefined && e.argv[2] === 'lease' ? 1 : 0, signal: null } }
+  })
   const held = new Map<string, unknown>(Object.entries(initial))
+  const faults = { write: '', mismatchAfterSet: '', alteredAfterSet: '', failRollback: false }
+  let mismatchedRead = ''
+  let refusesRollback = false
   const size = () => [...held.values()].reduce<number>((sum, v) => sum + JSON.stringify(v).length, 0)
-  on('store.get', (_, e) => ({ value: held.get(e.key) as never }))
+  on('store.get', (_, e) => {
+    options.beforeGet?.(e.key)
+    if (e.key === mismatchedRead) {
+      mismatchedRead = ''
+      refusesRollback = faults.failRollback
+      faults.failRollback = false
+      return { value: undefined }
+    }
+    return { value: held.get(e.key) as never }
+  })
   on('store.set', (_, e) => {
+    if (faults.write !== '') return { deny: faults.write }
+    if (refusesRollback) {
+      refusesRollback = false
+      return { deny: 'rollback write temporarily unavailable' }
+    }
     const before = held.get(e.key)
     held.set(e.key, JSON.parse(JSON.stringify(e.value)))
     if (size() > capBytes) {
@@ -66,6 +100,14 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
       else held.set(e.key, before)
 
       return { deny: 'the store would pass 4 MiB' }
+    }
+    if (e.key === faults.mismatchAfterSet) {
+      mismatchedRead = e.key
+      faults.mismatchAfterSet = ''
+    }
+    if (e.key === faults.alteredAfterSet) {
+      held.set(e.key, { ...(held.get(e.key) as object), changedByStore: true })
+      faults.alteredAfterSet = ''
     }
 
     return { value: undefined }
@@ -77,7 +119,7 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
   })
   on('store.keys', () => ({ value: [...held.keys()] }))
 
-  return { held, size }
+  return { held, size, faults }
 }
 
 // The debug lines and toasts the mod writes.

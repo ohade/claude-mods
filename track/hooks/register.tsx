@@ -1,7 +1,9 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderElement, Timer } from 'claude-code'
+import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Activity, Ledger, Pane, Prompt, Question, ScrollAt, Step, Turn } from '../types'
+import type { Activity, Ledger, Pane, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
+import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
+import type { Checkpoint } from './checkpoint'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -13,7 +15,7 @@ const PANE_ROWS = 16
 // Module memory, not $.state: a reload only resets the debounce.
 const REWIND_CHECK_DELAY_MS = 1000
 const REWIND_CHECK_GAP_MS = 3000
-const rewindCheck = { isScheduled: false, lastAt: -Infinity }
+const rewindCheck = { isScheduled: false, lastAt: -Infinity, running: undefined as Promise<boolean> | undefined }
 // The built-in diff panel's rule, less its git condition (the tracker does not need git, and a
 // session often starts outside a repository): it opens by itself only from this width, in the
 // fullscreen layout, and never after the person closed it by hand.
@@ -21,7 +23,7 @@ const AUTO_OPEN_MIN_COLUMNS = 144
 const AUTO_OPEN_DELAY_MS = 50
 const autoOpen = { isScheduled: false }
 // Saved registers kept across sessions, the newest first; older buckets are deleted. The store
-// holds 4 MiB of JSON in all, so the buckets keep under STORE_BUDGET characters together, which
+// holds 4 MiB of JSON in all, so the buckets keep under STORE_BUDGET UTF-8 bytes together, which
 // leaves room for the index and the closed-by-hand flag.
 const MAX_SESSIONS = 20
 const STORE_BUDGET = 3 * 1024 * 1024
@@ -31,8 +33,9 @@ const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
 const TRACK_STEPS = 'mcp__track__track_steps'
-const RESTORE_STEPS = 'mcp__track__restore_steps'
-// A Claude Code session id; restore_steps reads only the store key of a real one.
+const RESTORE_TRACKER = 'mcp__track__restore_tracker'
+const CHECKPOINT = 'mcp__track__checkpoint'
+// A Claude Code session id; restore_tracker reads only the store key of a real one.
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_STEPS = 300
 const MAX_PLAN_STEPS = 30
@@ -45,6 +48,16 @@ const QUESTION_STATUSES = ['open', 'answered', 'deferred'] as const
 const HEAD_CHARS = 200
 const MAX_PROMPTS = 200
 const MAX_QUESTIONS = 200
+// An answer is kept for the next session to read, cut to this many characters. With
+// MAX_QUESTIONS it bounds the answers in one register near 200 KB, well inside STORE_BUDGET.
+const ANSWER_CHARS = 1000
+// The restore rows a register keeps; each holds a copy of the questions it restored.
+const MAX_RESTORES = 3
+// A restored question's turn: no turn of this session has it, so the Stop gate never holds a
+// turn for it and turn.start does not claim it.
+const RESTORED_TURN = 'restored'
+// Under a restored answered question whose answer was given before answers were kept.
+const NOT_SAVED = '(answer text was not saved)'
 const HOTKEYS = 9
 // Rows sit this many columns in under their section header, questions and steps alike.
 const ROW_INDENT = 2
@@ -67,17 +80,13 @@ const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as
 const STEPS =
   'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
 
-const RULE = [
-  'track: if the user\'s prompt is a question, call mcp__track__track_question with a one-line summary before answering',
-  '(one call per distinct question). Write the answer, then call mcp__track__mark_answered with status "answered",',
-  `or "deferred" with a note if it must wait. ${STEPS}`,
-].join(' ')
+const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items; insert additions with after. Update status with mcp__track__mark_step / mcp__track__mark_answered. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits.'
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
 // not reached the model this session, each prompt that can start work carries the steps
 // instruction beside it.
-const STEPS_LINE = `track: ${STEPS} If the prompt asks a question, call mcp__track__track_question before answering.`
+const STEPS_LINE = RULE
 
 // The banner pinned at the bottom of the pane: what the session is doing, in one colored line.
 const BANNERS = {
@@ -85,7 +94,10 @@ const BANNERS = {
   agents: { text: ' Waiting on agents ', color: 'warning' },
   tasks: { text: ' Waiting on tasks ', color: 'warning' },
   you: { text: ' Waiting on you ', color: 'permission' },
-  done: { text: ' Safe to close ', color: 'success' },
+  paused: { text: ' Paused ', color: 'warning' },
+  unknown: { text: ' Activity unknown ', color: 'warning' },
+  unsaved: { text: ' Unsaved ', color: 'warning' },
+  done: { text: ' Idle · Safe to close ', color: 'success' },
 } as const
 // The step in progress breathes while work runs: one phase every PULSE_MS, a
 // spinner and grey shades while the main session works, an hourglass and amber shades while it
@@ -146,14 +158,14 @@ const lastStart = (lines: number[], rows: number): number => {
 }
 
 // The newest `max` rows. Room is made from the oldest rows already cleared, then the oldest done
-// ones; an open question or an unfinished step goes only when no spent row is left.
+// ones. Unfinished work is never removed to make room.
 const capRows = <T extends { cleared?: true }>(rows: T[], max: number, isDone: (row: T) => boolean): T[] => {
   let excess = rows.length - max
   if (excess <= 0) {
     return rows
   }
   const dropped = new Set<T>()
-  for (const isSpent of [(row: T) => row.cleared === true, isDone, () => true]) {
+  for (const isSpent of [(row: T) => row.cleared === true, isDone]) {
     for (const row of rows) {
       if (excess > 0 && !dropped.has(row) && isSpent(row)) {
         dropped.add(row)
@@ -191,16 +203,25 @@ const runningClocks = (l: Ledger): Step[] => l.steps.filter(s => s.cleared !== t
 
 // Lines `text` takes word-wrapped at `width` columns, as the terminal wraps it: a word that does
 // not fit starts a new line, and a word longer than a line is broken.
+const segmenter = new Intl.Segmenter('und', { granularity: 'grapheme' })
+const graphemesOf = (text: string): string[] => Array.from(segmenter.segment(text), part => part.segment)
+// Conservative terminal widths: emoji clusters and East Asian wide glyphs use
+// two columns. Combining marks stay with their base through Intl.Segmenter.
+const columnsOf = (text: string): number => graphemesOf(text).reduce((sum, cluster) => sum + (
+  /^[\p{Mark}\p{Cf}]+$/u.test(cluster) ? 0
+    : /[\p{Extended_Pictographic}\p{Regional_Indicator}\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6]/u.test(cluster) ? 2 : 1
+), 0)
 const wrappedLines = (text: string, width: number): number => {
   let lines = 1
   let used = 0
   for (const word of text.split(' ')) {
-    if (used > 0 && used + 1 + word.length <= width) {
-      used += 1 + word.length
-    } else if (word.length > 0) {
-      const extra = Math.floor((word.length - 1) / width)
+    const columns = columnsOf(word)
+    if (used > 0 && used + 1 + columns <= width) {
+      used += 1 + columns
+    } else if (columns > 0) {
+      const extra = Math.floor((columns - 1) / width)
       lines += (used > 0 ? 1 : 0) + extra
-      used = word.length - extra * width
+      used = columns - extra * width
     }
   }
 
@@ -233,12 +254,13 @@ const fitLines = (text: string, width: number, lines: number): string => {
   if (wrappedLines(text, width) <= most) {
     return text
   }
-  let cut = Math.max(1, width * most - 1)
-  while (cut > 1 && wrappedLines(`${text.slice(0, cut).trimEnd()}…`, width) > most) {
+  const clusters = graphemesOf(text)
+  let cut = Math.min(clusters.length, Math.max(1, width * most - 1))
+  while (cut > 0 && wrappedLines(`${clusters.slice(0, cut).join('').trimEnd()}…`, width) > most) {
     cut--
   }
 
-  return `${text.slice(0, cut).trimEnd()}…`
+  return `${clusters.slice(0, cut).join('').trimEnd()}…`
 }
 
 const hidden = (above: number, below: number): string =>
@@ -275,8 +297,11 @@ const rowKey = (id: string): string => id.split('-').slice(0, 4).join('-')
 const headOf = (text: string): string => {
   const line = text.replace(/\[Image #\d+\]/g, '').trim().split('\n')[0] ?? ''
 
-  return line.length > HEAD_CHARS ? `${line.slice(0, HEAD_CHARS - 1)}…` : line
+  return truncate(line, HEAD_CHARS)
 }
+
+// "1 step", "2 steps".
+const counted = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 // A row's text blocks, joined.
 const textOf = (content: ReadonlyArray<{ type: string; text?: unknown }>): string =>
@@ -286,8 +311,10 @@ const textOf = (content: ReadonlyArray<{ type: string; text?: unknown }>): strin
 // are not the person's, and would hide a slash command from the check on the head.
 const MIDTURN_FRAME = /^\s*(<system-reminder>\s*)?The user sent a new message while you were working:\s*/
 
-const truncate = (text: string, width: number): string =>
-  text.length > width ? `${text.slice(0, Math.max(1, width - 1))}…` : text
+const truncate = (text: string, width: number): string => {
+  const points = Array.from(text)
+  return points.length > width ? `${points.slice(0, Math.max(1, width - 1)).join('')}…` : text
+}
 
 // Ring glyph for a completion fraction; `○ —` when there is nothing to count.
 const ring = (done: number, total: number): string => {
@@ -323,18 +350,19 @@ const isDefined = <T,>(value: T | undefined): value is T => value !== undefined
 const textField = <K extends string>(key: K, value: unknown): Partial<Record<K, string>> =>
   typeof value === 'string' ? ({ [key]: value } as Record<K, string>) : {}
 
-// What the session is doing: the person's question dialog first, then agents, then the turn;
-// after the turn, background agents, then other background tasks, then anything still open,
-// else safe to close.
+// Only an explicit waiting step or question dialog asks the person to act.
+// Incomplete work without current runtime activity is paused or unknown.
 const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
-  const unfinished = l.questions.some(q => q.status === 'open' || q.status === 'deferred') || l.steps.some(s => s.status !== 'completed')
-  if (now.askCalls.length > 0) return 'you'
+  const steps = l.steps.filter(s => s.cleared !== true)
+  const unfinished = l.questions.some(q => q.cleared !== true && q.status !== 'answered') || steps.some(s => s.status !== 'completed')
+  if (now.askCalls.length > 0 || steps.some(s => s.status === 'waiting')) return 'you'
   if (now.agentCalls.length > 0) return 'agents'
   if (now.isWorking) return 'working'
   if (now.background.length > 0) return 'agents'
   if ((now.tasks ?? []).length > 0) return 'tasks'
 
-  return unfinished ? 'you' : 'done'
+  if (steps.some(s => s.status === 'in_progress')) return 'unknown'
+  return unfinished ? 'paused' : 'done'
 }
 
 // Waiting on agents or tasks always pulses (the banner blinks amber); the main session's work
@@ -445,36 +473,71 @@ const MESSAGES_CAP = 4096
 // track_question call is gone was asked in a rewound turn, and an answer whose
 // mark_answered call is gone was rewound. Only work since the last compaction is judged,
 // since compaction removes old tool calls as well.
-const dropRewound = async ($: EngineInterface): Promise<void> => {
+const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   const l = await read($, ledger)
   const since = l.compactedAt ?? 0
+  const answerCall = (q: Question) => q.answeredBy ?? q.answerRequestId
   const judged = (q: Question) =>
-    (q.trackedBy !== undefined && q.at > since) || (q.answerRequestId !== undefined && (q.answeredAt ?? 0) > since)
-  if (!l.questions.some(judged)) {
-    return
+    (q.trackedBy !== undefined && q.at > since) || (answerCall(q) !== undefined && (q.answeredAt ?? 0) > since)
+  const hasJudged = l.questions.some(judged)
+  const pending = (await read($, durability)).rewindSession
+  // Empty registers and rows without transcript provenance need no session
+  // lookup or transcript read before delivering their generic instruction.
+  if (!hasJudged && pending === undefined) return true
+  let session: string
+  try { session = await $.session.id() }
+  catch (error) {
+    persistence.failure = `rewind session identity unavailable: ${reason(error)}`
+    $.ui.log(`track: ${persistence.failure}`, { to: 'debug' })
+    return false
+  }
+  if (pending === session && !(await saveLedger($))) return false
+  if (!hasJudged) {
+    return true
   }
   const messages = await $.session.messages()
   if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP) {
-    return
+    return true
   }
+  if (await $.session.id() !== session) return true
   const present = new Set(messages.flatMap(m => m.toolUses.map(u => u.tool_use_id)))
-  const isRewound = (q: Question) => q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)
-  const answerRewound = (q: Question) =>
-    q.answerRequestId !== undefined && (q.answeredAt ?? 0) > since && !present.has(q.answerRequestId)
-  if (!l.questions.some(q => isRewound(q) || answerRewound(q))) {
-    return
-  }
-  await update<Ledger>($, ledger, cur => ({
-    ...cur,
-    questions: cur.questions
-      .filter(q => !isRewound(q))
-      .map(q => {
-        if (!answerRewound(q)) return q
-        const { answerRequestId: _a, answeredAt: _t, note: _n, answerKey: _k, ...rest } = q
+  if (!l.questions.some(q =>
+    (q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)) ||
+    (answerCall(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerCall(q)!))
+  )) return true
+  const observed = new Map(l.questions.map(q => [q.id, q]))
+  let changed = false
+  await update<Ledger>($, ledger, cur => {
+    const compactedAt = cur.compactedAt ?? 0
+    const questions = cur.questions.flatMap(q => {
+      const old = observed.get(q.id)
+      // Only the calls judged by this read may be removed. A later tracking call,
+      // answer, or compaction wins over the older transcript observation.
+      if (old === undefined) return [q]
+      if (q.trackedBy === old.trackedBy && q.at === old.at && q.trackedBy !== undefined && q.at > compactedAt && !present.has(q.trackedBy)) return []
+      const call = answerCall(q)
+      if (call === undefined || call !== answerCall(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(call)) return [q]
+      const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerText: _x, ...rest } = q
 
-        return { ...rest, status: 'open' as const }
-      }),
-  }))
+      return [{ ...rest, status: 'open' as const }]
+    })
+    changed = !sameValue(questions, cur.questions)
+    return changed ? { ...cur, questions } : cur
+  })
+  if (changed) {
+    await update($, durability, cur => ({ ...cur, rewindSession: session }))
+    await publishGate($)
+    return saveLedger($)
+  }
+  return true
+}
+
+const dropRewound = async ($: EngineInterface): Promise<boolean> => {
+  if (rewindCheck.running !== undefined) return rewindCheck.running
+  const run = observeRewind($)
+  rewindCheck.running = run
+  try { return await run }
+  finally { if (rewindCheck.running === run) rewindCheck.running = undefined }
 }
 
 // ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
@@ -489,6 +552,8 @@ const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
     questions: cur.questions.filter(one => one.id !== id),
     withdrawn: [...(cur.withdrawn ?? []), { id, head: q.head }],
   }))
+  await publishGate($)
+  await saveLedger($)
   $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
 }
 
@@ -505,7 +570,10 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
   autoOpen.isScheduled = true
   $.clock.after(AUTO_OPEN_DELAY_MS, () => {
     void (async () => {
-      const closedByPerson = (await $.store.get('closedByPerson')) === true
+      // A refused explicit choice lives in reload-persistent state until its
+      // save succeeds. The older store flag cannot reverse that choice.
+      const pending = (await read($, durability)).closedByPerson
+      const closedByPerson = pending ?? ((await $.store.get('closedByPerson')) === true)
       if (closedByPerson) {
         await update($, pane, cur => ({ ...cur, closedByPerson, autoOpenDone: true as const }))
       } else {
@@ -518,62 +586,289 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
   })
 }
 
-type SavedIndex = Record<string, { at: number; bytes: number }>
+type SavedIndex = Record<string, { at: number; bytes: number; unfinished?: boolean }>
+const utf8Bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length
+const persistence = { queue: Promise.resolve(), failure: '' }
+const savedRevisions = new Map<string, number>()
+type SaveRecovery = { previous: unknown; bucket: unknown; removed: Array<[string, unknown]>; pendingHistory: Set<string>; previousIndex: unknown; index: unknown }
+const saveRecoveries = new Map<string, SaveRecovery>()
+const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
+const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean })
+const gateWrites = { queue: Promise.resolve() }
+
+const closeLock = async (stream: LockStream): Promise<void> => { await stream.return({ code: null, signal: 'SIGTERM' }) }
+const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write', session: string): Promise<LockStream> => {
+  const stream = $.process.spawn({ argv: ['python3', `${$.plugin.root}/hooks/writer-lock.py`, mode, session, writer.token] })
+  // return() closes a live stream by design, so its result rejects on normal cleanup.
+  void stream.result.catch(() => undefined)
+  let deadline: Timer | undefined
+  try {
+    const reading = (async () => {
+      let output = ''
+      let received = 0
+      while (true) {
+        const chunk = await stream.next()
+        if (chunk.done) throw new Error('writer lock returned no receipt')
+        received += chunk.value.text.length
+        if (received > 4096) throw new Error('writer lock receipt exceeded its limit')
+        if (chunk.value.stream !== 'stdout') continue
+        output += chunk.value.text
+        try { return JSON.parse(output) as { ok?: boolean; reason?: string; token?: string; mode?: string } }
+        catch { /* A stdout chunk may end inside the JSON receipt. */ }
+      }
+    })()
+    const expired = new Promise<never>((_, reject) => {
+      deadline = $.clock.after(4000, () => reject(new Error('writer lock receipt timed out')))
+    })
+    const receipt = await Promise.race([reading, expired])
+    if (receipt.ok !== true || receipt.token !== writer.token || receipt.mode !== mode) throw new Error(receipt.reason ?? 'writer lock receipt is incompatible')
+    return stream
+  } catch (error) {
+    await closeLock(stream).catch(() => undefined)
+    throw error
+  } finally {
+    deadline?.cancel()
+  }
+}
+const ensureWriter = async ($: EngineInterface, session: string): Promise<void> => {
+  if (writer.session === session && writer.lease !== null) return
+  const previous = writer.lease
+  writer.lease = null
+  writer.session = ''
+  if (previous !== null) await closeLock(previous)
+  const lease = await acquireLock($, 'lease', session)
+  writer.lease = lease
+  writer.session = session
+  // The helper owns the flock for the lifetime of this stream. An exited
+  // helper cannot authorize a later write, even when the session id is equal.
+  const ended = () => {
+    if (writer.lease !== lease) return
+    writer.lease = null
+    writer.session = ''
+    $.ui.log('track: writer lease ended; the next save must reacquire it', { to: 'debug' })
+  }
+  // HookStream.result settles only after the iterator reaches its end. Keep
+  // reading the live stream so an exit is observed between saving calls.
+  void (async () => {
+    try {
+      for await (const chunk of lease) {
+        if (chunk.text.trim() !== '') $.ui.log(`track: writer lease ${chunk.stream}: ${truncate(chunk.text, 200)}`, { to: 'debug' })
+      }
+    } catch (error) {
+      if (writer.lease === lease) $.ui.log(`track: writer lease failed: ${reason(error)}`, { to: 'debug' })
+    } finally { ended() }
+  })()
+}
+
+const publishGate = async ($: EngineInterface): Promise<void> => {
+  const run = gateWrites.queue.then(async () => {
+    const t = await read($, turn)
+    const l = await read($, ledger)
+    const open = l.questions.filter(q => q.cleared !== true && q.status === 'open' && q.turnId === t.currentId)
+    await $.env.set('TRACK_GATE_SNAPSHOT', JSON.stringify({ v: 1, session_id: await $.session.id(), turn_id: t.currentId, open: open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })) }))
+  })
+  gateWrites.queue = run.catch(error => { $.ui.log(`track: Stop snapshot unavailable: ${reason(error)}`, { to: 'debug' }) })
+  await gateWrites.queue
+}
 
 // Every saved bucket with its time and size. Two sessions saving at once can each write the index
 // without the other's entry; a bucket the index does not list is read once for both, so it is
 // pruned by its age like the rest and never kept for good.
 const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
   const keys = await $.store.keys()
-  const raw = await $.store.get(SAVED_INDEX)
-  const listed = typeof raw === 'object' && raw !== null ? (raw as Record<string, { at?: unknown; bytes?: unknown } | null>) : {}
   const index: SavedIndex = {}
   for (const key of keys.filter(k => k.startsWith('s:'))) {
     const id = key.slice(2)
-    const row = listed[id]
-    if (typeof row?.at === 'number' && typeof row.bytes === 'number') {
-      index[id] = { at: row.at, bytes: row.bytes }
-      continue
-    }
-    const bucket = (await $.store.get(key)) as { savedAt?: unknown } | undefined
-    index[id] = { at: typeof bucket?.savedAt === 'number' ? bucket.savedAt : 0, bytes: JSON.stringify(bucket ?? null).length }
+    const bucket = (await $.store.get(key)) as { savedAt?: unknown; ledger?: Ledger } | undefined
+    const l = bucket?.ledger
+    const unfinished = !Array.isArray(l?.questions) || !Array.isArray(l?.steps) || l.questions.some(q => q.cleared !== true && q.status !== 'answered') || l.steps.some(s => s.cleared !== true && s.status !== 'completed')
+    index[id] = { at: typeof bucket?.savedAt === 'number' ? bucket.savedAt : 0, bytes: utf8Bytes({ [key]: bucket ?? null }) + 1, unfinished }
   }
-  // The list an earlier version kept: the buckets themselves now say the same.
-  if (keys.includes('sessions')) {
-    await $.store.delete('sessions')
-  }
-
   return index
 }
 
-// The register survives the process: one bucket per session id. The oldest buckets go before the
-// new one is written, since a write that takes the store past 4 MiB is refused. A failed save is
-// logged and never throws, so the turn and a /clear go on.
-const saveLedger = async ($: EngineInterface): Promise<void> => {
+// A failed acknowledgement restores only this writer's attempted values, under the
+// same store lock. Keep the recovery in memory if the store also refuses rollback.
+const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
+  const recovery = saveRecoveries.get(id)
+  if (recovery === undefined) return
+  const failures: string[] = []
+  const key = `s:${id}`
   try {
-    const id = await $.session.id()
-    const bucket = { v: 1, savedAt: Date.now(), ledger: await read($, ledger) }
-    const bytes = JSON.stringify(bucket).length
+    const current = await $.store.get(key)
+    if (!sameValue(current, recovery.previous)) {
+      if (!sameValue(current, recovery.bucket)) throw new Error('save recovery kept a changed durable ledger; reload this session before writing')
+      if (recovery.previous === undefined) await $.store.delete(key)
+      else await $.store.set(key, recovery.previous)
+      if (!sameValue(await $.store.get(key), recovery.previous)) throw new Error('save recovery read-back did not match the prior ledger')
+    }
+  } catch (error) { failures.push(reason(error)) }
+  // Recover every missing completed-history bucket even when the current ledger
+  // is uncertain. A later writer's value is kept; it must never stop other rows.
+  for (const [removedKey, value] of recovery.removed) {
+    try {
+      const stored = await $.store.get(removedKey)
+      if (sameValue(stored, value)) {
+        recovery.pendingHistory.delete(removedKey)
+        continue
+      }
+      if (stored !== undefined) {
+        if (recovery.pendingHistory.has(removedKey)) throw new Error(`save recovery could not verify ${removedKey}`)
+        $.ui.log(`track: recovery kept a later history value for ${removedKey}`, { to: 'debug' })
+        continue
+      }
+      recovery.pendingHistory.add(removedKey)
+      await $.store.set(removedKey, value)
+      if (!sameValue(await $.store.get(removedKey), value)) throw new Error(`save recovery could not verify ${removedKey}`)
+      recovery.pendingHistory.delete(removedKey)
+    } catch (error) { failures.push(reason(error)) }
+  }
+  try {
+    const index = await $.store.get(SAVED_INDEX)
+    if (!sameValue(index, recovery.previousIndex)) {
+      // The index is a cache. Rebuild a changed one from actual buckets, keeping
+      // another session's entries instead of treating metadata as ownership.
+      const restoredIndex = sameValue(index, recovery.index) ? recovery.previousIndex : await savedIndex($)
+      if (restoredIndex === undefined) await $.store.delete(SAVED_INDEX)
+      else await $.store.set(SAVED_INDEX, restoredIndex)
+      if (!sameValue(await $.store.get(SAVED_INDEX), restoredIndex)) throw new Error('save recovery could not verify the rebuilt index')
+    }
+  } catch (error) { failures.push(reason(error)) }
+  if (failures.length > 0) throw new Error(failures.join('; '))
+  saveRecoveries.delete(id)
+}
+
+// A save acknowledges the ledger and index only after both read back exactly.
+// Completed history may make room; a failed acknowledgement restores it.
+const saveLedger = async ($: EngineInterface): Promise<boolean> => {
+  let saved = false
+  const run = persistence.queue.then(async () => {
+  let lock: LockStream | undefined
+  let id: string | undefined
+  try {
+    id = await $.session.id()
+    await ensureWriter($, id)
+    lock = await acquireLock($, 'write', id)
+    await recoverSave($, id)
+    const pending = await read($, durability)
+    const preference = pending.closedByPerson
+    if (preference !== undefined) {
+      await $.store.set('closedByPerson', preference)
+      if (await $.store.get('closedByPerson') !== preference) throw new Error('pane preference read-back did not match')
+    }
+    const current = await read($, ledger)
+    const previous = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint } | undefined
+    const revision = previous?.checkpoint?.revision ?? 0
+    if (!Number.isSafeInteger(revision) || revision < 0 || (savedRevisions.has(id) && savedRevisions.get(id) !== revision)) throw new Error('stale writer revision; newer durable ledger was kept')
+    const bucket = { v: 1, savedAt: Date.now(), ledger: current, checkpoint: await describeCheckpoint(current, id, previous?.checkpoint) }
+    const bytes = utf8Bytes({ [`s:${id}`]: bucket }) + 1
     const others = Object.entries(await savedIndex($))
       .filter(([other]) => other !== id)
-      .sort(([, a], [, b]) => b.at - a.at)
-    const kept: SavedIndex = {}
-    let used = bytes
-    let isFull = false
+      .sort(([, a], [, b]) => a.at - b.at)
+    const kept: SavedIndex = Object.fromEntries(others)
+    let used = bytes + others.reduce((sum, [, row]) => sum + row.bytes, 0)
+    const removals: string[] = []
     for (const [other, row] of others) {
-      isFull = isFull || Object.keys(kept).length + 1 >= MAX_SESSIONS || used + row.bytes > STORE_BUDGET
-      if (isFull) {
-        await $.store.delete(`s:${other}`)
-      } else {
-        kept[other] = row
-        used += row.bytes
-      }
+      if (row.unfinished || (Object.keys(kept).length + 1 <= MAX_SESSIONS && used + utf8Bytes(kept) < STORE_BUDGET)) continue
+      delete kept[other]
+      removals.push(other)
+      used -= row.bytes
     }
+    if (used + utf8Bytes(kept) >= STORE_BUDGET) throw new Error('capacity: unfinished history fills the UTF-8 store budget; nothing was pruned')
+    const index = { ...kept, [id]: { at: bucket.savedAt, bytes } }
+    const removed: Array<[string, unknown]> = []
+    for (const other of removals) removed.push([`s:${other}`, await $.store.get(`s:${other}`)])
+    saveRecoveries.set(id, { previous, bucket, removed, pendingHistory: new Set(), previousIndex: await $.store.get(SAVED_INDEX), index })
+    for (const other of removals) await $.store.delete(`s:${other}`)
     await $.store.set(`s:${id}`, bucket)
-    await $.store.set(SAVED_INDEX, { ...kept, [id]: { at: bucket.savedAt, bytes } })
+    const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
+    if (JSON.stringify(verified) !== JSON.stringify(bucket)) throw new Error('save read-back did not match the acknowledged ledger')
+    await $.store.set(SAVED_INDEX, index)
+    if (!sameValue(await $.store.get(SAVED_INDEX), index)) throw new Error('save index read-back did not match')
+    savedRevisions.set(id, bucket.checkpoint.revision)
+    saveRecoveries.delete(id)
+    persistence.failure = ''
+    saved = true
+    // A rewind or UI choice that arrived after this save's snapshot needs
+    // its own acknowledgement. Keep its gate while the queued save catches up.
+    await update($, durability, cur => cur.closedByPerson !== preference || cur.rewindSession !== pending.rewindSession
+      ? { ...cur, isUnsaved: true, reason: cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
+      : { isUnsaved: false, reason: '' })
   } catch (error) {
-    $.ui.log(`track: save failed: ${reason(error)}`, { to: 'debug' })
+    persistence.failure = reason(error)
+    if (lock !== undefined && id !== undefined) {
+      try { await recoverSave($, id) }
+      catch (recoveryError) { persistence.failure += `; recovery pending: ${reason(recoveryError)}` }
+    }
+    await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: persistence.failure }))
+    $.ui.log(`track: unsaved; save failed: ${persistence.failure}`, { to: 'debug' })
+    $.ui.toast(`track: unsaved — ${persistence.failure}`)
+  } finally {
+    if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: writer lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
   }
+  })
+  persistence.queue = run.catch(() => undefined)
+  await run
+  return saved
+}
+
+// Migration goes through the engine's store for each loading identity. It preserves
+// raw buckets and refuses ambiguous same-session data before writing any record.
+const savePanePreference = async ($: EngineInterface, closedByPerson: boolean): Promise<void> => {
+  // The engine atom survives reload, so a refused preference is retried by the
+  // next save. It uses the ledger's queue, ownership and verified store lock.
+  await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: 'pane preference save pending', closedByPerson }))
+  await saveLedger($)
+}
+
+const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path: string): Promise<string> => {
+  const run = persistence.queue.then(async () => {
+  let lock: LockStream | undefined
+  try {
+    if (!path.startsWith('/') || path.includes('\0')) throw new Error('an absolute bundle path is required')
+    const session = await $.session.id()
+    await ensureWriter($, session)
+    lock = await acquireLock($, 'write', session)
+    await recoverSave($, session)
+    if (mode === 'export') {
+      const records = [] as Array<{ key: string; value: unknown }>
+      for (const key of (await $.store.keys()).filter(key => key.startsWith('s:')).sort()) records.push({ key, value: await $.store.get(key) })
+      const checksum = await checksumOf(records)
+      await $.fs.write(path, JSON.stringify({ v: 1, source_identity: $.plugin.root, checksum, records }))
+      const verified = JSON.parse(await $.fs.read(path) as string) as { checksum?: string; records?: unknown }
+      if (verified.checksum !== checksum || await checksumOf(verified.records) !== checksum) throw new Error('export read-back does not match')
+      return JSON.stringify({ v: 1, ok: true, checksum, records: records.length })
+    }
+    const bundle = JSON.parse(await $.fs.read(path) as string) as { v?: number; checksum?: string; records?: Array<{ key: string; value: unknown }> }
+    if (bundle.v !== 1 || !Array.isArray(bundle.records) || bundle.checksum !== await checksumOf(bundle.records)) throw new Error('migration bundle is corrupt or incompatible')
+    const records = bundle.records
+    if (new Set(records.map(r => r.key)).size !== records.length || records.some(r => !r.key.startsWith('s:') || !SESSION_ID.test(r.key.slice(2)) || savedLedger(r.value) === undefined)) throw new Error('migration contains invalid or duplicate session records')
+    const missing = [] as typeof records
+    for (const record of records) {
+      const current = await $.store.get(record.key)
+      if (current === undefined) missing.push(record)
+      else if (JSON.stringify(current) !== JSON.stringify(record.value)) throw new Error(`migration conflict for session ${record.key.slice(2)}; both records were kept`)
+    }
+    const index = await savedIndex($)
+    if (Object.values(index).reduce((sum, row) => sum + row.bytes, 0) + utf8Bytes(missing) + utf8Bytes(index) >= STORE_BUDGET) throw new Error('migration capacity exceeded; existing history was kept')
+    const verified: string[] = []
+    for (const record of records) {
+      if (missing.some(r => r.key === record.key)) await $.store.set(record.key, record.value)
+      if (JSON.stringify(await $.store.get(record.key)) !== JSON.stringify(record.value)) throw new Error(`migration verification failed for session ${record.key.slice(2)}; source was kept`)
+      verified.push(record.key.slice(2))
+    }
+    await $.store.set(SAVED_INDEX, await savedIndex($))
+    return JSON.stringify({ v: 1, ok: true, checksum: bundle.checksum, imported: missing.map(r => r.key.slice(2)), verified })
+  } catch (error) {
+    return JSON.stringify({ v: 1, ok: false, reason: reason(error) })
+  } finally {
+    if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: migration lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
+  }
+  })
+  persistence.queue = run.then(() => undefined, () => undefined)
+  return run
 }
 
 // A saved prompt or question as a fresh row, or undefined when the row is not one.
@@ -608,16 +903,53 @@ const savedQuestion = (row: unknown): Question | undefined => {
     ...textField('rowKey', r.rowKey),
     ...textField('askedRequestId', r.askedRequestId),
     ...textField('answerRequestId', r.answerRequestId),
+    ...textField('answeredBy', r.answeredBy),
+    ...textField('answerTurnId', r.answerTurnId),
+    ...(typeof r.answerOrder === 'number' && Number.isSafeInteger(r.answerOrder) && r.answerOrder >= 0 && { answerOrder: r.answerOrder }),
     ...textField('answerKey', r.answerKey),
     ...textField('trackedBy', r.trackedBy),
     ...(typeof r.trackedOrder === 'number' && Number.isSafeInteger(r.trackedOrder) && r.trackedOrder >= 0 && { trackedOrder: r.trackedOrder }),
+    ...textField('restoredFrom', r.restoredFrom),
+    ...textField('restoredBy', r.restoredBy),
+    ...textField('sourceId', r.sourceId),
     ...(typeof r.note === 'string' && { note: r.note.slice(0, HEAD_CHARS) }),
+    ...(typeof r.answerText === 'string' && { answerText: truncate(r.answerText, ANSWER_CHARS) }),
     ...(typeof r.answeredAt === 'number' && { answeredAt: r.answeredAt }),
     ...(r.cleared === true && { cleared: true as const }),
   }
 }
 
-// A saved step as a fresh Step, or undefined when the row is not one: restore_steps reads rows
+// A saved restore row's record, or undefined when the row is not one.
+const savedRestore = (row: unknown): Restore | undefined => {
+  if (typeof row !== 'object' || row === null) {
+    return undefined
+  }
+  const r = row as Record<string, unknown>
+  if (typeof r.by !== 'string' || typeof r.from !== 'string' || typeof r.steps !== 'number' || !Array.isArray(r.questions)) {
+    return undefined
+  }
+
+  return { by: r.by, from: r.from, steps: r.steps, questions: r.questions.map(savedQuestion).filter(isDefined).slice(-MAX_QUESTIONS) }
+}
+
+// A question from another session's register, under this session's id `id`. Its old row links
+// and turn are dropped: those rows are in the old transcript. `by` is the restore call whose row
+// shows it here.
+const asRestored = (q: Question, id: number, from: string, by: string | undefined): Question => ({
+  id,
+  head: q.head,
+  at: q.at,
+  turnId: RESTORED_TURN,
+  status: q.status,
+  ...(q.note !== undefined && { note: q.note }),
+  ...(q.answerText !== undefined && { answerText: q.answerText }),
+  ...(q.answeredAt !== undefined && { answeredAt: q.answeredAt }),
+  restoredFrom: from,
+  sourceId: q.sourceId ?? `${from}:Q${q.id}`,
+  ...(by !== undefined && { restoredBy: by }),
+})
+
+// A saved step as a fresh Step, or undefined when the row is not one: restore_tracker reads rows
 // another session saved, and copies only the fields a step has.
 const savedStep = (row: unknown): Step | undefined => {
   if (typeof row !== 'object' || row === null) {
@@ -639,6 +971,8 @@ const savedStep = (row: unknown): Step | undefined => {
     ...(r.cleared === true ? { cleared: true as const } : {}),
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
+    ...textField('sourceId', r.sourceId),
+    ...(typeof r.note === 'string' && { note: truncate(r.note, HEAD_CHARS) }),
   }
 }
 
@@ -652,20 +986,23 @@ const savedLedger = (raw: unknown): Ledger | undefined => {
     return undefined
   }
   const rows = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
-  const questions = rows(l.questions).map(savedQuestion).filter(isDefined).slice(-MAX_QUESTIONS)
+  const questions = capRows(rows(l.questions).map(savedQuestion).filter(isDefined), MAX_QUESTIONS, q => q.status === 'answered')
   const withdrawn = rows(l.withdrawn).filter(
     (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
   )
   const top = Math.max(0, ...questions.map(q => q.id), ...withdrawn.map(w => w.id))
+  const restores = rows(l.restores).map(savedRestore).filter(isDefined).slice(-MAX_RESTORES)
 
   return {
     v: 1,
     nextQuestionId: Math.max(top + 1, typeof l.nextQuestionId === 'number' ? l.nextQuestionId : 1),
     prompts: rows(l.prompts).map(savedPrompt).filter(isDefined).slice(-MAX_PROMPTS),
     questions,
-    steps: rows(l.steps).map(savedStep).filter(isDefined).slice(-MAX_STEPS),
+    steps: capSteps(rows(l.steps).map(savedStep).filter(isDefined)),
     ...(withdrawn.length > 0 && { withdrawn }),
     ...(typeof l.compactedAt === 'number' && { compactedAt: l.compactedAt }),
+    ...(restores.length > 0 && { restores }),
+    ...(typeof l.restoredIds === 'object' && l.restoredIds !== null && { restoredIds: Object.fromEntries(Object.entries(l.restoredIds).filter(([, id]) => Number.isSafeInteger(id) && Number(id) > 0)) as Record<string, number> }),
   }
 }
 
@@ -681,11 +1018,14 @@ const clearQuestions = async ($: EngineInterface): Promise<void> => {
       ...cur.questions.filter(q => q.status !== 'answered').map(q => ({ id: q.id, head: q.head })),
     ],
   }))
+  await publishGate($)
+  await saveLedger($)
   $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
 }
 
 const clearSteps = async ($: EngineInterface): Promise<void> => {
   await update<Ledger>($, ledger, cur => ({ ...cur, steps: [] }))
+  await saveLedger($)
   $.ui.toast('track: steps cleared.')
 }
 
@@ -716,35 +1056,65 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
 }
 
 export const register: Register = on => {
+  // One restore owns its visible receipt and save through acknowledgement.
+  // Other ledger writers still use atom compare-and-set; a changed ledger
+  // during a mechanical receipt is refused instead of overwriting their work.
+  let restoreQueue = Promise.resolve()
+  on('tool.call', { tool: RESTORE_TRACKER }, async (_, e, next) => {
+    if (next.origin.plugin === 'engine') return next(e)
+    const run = restoreQueue.then(() => next(e))
+    restoreQueue = run.then(() => undefined, () => undefined)
+    return run
+  })
+  // Persist acknowledged tracking changes before their callers receive success.
+  // This hook never runs from a redraw; UI mutations save in their own handlers.
+  const mutationTools = new Set([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER, 'TaskCreate', 'TaskUpdate', 'TodoWrite'])
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined || !mutationTools.has(e.tool)) return next(e)
+    const before = JSON.stringify(await read($, ledger))
+    const ran = await next(e)
+    if (ran.deny !== undefined || ran.isError === true || before === JSON.stringify(await read($, ledger))) return ran
+    if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
+    await publishGate($)
+    if (await saveLedger($)) return ran
+    const warning = `track: unsaved — ${persistence.failure}`
+    if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string') {
+      const receipt = JSON.parse(ran.result) as Checkpoint
+      return { ...ran, result: JSON.stringify({ ...receipt, ok: false, reason: warning }), context: [...(ran.context ?? []), warning] }
+    }
+    return { ...ran, ...(typeof ran.result === 'string' && { result: `${ran.result}\n${warning}` }), context: [...(ran.context ?? []), warning] }
+  })
+
   on('session.start', async ($, e, next) => {
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
     // end, and the toggle answers with no text, so the session gets no row.
     await $.command.register({
       name: 'track',
       description: 'Show or hide the track pane: questions asked, where answered, and the steps',
-      argumentHint: '[status]',
+      argumentHint: '[status | export <absolute-path> | import <absolute-path>]',
       immediate: true,
     })
     await $.tool.register({
       name: 'track_question',
       description:
-        'Register the user\'s current prompt as a question in the track pane. Call it once per distinct question, before answering, with a one-line summary. Returns the question id to pass to mark_answered.',
+        'Register a substantive question from any sender before answering, or reuse its existing open id. For a known user source, pass source_text as its exact first line; it is verified against current prompt rows. Alternatively pass a known source_request_id. If the source cannot be verified, the question links to this tracking call. Returns the id for mark_answered.',
       inputSchema: {
         type: 'object',
-        properties: { summary: { type: 'string', description: 'One line, under 80 characters, restating the question' } },
+        properties: { summary: { type: 'string', description: 'One line, under 80 characters, restating the question' }, source_request_id: { type: 'string', description: 'Optional known source row; validated against recorded prompts' }, source_text: { type: 'string', description: 'Optional exact first line of the source user message; unique current-turn matches keep its source jump' } },
         required: ['summary'],
       },
     })
     await $.tool.register({
       name: 'mark_answered',
       description:
-        'Mark a tracked question answered or deferred. Call it right after writing the answer, so the jump lands under the answer text. status "deferred" needs a note saying what it waits for.',
+        'Mark a tracked question answered or deferred. Call it right after writing the answer. An optional answer_request_id must name the latest host-observed response in this turn; an unknown source is refused. A known answer is kept. If called before text, only one pending question can bind the next response. status "deferred" needs a note saying what it waits for.',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'number', description: 'The question id returned by track_question' },
           status: { type: 'string', enum: ['answered', 'deferred'] },
           note: { type: 'string', description: 'For deferred: what the answer waits for' },
+          answer_request_id: { type: 'string', description: 'Optional exact response UUID, verified against the latest host-observed answer text; never guessed from a user prompt' },
         },
         required: ['id', 'status'],
       },
@@ -752,7 +1122,7 @@ export const register: Register = on => {
 
     await $.tool.register({
       name: 'track_steps',
-      description: `Show steps in the track pane. ${STEPS} Without after, the steps replace the plan and get ids plan:1, plan:2, …; with after, they are inserted and get the next free plan ids. Not needed for TaskCreate tasks or an approved plan-mode plan: those appear on their own.`,
+      description: `Register meaningful work from any sender. ${STEPS} Reuse existing open steps. Without after, explicit plan rows are replaced; with after, new work is inserted. TaskCreate tasks appear on their own. Plan approval only adds a reminder.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -763,28 +1133,42 @@ export const register: Register = on => {
       },
     })
     await $.tool.register({
-      name: 'restore_steps',
+      name: 'restore_tracker',
       description:
-        'After a handoff (a /clear that seeds a fresh session), copy the previous session\'s steps into this session\'s track pane, in order, with their ids and statuses; its questions are not copied. from_session is the previous session id (the handoff brief\'s session: field). Refuses when this session already has steps, unless replace is true.',
+        'Restore the complete steps, uncleared questions, statuses, notes and saved answers from from_session. Repeat calls reuse stable source IDs and preserve local progress, including cleared displayed rows. Unrelated existing steps cause a refusal; replace:true explicitly replaces prior restored rows and steps. The call row shows saved answers; programmatic calls use an acknowledged source snapshot. expected_checkpoint validates the source before applying and returns a v1 JSON text receipt with actual applied values.',
       inputSchema: {
         type: 'object',
         properties: {
           from_session: { type: 'string', description: 'The previous session id' },
-          replace: { type: 'boolean', description: 'Replace the steps this session already has' },
+          replace: { type: 'boolean', description: 'Replace the steps this session already has, and the questions already restored from that session' },
+          expected_checkpoint: { type: 'object', description: 'Optional v1 checkpoint receipt. Validate source session, revision, checksum and counts before changing anything.' },
         },
         required: ['from_session'],
       },
     })
+    await $.tool.register({ name: 'checkpoint', description: 'Save and read back the complete questions, saved answers and steps for expected_session. Returns a v1 JSON receipt as text; ok:false means keep the current context.', inputSchema: { type: 'object', properties: { expected_session: { type: 'string' } }, required: ['expected_session'] } })
     await $.tool.register({
       name: 'mark_step',
       description:
         'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] } },
+        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional short generic note, including a peer or background wait.' } },
         required: ['id', 'status'],
       },
     })
+
+    try {
+      const id = await $.session.id()
+      const bucket = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint } | undefined
+      savedRevisions.set(id, bucket?.checkpoint?.revision ?? 0)
+      const restored = savedLedger(bucket)
+      const current = await read($, ledger)
+      if (restored !== undefined && current.questions.length === 0 && current.steps.length === 0 && current.prompts.length === 0) await update<Ledger>($, ledger, () => restored)
+      await publishGate($)
+    } catch (error) {
+      $.ui.log(`track: resume failed: ${reason(error)}`, { to: 'debug' })
+    }
 
     // Housekeeping runs after the registrations, so a refused call here never costs the session
     // /track or the tools.
@@ -815,6 +1199,18 @@ export const register: Register = on => {
   on('tool.describe', { tool: MARK_ANSWERED }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: TRACK_STEPS }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
   on('tool.describe', { tool: MARK_STEP }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: RESTORE_TRACKER }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+  on('tool.describe', { tool: CHECKPOINT }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+
+  on('tool.call', { tool: CHECKPOINT }, async ($, e) => {
+    const session = await $.session.id()
+    const failure = (text: string) => ({ result: JSON.stringify(checkpointFailure(session, text)) })
+    if (e.agentId !== undefined) return failure('a subagent cannot checkpoint the main ledger')
+    if (e.expected_session !== session) return failure('expected session does not match the current session')
+    if (!(await saveLedger($))) return failure(persistence.failure)
+    const bucket = await $.store.get(`s:${session}`) as { checkpoint?: Checkpoint } | undefined
+    return bucket?.checkpoint === undefined ? failure('saved checkpoint is missing') : { result: JSON.stringify(bucket.checkpoint) }
+  })
 
   on('session.append', { door: 'prompt' }, async ($, e, next) => {
     await recordPrompt($, e, textOf(e.message.content))
@@ -832,16 +1228,38 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's last text row, by its row key: the answer a mark_answered call follows. The
-  // engine draws an assistant row under its uuid with the last group zeroed, as a prompt row.
+  // The model's last text row, by its row key, and its text: the answer a mark_answered call
+  // follows. The engine draws an assistant row under its uuid with the last group zeroed, as a
+  // prompt row. The text is cut here, so a long answer never sits whole in the session's state.
   on('session.append', { door: 'response' }, async ($, e, next) => {
-    const hasText = e.message.content.some(block => block.type === 'text' && String(block.text).trim() !== '')
-    if (e.agentId === undefined && hasText) {
+    const text = textOf(e.message.content).trim()
+    if (e.agentId === undefined && text !== '') {
+      let observed: NonNullable<Turn['lastText']> | undefined
       await update($, turn, cur => {
         const order = (cur.eventOrder ?? 0) + 1
-
-        return { ...cur, eventOrder: order, lastText: { row: rowKey(e.uuid), turnId: cur.currentId, order } }
+        observed = { row: rowKey(e.uuid), requestId: e.uuid, turnId: cur.currentId, order, text: truncate(text, ANSWER_CHARS) }
+        return { ...cur, eventOrder: order, lastText: observed }
       })
+      // Keep this message's observation. A later turn-atom write must never
+      // replace its text while leaving this message's UUID on the answer.
+      const answer = observed
+      let changed = false
+      await update<Ledger>($, ledger, cur => {
+        changed = false
+        const pending = cur.questions.filter(q => q.status === 'answered' && q.answerText === undefined && q.answerTurnId === answer?.turnId && q.answerOrder !== undefined && answer?.order !== undefined && answer.order > q.answerOrder)
+        if (pending.length !== 1 || answer?.text === undefined) return cur
+        const questions = cur.questions.map(q => {
+          if (q.id !== pending[0]!.id) return q
+          const { answerTurnId: _turn, answerOrder: _order, ...rest } = q
+          changed = true
+          return { ...rest, answerText: answer.text, answerKey: answer.row, answerRequestId: e.uuid }
+        })
+        return changed ? { ...cur, questions } : cur
+      })
+      if (changed) {
+        await publishGate($)
+        await saveLedger($)
+      }
     }
 
     return next(e)
@@ -855,6 +1273,7 @@ export const register: Register = on => {
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
       questions: l.questions.map(q => (q.turnId === null ? { ...q, turnId: e.turnId } : q)),
     }))
+    await publishGate($)
 
     return next(e)
   })
@@ -881,11 +1300,11 @@ export const register: Register = on => {
         await update($, activity, a => ({ ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)) }))
       }
     }
-    await dropRewound($)
+    if (!(await dropRewound($))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
     const typed = e.origin?.kind === 'composer'
     // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
     const fromPlugin = e.origin?.kind === 'plugin'
-    const needsSteps = (typed || fromPlugin) && (await read($, turn)).composeSeen !== true
+    const needsSteps = (await read($, turn)).composeSeen !== true
     if (e.text.trim().startsWith('/')) {
       // /track and the built-in commands reach no main-loop work: nothing rides on them, and a
       // withdrawn question waits for a prompt the model reads. A skill's slash command reaches the
@@ -906,7 +1325,7 @@ export const register: Register = on => {
     }
     const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
     const stepsLeft = l.steps.filter(s => s.status !== 'completed').length
-    if (!(typed || fromPlugin) || (open.length === 0 && stepsLeft === 0)) {
+    if (open.length === 0 && stepsLeft === 0) {
       return lines.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...lines] })
     }
     const listed = open
@@ -1030,6 +1449,10 @@ export const register: Register = on => {
     if (summary === '') {
       return { deny: 'track: summary is required.' }
     }
+    const before = await read($, ledger)
+    const existing = before.questions.find(q => q.cleared !== true && q.status !== 'answered' && norm(q.head) === norm(summary))
+    if (existing !== undefined) return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
+    if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     let trackedOrder = 0
     let trackedTurnId: string | null = null
     await update($, turn, cur => {
@@ -1039,15 +1462,17 @@ export const register: Register = on => {
       return { ...cur, eventOrder: trackedOrder }
     })
     let minted: Question | undefined
+    let capacityExceeded = false
     await update($, ledger, l => {
-      const last = l.prompts.at(-1)
+      const textSources = typeof e.source_text === 'string' ? l.prompts.filter(p => p.turnId === trackedTurnId && p.head === headOf(e.source_text)) : []
+      const source = typeof e.source_request_id === 'string' ? l.prompts.find(p => p.requestId === e.source_request_id || p.rowKey === rowKey(e.source_request_id)) : textSources.length === 1 ? textSources[0] : undefined
       minted = {
         id: l.nextQuestionId,
         head: summary,
         at: Date.now(),
         trackedOrder,
-        ...(last?.rowKey !== undefined && { rowKey: last.rowKey }),
-        ...(last?.requestId !== undefined && { askedRequestId: last.requestId }),
+        ...(source?.rowKey !== undefined && { rowKey: source.rowKey }),
+        ...((source?.requestId ?? e.tool_use_id) !== undefined && { askedRequestId: source?.requestId ?? e.tool_use_id }),
         ...(e.tool_use_id !== undefined && { trackedBy: e.tool_use_id }),
         // The question is created now. A previous composer's turn is only a
         // possible source location, never the order of this tracking event.
@@ -1056,9 +1481,12 @@ export const register: Register = on => {
       }
 
       const questions = capRows([...l.questions, minted], MAX_QUESTIONS, q => q.status === 'answered')
+      capacityExceeded = questions.length > MAX_QUESTIONS
+      if (capacityExceeded) return l
 
       return { ...l, nextQuestionId: l.nextQuestionId + 1, questions }
     })
+    if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
 
@@ -1079,26 +1507,36 @@ export const register: Register = on => {
 
       return { result: `No question with id ${id}. Open: ${open.length > 0 ? open.join('; ') : 'none'}.` }
     }
-    // The answer's text row: the last text the model wrote in this turn, if any.
+    // The answer's text row: the last text the model wrote in this turn, if any. Its words go with
+    // it, so a later session can show the answer after a handoff.
     const t = await read($, turn)
     const question = l.questions.find(q => q.id === id) as Question
     const text = t.lastText
     const isAfterQuestion = text?.order !== undefined && (question.turnId !== t.currentId || (question.trackedOrder !== undefined && text.order > question.trackedOrder))
-    const answerKey = status === 'answered' && text !== undefined && text.turnId === t.currentId && isAfterQuestion ? text.row : undefined
+    const last = status === 'answered' && text !== undefined && text.turnId === t.currentId && isAfterQuestion ? text : undefined
+    if (e.answer_request_id !== undefined && (last?.requestId === undefined || last.requestId !== e.answer_request_id)) {
+      return { deny: 'track: answer source is not the latest verified response in this turn; nothing changed.' }
+    }
+    if (status === 'answered' && question.answerText !== undefined) return { result: `Q${id} is already answered; its known answer was kept.` }
+    const answerKey = last?.row
+    const answerText = last?.text
+    const answerOrder = t.eventOrder ?? 0
     await update<Ledger>($, ledger, cur => ({
       ...cur,
-      questions: cur.questions.map(({ answerKey: _old, ...q }) =>
-        q.id === id
-          ? {
-              ...q,
+      questions: cur.questions.map(q => {
+        if (q.id !== id) return q
+        const { answerKey: _old, answerText: _oldText, answerTurnId: _turn, answerOrder: _order, answeredBy: _by, answerRequestId: _request, ...rest } = q
+        return {
+              ...rest,
               status,
               answeredAt: Date.now(),
               ...(note !== undefined && { note }),
-              ...(e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
+              ...(e.tool_use_id !== undefined && { answerRequestId: e.answer_request_id === undefined ? e.tool_use_id : last!.requestId, answeredBy: e.tool_use_id }),
               ...(answerKey !== undefined && { answerKey }),
+              ...(answerText !== undefined && { answerText }),
+              ...(status === 'answered' && last === undefined && t.currentId !== null && { answerTurnId: t.currentId, answerOrder }),
             }
-          : { ...q, ...(_old !== undefined && { answerKey: _old }) },
-      ),
+      }),
     }))
 
     return { result: `Q${id} marked ${status}.` }
@@ -1282,49 +1720,152 @@ export const register: Register = on => {
   })
 
   // A handoff seeds a fresh session, whose pane starts empty. One call copies the old session's
-  // steps from the store, keyed by its session id; its questions stay behind.
+  // steps and its questions from the store, keyed by its session id.
   // Steps already in the pane are kept unless the call asks to replace them. Task ids start again
-  // in every session, so a restored step keeps no link to the old session's Task, and a Task step
-  // takes a restored: id, leaving task:<n> to the new session's own Task.
-  on('tool.call', { tool: RESTORE_STEPS }, async ($, e) => {
-    if (e.agentId !== undefined) {
-      return { deny: 'track: a subagent cannot set the session\'s steps.' }
-    }
+  // in every session, so a restored step keeps no link to the old Task, and a Task step takes a
+  // restored: id, leaving task:<n> to the new session's own Task.
+  // Every question not cleared comes back after this session's own, with this session's next ids.
+  // Its old row links are dropped, since those rows are in the old transcript; this call's row
+  // shows it instead, drawn from a copy kept with the register, so clearing the pane leaves the
+  // row as it was. A second call from the same session replaces those questions, never adds them
+  // again.
+  on('tool.call', { tool: RESTORE_TRACKER }, async ($, e, next) => {
+    // Only an engine-origin model call has a displayed ToolUse row. A plugin
+    // call needs an acknowledged system notice; its generated tool id is not a
+    // transcript target. Origin comes from the host, never from the arguments.
+    const mechanical = next.origin.plugin !== 'engine'
     const from = typeof e.from_session === 'string' ? e.from_session : ''
-    if (!SESSION_ID.test(from)) {
-      return { deny: `track: "${truncate(from, 60)}" is not a session id; nothing changed.` }
+    const expected = e.expected_checkpoint
+    let destination: string | undefined
+    const failed = (text: string) => expected === undefined ? { deny: text } : { result: JSON.stringify(checkpointFailure(from, text, destination)) }
+    try {
+    if (expected !== undefined) destination = await $.session.id()
+    if (e.agentId !== undefined) {
+      return failed('track: a subagent cannot set the session\'s steps.')
     }
-    const saved = (await $.store.get(`s:${from}`)) as { ledger?: { steps?: unknown } } | undefined
+    if (!SESSION_ID.test(from)) {
+      return failed(`track: "${truncate(from, 60)}" is not a session id; nothing changed.`)
+    }
+    const saved = (await $.store.get(`s:${from}`)) as { checkpoint?: Checkpoint; ledger?: { steps?: unknown; questions?: unknown } } | undefined
+    const source = savedLedger(saved)
+    let checkpoint: Checkpoint | undefined
+    if (expected !== undefined) {
+      if (source === undefined || saved?.checkpoint === undefined) return failed('source checkpoint is missing or incompatible')
+      checkpoint = await describeCheckpoint(source, from, saved.checkpoint)
+      if (!matchesCheckpoint(checkpoint, expected) || !matchesCheckpoint(checkpoint, saved.checkpoint)) return failed('source checkpoint session, revision, checksum or counts do not match')
+    }
     const rows = Array.isArray(saved?.ledger?.steps) ? (saved.ledger.steps as unknown[]) : []
-    const steps = rows
+    const steps = capSteps(rows
       .map(savedStep)
       .filter(isDefined)
-      .map(({ taskId: _old, ...s }) => (s.source === 'task' && !s.id.startsWith('restored:') ? { ...s, id: `restored:${s.id}` } : s))
-      .slice(-MAX_STEPS)
-    if (steps.length === 0) {
-      return { deny: `track: No saved steps for session ${from}; nothing changed.` }
+      .map(({ taskId: _old, ...s }) => ({ ...s, sourceId: s.sourceId ?? `${from}:${s.id}`, ...(s.source === 'task' && !s.id.startsWith('restored:') && { id: `restored:${s.id}` }) })))
+    const questionRows = Array.isArray(saved?.ledger?.questions) ? (saved.ledger.questions as unknown[]) : []
+    const questions = capRows(questionRows
+      .map(savedQuestion)
+      .filter(isDefined)
+      .filter(q => q.cleared !== true), MAX_QUESTIONS, q => q.status === 'answered')
+    if (steps.length > MAX_STEPS || questions.length > MAX_QUESTIONS) return failed('track: restore capacity exceeded; unfinished source work was kept.')
+    if (steps.length === 0 && questions.length === 0 && checkpoint === undefined) {
+      return failed(`track: No saved steps or questions for session ${from}; nothing changed.`)
     }
-    const refusal = (count: number) => `track: this session already has ${count} steps; nothing changed. Pass replace: true to replace them.`
-    const current = await read($, ledger)
-    if (current.steps.length > 0 && e.replace !== true) {
-      return { deny: refusal(current.steps.length) }
-    }
-    // Checked again inside the write: a second call in flight finds the first one's steps.
-    let had = 0
-    await update<Ledger>($, ledger, cur => {
-      had = e.replace === true ? 0 : cur.steps.length
+    const replace = e.replace === true
+    const wasRestored = (cur: Ledger) => (cur.restores ?? []).some(r => r.from === from) || cur.questions.some(q => q.restoredFrom === from) || (steps.length > 0 && steps.every(s => cur.steps.some(local => local.sourceId === s.sourceId)))
+    const refusalOf = (cur: Ledger): string | undefined =>
+      replace
+        ? undefined
+        : steps.length > 0 && cur.steps.length > 0 && !wasRestored(cur)
+          ? `track: this session already has ${cur.steps.length} steps; nothing changed. Pass replace: true to replace them.`
+          : undefined
+    const before = await read($, ledger)
+    let refusal: string | undefined
+    let restored: Question[] = []
+    // Build a proposal without changing the atom. A refused or altered notice
+    // cannot leave restored rows behind in memory or trigger a durable save.
+    const propose = (cur: Ledger): Ledger => {
+      refusal = refusalOf(cur)
+      if (refusal !== undefined) {
+        return cur
+      }
+      let nextId = cur.nextQuestionId
+      const ids = { ...(cur.restoredIds ?? {}) }
+      for (const r of cur.restores ?? []) for (const q of r.questions) ids[q.sourceId ?? `${r.from}:Q${q.id}`] ??= q.id
+      restored = questions.map(q => {
+        const sourceId = q.sourceId ?? `${from}:Q${q.id}`
+        const local = cur.questions.find(one => one.sourceId === sourceId)
+        const id = ids[sourceId] ?? nextId++
+        ids[sourceId] = id
+        return !replace && local !== undefined ? local : asRestored(q, id, from, mechanical ? undefined : e.tool_use_id)
+      })
+      const kept = cur.questions.filter(q => !restored.some(one => one.id === q.id))
+      // A validated checkpoint must retain every source value. Only local spent
+      // rows may make room; otherwise refuse before changing the ledger.
+      const combined = checkpoint === undefined
+        ? capRows([...kept, ...restored], MAX_QUESTIONS, q => q.status === 'answered')
+        : [...capRows(kept, MAX_QUESTIONS - restored.length, q => q.status === 'answered'), ...restored]
+      if (combined.length > MAX_QUESTIONS) {
+        refusal = 'track: question capacity reached; unfinished work was kept.'
+        return cur
+      }
+      const by = e.tool_use_id
 
-      return had > 0 ? cur : { ...cur, steps }
-    })
-    if (had > 0) {
-      return { deny: refusal(had) }
+      return {
+        ...cur,
+        steps: steps.length > 0 && (replace || cur.steps.length === 0) ? steps : cur.steps,
+        questions: combined,
+        nextQuestionId: Math.max(nextId, ...restored.map(q => q.id + 1)),
+        restoredIds: ids,
+        ...(by !== undefined && !(mechanical && wasRestored(cur)) && { restores: [...(cur.restores ?? []), { by, from, steps: steps.length, questions: restored }].slice(-MAX_RESTORES) }),
+      }
     }
-    await update($, scrollAt, cur => ({ ...cur, steps: null }))
+    let proposed = propose(before)
+    if (refusal !== undefined) {
+      return failed(refusal)
+    }
+    if (mechanical && restored.length > 0) {
+      // The acknowledged native UUID lives on the question itself, so a
+      // bounded archive ring cannot evict a live question's jump target.
+      const existing = !replace && restored.every(q => q.restoredBy !== undefined && SESSION_ID.test(q.restoredBy))
+      if (!existing) {
+        const text = [
+          `Track source snapshot from session ${from}: ${counted(steps.length, 'step')}, ${counted(restored.length, 'question')}`,
+          'Restore status is confirmed by the tool receipt.',
+          ...restored.flatMap(q => [
+            `Q${q.id} ${q.status}: ${q.head}`,
+            ...(q.note !== undefined ? [`Note: ${q.note}`] : []),
+            ...(q.status === 'answered' ? [q.answerText ?? NOT_SAVED] : []),
+          ]),
+        ].join('\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+        const notice = await $.session.append({ message: { type: 'system', content: [{ type: 'text', text }] } })
+        if (notice.deny !== undefined) return failed(`track: visible restore receipt refused: ${notice.deny}`)
+        if (!SESSION_ID.test(notice.uuid) || notice.message.type !== 'system' || textOf(notice.message.content) !== text) return failed('track: visible restore receipt is incompatible')
+        const ids = new Set(restored.map(q => q.id))
+        restored = proposed.questions.filter(q => ids.has(q.id)).map(q => ({ ...q, restoredBy: notice.uuid }))
+        proposed = {
+          ...proposed,
+          questions: proposed.questions.map(q => restored.find(one => one.id === q.id) ?? q),
+          restores: [...(proposed.restores ?? []).filter(r => r.by !== e.tool_use_id), { by: notice.uuid, from, steps: steps.length, questions: restored }].slice(-MAX_RESTORES),
+        }
+      }
+    }
+    await update<Ledger>($, ledger, cur => {
+      if (mechanical && !sameValue(cur, before)) {
+        refusal = 'track: ledger changed while the restore receipt was pending; nothing was restored. Retry against the current ledger.'
+        return cur
+      }
+      return mechanical ? proposed : propose(cur)
+    })
+    if (refusal !== undefined) return failed(refusal)
+    await update($, scrollAt, cur => ({ steps: steps.length > 0 ? null : cur.steps, questions: restored.length > 0 ? null : cur.questions }))
     const shown = steps.filter(s => s.cleared !== true)
     const at = shown.findIndex(s => s.status === 'in_progress')
     const where = at < 0 ? 'None in progress.' : `In progress: S${at + 1} ${shown[at]?.subject}.`
+    // The model reads the ids and where each question stands; the answers are for the person.
+    const listed = restored.map(q => `\nQ${q.id} ${q.status} ${q.head}`).join('')
 
-    return { result: `Restored ${steps.length} steps from session ${from}. ${where}` }
+    return { result: checkpoint === undefined ? `Restored ${counted(steps.length, 'step')} and ${counted(restored.length, 'question')} from session ${from}. ${where}${listed}` : JSON.stringify({ ...checkpoint, destination_session: destination, applied_checksum: await appliedChecksum(source!, await read($, ledger), from, destination!) }) }
+    } catch (error) {
+      return failed(`track: restoration failed — ${reason(error)}`)
+    }
   })
 
   on('tool.call', { tool: MARK_STEP }, async ($, e) => {
@@ -1338,13 +1879,15 @@ export const register: Register = on => {
       return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     }
     const now = await $.clock.now()
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? withStatus(s, status, now) : s)) }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => (s.id === id ? { ...withStatus(s, status, now), ...(typeof e.note === 'string' && { note: truncate(e.note, HEAD_CHARS) }) } : s)) }))
 
     return { result: `Step ${id} "${l.steps.find(s => s.id === id)?.subject}" marked ${status}.` }
   })
 
   on('command.run', { command: 'track' }, async ($, e) => {
     const arg = e.args.trim()
+    const migration = /^(export|import) (.+)$/.exec(arg)
+    if (migration !== null) return { text: await migrateStore($, migration[1] as 'export' | 'import', migration[2]!.trim()) }
     if (arg === 'status') {
       const l = await read($, ledger)
       const open = l.questions.filter(q => q.status === 'open').map(q => `Q${q.id} ${q.head}`)
@@ -1360,7 +1903,7 @@ export const register: Register = on => {
       return {}
     }
     await update($, pane, cur => ({ ...cur, hidden: false, closedByPerson: false }))
-    await $.store.set('closedByPerson', false)
+    await savePanePreference($, false)
     // openPane says so in a toast when the pane cannot be placed.
     await openPane($)
 
@@ -1374,7 +1917,7 @@ export const register: Register = on => {
       await update($, pane, cur => ({ ...cur, isOpen: false, closedByPerson: cur.closedByPerson || byPerson }))
       if (byPerson) {
         // The persistent off, as the diff panel's: later sessions do not auto-open it.
-        await $.store.set('closedByPerson', true)
+        await savePanePreference($, true)
       }
     }
 
@@ -1426,6 +1969,9 @@ export const register: Register = on => {
   // Save the ledger at the end of the session; /clear starts a fresh one.
   on('session.end', async ($, e, next) => {
     await saveLedger($)
+    if (writer.lease !== null) await closeLock(writer.lease).catch(() => undefined)
+    writer.lease = null
+    writer.session = ''
     if (e.reason === 'clear') {
       await update<Ledger>($, ledger, () => EMPTY_LEDGER)
       await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
@@ -1435,14 +1981,66 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's bookkeeping calls stay quiet in the transcript: track_question, track_steps and
-  // restore_steps draw nothing, mark_answered draws one dim line, which is also where "jump to
-  // answer" lands.
+  // The model's bookkeeping calls stay quiet in the transcript: track_question and track_steps
+  // draw nothing, mark_answered draws one dim line, which is also where "jump to answer" lands.
+  // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS || e.props.tool === RESTORE_STEPS) {
+    if (e.props.tool === TRACK_QUESTION) {
+      const l = await read($, ledger)
+      const q = l.questions.find(q => q.trackedBy === e.props.tool_use_id && q.askedRequestId === e.props.tool_use_id)
+      if (q !== undefined) {
+        const { Text } = $.ui.resolve(e)
+        const level = await read($, memberOf(flash, e))
+        return <Text dimColor backgroundColor={shade(level)}>{`Q${q.id} ${q.head}`}</Text>
+      }
+    }
+    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
+    }
+    if (e.props.tool === RESTORE_TRACKER) {
+      const { Box, Text } = $.ui.resolve(e)
+      // Drawn from the copy the call kept, never from the pane's questions; a refused call kept
+      // none and draws nothing.
+      const restore = (await read($, ledger)).restores?.find(r => r.by === e.props.tool_use_id)
+      if (restore === undefined) {
+        return <Box />
+      }
+      // [ Q ] and [ A ] of a restored question jump here and light the row, as they light an answer.
+      const level = await read($, memberOf(flash, e))
+      const block = (
+        <Box flexDirection="column">
+          <Text bold>{`Restored from the previous session: ${counted(restore.steps, 'step')}, ${counted(restore.questions.length, 'question')}`}</Text>
+          {restore.questions.map(q => {
+            // Under an answered question its answer, under a deferred one what it waits for.
+            const below = q.status === 'answered' ? (q.answerText ?? NOT_SAVED) : q.status === 'deferred' ? q.note : undefined
+            const color = q.status === 'answered' ? 'success' : undefined
+
+            return (
+              <Box key={`restored-${q.id}`} flexDirection="column" marginLeft={ROW_INDENT}>
+                <Box flexDirection="row" columnGap={1}>
+                  <Box flexShrink={1}>
+                    <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
+                      {`Q${q.id} ${q.head}`}
+                    </Text>
+                  </Box>
+                  <Text dimColor>{q.status}</Text>
+                </Box>
+                {below !== undefined && (
+                  <Box marginLeft={ROW_INDENT}>
+                    <Text dimColor={below === NOT_SAVED} wrap="wrap">
+                      {below}
+                    </Text>
+                  </Box>
+                )}
+              </Box>
+            )
+          })}
+        </Box>
+      )
+
+      return level > 0 ? <Box backgroundColor={shade(level)}>{block}</Box> : block
     }
     if (e.props.tool === MARK_STEP) {
       const { Text } = $.ui.resolve(e)
@@ -1485,7 +2083,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_STEPS].includes(e.props.tool)) {
+    if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER].includes(e.props.tool)) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
@@ -1532,6 +2130,7 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const now = await read($, activity)
+    const isUnsaved = (await read($, durability)).isUnsaved
     const phase = await read($, pulse)
     if (pulsing.timer === undefined && isPulsing(l, now)) {
       startPulse($)
@@ -1559,12 +2158,15 @@ export const register: Register = on => {
     const qDone = questions.filter(q => q.status === 'answered').length
     const steps = l.steps.filter(s => s.cleared !== true)
     const sDone = steps.filter(s => s.status === 'completed').length
-    const clearCompleted = () =>
-      void update($, ledger, cur => ({
+    const clearCompleted = async () => {
+      await update($, ledger, cur => ({
         ...cur,
         questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
+      await publishGate($)
+      await saveLedger($)
+    }
     // The steps' two clear controls, above the steps and again below them. Both sit outside the
     // scrolling region, so a scroll never moves them. The copies share hotkeys: the engine lets the
     // later one win, and both do the same thing. Each is an item of its own, so a narrow pane wraps
@@ -1583,7 +2185,7 @@ export const register: Register = on => {
     ]
     const clearWidths = [l.steps.length > 0 ? buttonWidth('s', 'clear all') : 0, buttonWidth('c', 'clear completed')]
 
-    const state = sessionState(l, now)
+    const state = isUnsaved ? 'unsaved' : sessionState(l, now)
     const shown = BANNERS[state]
     const qRing = ring(qDone, questions.length)
     const sRing = ring(sDone, steps.length)
@@ -1691,8 +2293,17 @@ export const register: Register = on => {
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined
           // A link to another prompt's row (stored by an older version) offers no jump.
-          const askedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
+          // A restored question's rows are in the old transcript, so [ Q ] and, once it was
+          // answered or deferred there, [ A ] go to the restore row that shows it.
+          const linkedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
+          const askedAt = linkedAt ?? q.restoredBy
           const answerAt = q.answerRequestId
+          const answerJump: { ids: string[]; block: 'start' | 'end' } | undefined =
+            answerAt !== undefined
+              ? { ids: q.answerKey !== undefined ? [answerAt, q.answerKey] : [answerAt], block: 'end' }
+              : q.restoredBy !== undefined && q.status !== 'open'
+                ? { ids: [q.restoredBy], block: 'start' }
+                : undefined
 
           // The dot is a column of its own and the question a wrapping column beside it, so a
           // long question is shown whole and its next lines align with the text, not the dot.
@@ -1701,24 +2312,23 @@ export const register: Register = on => {
               <Text color={color} dimColor={q.status === 'deferred'}>
                 {statusGlyph(q)}
               </Text>
-              <Box flexShrink={1}>
+              <Box key={`q-markers-${q.id}`} width={13} flexShrink={0} flexDirection="row" columnGap={1}>
+                <Box key={`q-question-slot-${q.id}`} width={6} flexShrink={0}>
+                  {askedAt === undefined
+                    ? <Text dimColor>[ Q ]</Text>
+                    : <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />}
+                </Box>
+                <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
+                  {answerJump === undefined
+                    ? <Text dimColor>[ A ]</Text>
+                    : <Button key={`a-${q.id}`} variant="primary" hotkey={answered ? hotkey : undefined} label="A" onPress={() => jump($, answerJump.ids, answerJump.block)} />}
+                </Box>
+              </Box>
+              <Box key={`q-text-${q.id}`} flexShrink={1} width={qWidth}>
                 <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
                   {fitLines(`Q${q.id} ${q.head}`, qWidth, qRows)}
                 </Text>
               </Box>
-              {askedAt !== undefined && (
-                <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />
-              )}
-              {answerAt !== undefined && (
-                <Button
-                  key={`a-${q.id}`}
-                  variant="primary"
-                  hotkey={answered ? hotkey : undefined}
-                  label="A"
-                  onPress={() => jump($, q.answerKey !== undefined ? [answerAt, q.answerKey] : [answerAt], 'end')}
-                />
-              )}
-              {q.status === 'deferred' && <Text dimColor>(deferred)</Text>}
               <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
             </Box>
           )

@@ -29,18 +29,19 @@ test('two track_steps calls in flight at once insert steps with distinct ids', a
   expect(new Set(ids).size).toBe(3)
 })
 
-test('of two restore_steps calls in flight at once, the second refuses to overwrite the first', async ($, on) => {
+test('two restore_tracker calls in flight restore the same steps without duplicates', async ($, on) => {
   const ledger = atomStore<Held>(on, 'ledger', EMPTY as Held, { holdReads: 2 })
   atomStore(on, 'scroll', { questions: null, steps: null })
   pluginStore(on, { [`s:${OLD_SESSION}`]: { v: 1, savedAt: 1, ledger: { ...EMPTY, steps: [plan(1), plan(2)] } } })
 
   const results = await Promise.all([
-    call($, { tool: 'mcp__track__restore_steps', from_session: OLD_SESSION }),
-    call($, { tool: 'mcp__track__restore_steps', from_session: OLD_SESSION }),
+    call($, { tool: 'mcp__track__restore_tracker', from_session: OLD_SESSION }),
+    call($, { tool: 'mcp__track__restore_tracker', from_session: OLD_SESSION }),
   ])
 
-  expect(results.filter(r => JSON.stringify(r).includes('already has'))).toHaveLength(1)
+  expect(results.every(r => r.deny === undefined)).toBe(true)
   expect(ledger.value.steps.map(s => s.id)).toEqual(['plan:1', 'plan:2'])
+  expect(new Set(ledger.value.steps.map(s => s.id)).size).toBe(2)
 })
 
 test('a TaskUpdate that did not succeed leaves its step as it was', async ($, on) => {
@@ -65,7 +66,7 @@ test('restored steps keep no Task link, so a new Task with the same id leaves th
   on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: '3', subject: 'new task' } } }))
   on('tool.call', { tool: 'TaskUpdate' }, (_, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
 
-  await call($, { tool: 'mcp__track__restore_steps', from_session: OLD_SESSION })
+  await call($, { tool: 'mcp__track__restore_tracker', from_session: OLD_SESSION })
   await call($, { tool: 'TaskCreate', subject: 'new task', description: 'x' })
   await call($, { tool: 'TaskUpdate', taskId: '3', status: 'completed' })
   await call($, { tool: 'TaskUpdate', taskId: '4', status: 'completed' })

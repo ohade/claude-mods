@@ -29,14 +29,16 @@ Check it with `claude plugin validate image-thumbs`, and type-check it with `tsc
 
 ## track
 
-A pane beside the transcript, titled Session Tracker, that keeps the session's register: the questions you asked and
-where each was answered, and the steps the model set itself, each with a completion ring.
+A pane beside the transcript, titled Session Tracker, that keeps substantive questions, their answers,
+and meaningful work. Claude decides what to register from any sender, including later content in a
+running turn. Doorbells and informational notifications alone need no row. Track has no transport-specific workflow.
 
 - **Questions.** The model sends each question to the pane with `track_question` and closes it
   with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
-  Both calls stay quiet in the transcript: the first draws nothing, the second one dim
+  A question with a verified user source links to that source. Otherwise its tracking call is the
+  visible source. The answer update draws one dim
   `✓ Q<n> answered` line. An answered question turns green.
-- **Jump.** `[ Q ]` scrolls the transcript to your prompt, `[ A ]` to the answer. The row you land
+- **Jump.** The fixed `[ Q ]` and `[ A ]` columns scroll to the verified source and answer. The row you land
   on lights up and fades out over about two seconds: your prompt, or the answer's last text row and
   the `✓ Q<n> answered` line under it. The digits 1–9 press the jumps while the pane has focus
   (ctrl+x tab).
@@ -44,15 +46,16 @@ where each was answered, and the steps the model set itself, each with a complet
   fixed regions, about a third and two thirds; each scrolls on its own under the wheel, and its
   header counts the rows hidden above and below (`↑2 ↓5`).
 - **Banner.** A full-width colored line at the bottom says where the session stands: Working, Waiting on agents
-  (an Agent call, or background agents and shell tasks still running), Waiting on you (a question
-  dialog, or open questions and unfinished steps after the turn), or Safe to close.
+  (an Agent call or background agents), Waiting on tasks (background shell tasks), Waiting on you
+  (a question dialog or an explicit waiting step), Paused, Activity unknown, Unsaved, or Idle.
+  Use `waiting` only when the user must act; peer waits use `paused` or `pending` with an optional note.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and explicit
   `track_steps` calls. Successful plan approval adds one reminder to reuse open steps and register
   missing work. It leaves the entire register unchanged. A Task named like a plan step links to it.
   The step in progress shows who is on it: a spinner breathing in grey while the main session
   works, an amber hourglass while it waits on agents, a still purple `◆` while it waits on you.
-- **Rings.** `◑ 4 of 8 · 50%` per section, counted over everything ever: **Clear completed** (`c`)
-  hides finished rows and keeps them counted.
+- **Rings.** `◑ 4 of 8 · 50%` per section, counted over visible rows. **Clear completed** (`c`)
+  hides finished rows and removes them from those counts.
 - **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions
   are withdrawn, so the model is told not to answer them. The Steps controls (`s: clear all`,
   `c: clear completed`) appear twice, in the Steps header and in the bottom bar, and neither
@@ -64,21 +67,32 @@ where each was answered, and the steps the model set itself, each with a complet
   bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
   instruction beside it; built-in commands do not.
 - **Handoffs.** A handoff that clears the session and seeds a fresh one leaves the pane empty.
-  `restore_steps({ from_session })` copies the previous session's steps back, in order, with
-  their ids and statuses; its questions stay behind. Task ids start again in each session, so a
-  restored Task step's id gains `restored:` and keeps no link to the old Task. It refuses to
-  overwrite steps the session already has unless `replace: true` is passed.
+  `restore_tracker({ from_session })` copies the previous session's steps back, in order, with
+  their ids and statuses, and its questions not cleared, with new ids after this session's own.
+  Task ids start again in each session, so a restored Task step's id gains `restored:` and keeps
+  no link to the old Task. When the model marks a question answered, the mod keeps the answer's
+  text (up to 1,000 characters), and the restore call's row in the transcript shows each restored
+  question with its answer, its deferral note, or "(answer text was not saved)" for one answered
+  before answers were kept. `[ Q ]` and `[ A ]` of a restored question jump to that row. The call
+  refuses to overwrite unrelated steps unless `replace: true` is passed. Repeated restoration
+  reuses stable source identities and keeps local progress. A model call supplies its displayed
+  restore row; a programmatic call first appends and validates a visible system snapshot. A refused
+  or altered snapshot leaves the ledger unchanged. Repeat calls reuse its native message UUID.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
-  turn once if a question the model tracked in that turn is neither answered nor deferred. It
-  runs after your own Stop hooks and never adds a second block.
-  An organization's managed plugin may bypass a user plugin's Stop hook and its system-prompt
-  section; the questions are still tracked, through the tools' own descriptions and the reminder.
+  turn once if a question the model tracked in that turn is neither answered nor deferred.
+  Track publishes its own small gate snapshot for its ordinary command Stop hook; it does not use
+  handoff's relay. Existing Stop blocks are preserved. A managed policy can deny or bypass plugin
+  capabilities; such a denial stays unresolved and does not count as equivalent Stop behavior.
 - **Rewind and resume.** A `/rewind` drops the questions asked in the rewound turns. Each finished
-  turn saves the register, so `/resume` brings it back.
+  turn saves the register, and native session startup loads it for `/resume`. Rewind observations
+  are coalesced and fenced to their session; compaction and capped transcript reads do not imply
+  that older calls were rewound. A refused rewind save holds the prompt until the save can succeed.
   Answer jumps use event order within the question's actual tracking turn. Text before the tracking
   call cannot become its answer, even when wall-clock timestamps are equal. A later turn may answer
-  an older question. Step updates return the affected step's id and title.
+  an older question. A mark before text binds the next response only when one question is pending.
+  An explicit `answer_request_id` must match the latest host-observed response; unknown sources
+  are refused. An already captured answer stays unchanged. Step updates name the affected step.
 
 It opens by itself by the built-in diff panel's rule, less the git condition: in the fullscreen
 layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). A reload of
@@ -87,7 +101,9 @@ at once while a turn runs and adds nothing to the session; `/track status` print
 questions. To keep the diff
 panel out of the slot, type `/diff` once.
 
-Requirements: Claude Code with function-hook plugins; tested with Claude Code 2.1.292.
+Requirements: Claude Code with function-hook plugins, macOS/POSIX file locks, and Python 3.
+The first compatibility target is the generated 2.1.292 API. Engine and fresh-process checks use
+2.1.293. A 2.1.292 runtime run and a seated managed-policy Stop run are not available on this Mac.
 
 Load it from the clone folder (`cd claude-mods`), wherever it sits, with one of:
 
@@ -103,20 +119,51 @@ Check it with `claude plugin validate track`, test it with `claude plugin test t
 type-check it with `tsc -p track` once Claude Code has loaded it: `track/tsconfig.json` extends
 the API types that loading writes into `track/.claude-plugin/types/`.
 
-What it saves: at the end of each turn and when the session ends, the register is written to the
-mod's store, a JSON file of its own under Claude Code's configuration directory. For each session
-it holds:
+What it saves: acknowledged tracking mutations, captured answers, explicit UI actions, completed
+turns, and session end write through the existing `$.store` API and verify the result. Save failures
+remain visibly **Unsaved**. Rendering performs no persistence. For each session the store holds:
 
 - the first line of each prompt you type, without image tags, cut to 200 characters, with its
   time; prompts that start with `/` are left out; the last 200 prompts;
-- each tracked question as the model summed it up, cut to 200 characters, with its status and the
-  model's optional note (cut to 200 characters); the last 200;
+- each tracked question as the model summed it up, cut to 200 Unicode code points, with its status,
+  optional note, stable source identity, and answer text (up to 1,000 code points); up to 200;
 - the title and status of each step, cut to 200 characters; the last 300.
 
-The store keeps at most the 20 most recent sessions, and at most 3 MiB of them, deleting the
-oldest first. Beside them it holds an index of each session's save time and size, and one flag:
-set when you close the pane by hand, cleared when `/track` shows it again. The mod makes no network calls of its own; what it tells the model, such as tool
+The store budgets serialized UTF-8 conservatively below its 4 MiB limit. It prefers 20 sessions
+and a 3 MiB budget, pruning cleared/completed history first. Unfinished work is never silently
+discarded. When safe pruning cannot make room, the save returns a visible capacity failure.
+One process owns a session writer lease, and a shared lock serializes store writes. Stale revisions
+cannot overwrite a newer durable ledger. Beside the buckets it holds an index and one flag:
+set when you close the pane by hand, cleared when `/track` shows it again. Explicit pane choices
+use the same owned, verified save queue. A refused preference remains unsaved in reload-persistent
+state and is retried by the next acknowledged save. The mod makes no network calls of its own; what it tells the model, such as tool
 results and the open-question reminder, goes with the rest of the conversation.
+
+Use one canonical loading path on a machine: the plugin's loading identity selects its store.
+For a path change, retain both legacy stores and export each with `/track export <absolute-path>`.
+Load the destination alone and use `/track import <absolute-path>`. Import checks the bundle
+checksum, rejects conflicting session records before writing, and reads back every copied record.
+Export and import join the save queue, require writer ownership, and reconcile pending save
+recovery under the shared store lock before reading records. Repeated imports are safe.
+Do not retire a legacy store until its exact records have been verified.
+
+### Local checkpoint/restore contract v1
+
+`mcp__track__checkpoint({ expected_session })` saves and reads back the current ledger. It returns
+JSON **as tool-result text**, with `v`, `ok`, `source_session`, `revision`, `checksum`, and
+`counts: { questions, answers, steps }`; failures include `reason`.
+
+`mcp__track__restore_tracker({ from_session, replace?, expected_checkpoint? })` validates an
+expected checkpoint before restoring. Its receipt also names `destination_session` and
+`applied_checksum`, calculated from the actual destination questions, answer text, notes, and
+steps in source order. A successful attempted call alone does not prove complete restoration.
+Source links and display ids are not authority. Track works independently of handoff.
+
+Run `claude plugin test track` for engine **FIXTURE** checks and, from the Track root,
+`python3 -m unittest discover -s tests/helpers -p 'test_*.py'` for real helper locks and Stop parsing.
+Fresh-process acceptance remains separate. The test-only `tests/fixtures/performance-probe` plugin
+offers `/trackbench <absolute-private-output-path>` for 500 runtime-selected native tool updates;
+its receipts do not measure physical terminal paint. Use matching pane geometry for render comparisons.
 
 Remove it: delete the symlink (`rm ~/.claude/skills/track`), or take the folder out of
 `CLAUDE_CODE_PLUGIN_DIRS`. The saved register stays behind in Claude Code's plugin store.

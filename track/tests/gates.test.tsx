@@ -78,12 +78,12 @@ test('a tracked question takes the next id, opens, and the result names it and m
   expect(text).toContain('mcp__track__mark_answered')
 })
 
-test('a tracked question links to the last prompt and to the call that tracked it', async ($, on) => {
+test('a tracked question keeps its explicitly verified prompt source and tracking call', async ($, on) => {
   const ledger = store<LedgerRow>(on, 'ledger', ledgerOf([]))
   store(on, 'turn', { currentId: 'turn-1', gatedTurnId: null })
   store(on, 'scroll', { questions: null, steps: null })
 
-  await track($, { summary: 'which row is this?' })
+  await track($, { summary: 'which row is this?', source_request_id: 'request-1' })
 
   expect(ledger.value.questions.at(-1)).toMatchObject({ rowKey: 'row-1', askedRequestId: 'request-1', trackedBy: 'toolu_a' })
 })

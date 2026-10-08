@@ -1,0 +1,5 @@
+{
+  "name": "track-performance-probe",
+  "version": "0.1.0",
+  "description": "Disposable native probe for the Track reliability performance acceptance gate"
+}

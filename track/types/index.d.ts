@@ -21,6 +21,11 @@ export type Question = {
   turnId: string | null
   status: 'open' | 'answered' | 'deferred'
   answerRequestId?: string
+  // The status call is kept separately when a later response is the visible answer.
+  answeredBy?: string
+  // A mark before the real text can bind only a later response in this same turn.
+  answerTurnId?: string
+  answerOrder?: number
   // The answer's last text row, by its row key (the row uuid's first four groups): lit with the
   // `mark_answered` row by a jump to the answer.
   answerKey?: string
@@ -32,6 +37,24 @@ export type Question = {
   // Monotonic order of the tracking event, compared with text in the same turn.
   trackedOrder?: number
   answeredAt?: number
+  // The answer's words, from that last text row, cut to ANSWER_CHARS: a later session shows them
+  // in its restore row, since the row itself is in this session's transcript.
+  answerText?: string
+  // Brought back after a handoff: the session it came from, and the restore_tracker call whose
+  // row shows it here (that row is where [ Q ] and [ A ] jump).
+  restoredFrom?: string
+  restoredBy?: string
+  // Stable identity across restores and handoffs, independent of the display id.
+  sourceId?: string
+}
+
+// What one restore_tracker call brought back, fixed at that call: its transcript row is drawn from
+// this, so clearing the pane later leaves the row as it was.
+export type Restore = {
+  by: string
+  from: string
+  steps: number
+  questions: Question[]
 }
 
 // A step the model set itself: a Task, a todo line, or an explicit track_steps row.
@@ -43,6 +66,8 @@ export type Step = {
   status: 'pending' | 'in_progress' | 'completed' | 'paused' | 'waiting'
   taskId?: string
   createdRequestId?: string
+  sourceId?: string
+  note?: string
   cleared?: true
   // The step's wall clock: when it first went in progress, and when it was done.
   startedAt?: number
@@ -61,15 +86,18 @@ export type Ledger = {
   // rewind check, because compaction removes their tool calls too. Saved with the register, so a
   // resumed session keeps it.
   compactedAt?: number
+  // The newest restore_tracker calls, by tool_use_id, for drawing their rows.
+  restores?: Restore[]
+  restoredIds?: Record<string, number>
 }
 
-// `lastText`: the main loop's last text row and the turn it was written in. `composeSeen`: the
+// `lastText`: the main loop's last text row, its text, and the turn it was written in. `composeSeen`: the
 // standing rule reached the model this session (prompt.compose ran), so prompts need no steps line.
 export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
   eventOrder?: number
-  lastText?: { row: string; turnId: string | null; order?: number }
+  lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string }
   composeSeen?: true
 }
 
@@ -103,6 +131,7 @@ declare module 'claude-code' {
       scroll: ScrollAt
       // The time the step clocks were last moved on, by a timer while a step is under way.
       tick: number
+      durability: { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean }
     }
   }
 }

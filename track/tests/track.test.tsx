@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { pane } from './kit'
+import { pane, SESSION } from './kit'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -33,6 +33,7 @@ const AFTER_REWIND = [
 ]
 
 test('a prompt after /rewind drops questions tracked in rewound turns and reopens rewound answers', async ($, on) => {
+  on('session.id', () => ({ value: SESSION }))
   const writes: Array<{ questions: QuestionRow[] }> = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: LEDGER, version: 1 } }))
   on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
@@ -55,6 +56,7 @@ test('a prompt after /rewind drops questions tracked in rewound turns and reopen
 })
 
 test('nothing is dropped when every tracked call is still in the transcript', async ($, on) => {
+  on('session.id', () => ({ value: SESSION }))
   const writes: unknown[] = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: LEDGER, version: 1 } }))
   on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
@@ -128,16 +130,17 @@ test('the track_question call draws no row', async ($, on) => {
   expect(await ui.findAll({ type: 'Text' })).toHaveLength(0)
 })
 
-// After a handoff, the restore_steps call is bookkeeping too: neither its row nor its result shows.
-test('the restore_steps call draws no row and no result', async ($, on) => {
+// A restore_tracker row this session holds no restore for (a refused call) draws nothing, and its
+// result never shows: the model's text is not for the person.
+test('a restore_tracker row with nothing restored draws no row, and no result', async ($, on) => {
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
   on('ui.render', { component: 'ToolResult' }, () => ({ type: 'Text', props: {}, children: ['engine result'] }))
 
-  const use = await $.ui.mount(toolRow('mcp__track__restore_steps', { from_session: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))
+  const use = await $.ui.mount(toolRow('mcp__track__restore_tracker', { from_session: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }))
   const result = await $.ui.mount({
-    ...toolRow('mcp__track__restore_steps', {}),
+    ...toolRow('mcp__track__restore_tracker', {}),
     component: 'ToolResult' as const,
-    props: { tool_use_id: 'toolu_row', tool: 'mcp__track__restore_steps', output: 'Restored 41 steps from session aaaaaaaa.', isErrored: false },
+    props: { tool_use_id: 'toolu_row', tool: 'mcp__track__restore_tracker', output: 'Restored 41 steps from session aaaaaaaa.', isErrored: false },
   } as never)
 
   expect(await use.findAll({ type: 'Text' })).toHaveLength(0)
@@ -179,6 +182,7 @@ test('a short inline pane shows the newest question and counts the ones above it
 // prompt. No event marks a rewind; the prompt hint redraws when the rewind puts the old
 // prompt back in the box, so that redraw schedules the same check.
 test('a prompt-hint redraw after /rewind drops the rewound question without a new prompt', async ($, on) => {
+  on('session.id', () => ({ value: SESSION }))
   const clock = mock.clock(on)
   const writes: Array<{ questions: QuestionRow[] }> = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: LEDGER, version: 1 } }))
@@ -418,10 +422,14 @@ test('a resumed session gets its saved questions back', async ($, on) => {
 })
 
 test('a finished turn saves the ledger under the session id', async ($, on) => {
+  on('process.spawn', async function* (_, e) {
+    yield { stream: 'stdout' as const, text: JSON.stringify({ ok: true, mode: e.argv[2], token: e.argv[4] }) }
+    return { value: { code: 0, signal: null } }
+  })
   const sets: Array<{ key: string; value: unknown }> = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))
   on('session.id', () => ({ value: 'S1' }))
-  on('store.get', () => ({ value: undefined }))
+  on('store.get', (_, e) => ({ value: sets.findLast(s => s.key === e.key)?.value as never }))
   on('store.keys', () => ({ value: [] }))
   on('store.set', (_, e) => {
     sets.push(e)
@@ -566,10 +574,9 @@ test('step rows are annotated like question rows', async ($, on) => {
   // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(texts.filter(t => /^S\d /.test(t))).toEqual(['S1 Write', 'S2 Print', 'S3 Count'])
-  // The step in progress shows who is on it. With nothing
-  // running the session waits on the person, so its mark is ◆ (a grey spinner while the main
-  // session works, an hourglass while agents do: see the pulse tests).
-  expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◆', '○'])
+  // Without current runtime activity, an in-progress row holds a neutral glyph.
+  // It does not imply that the person must act.
+  expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◐', '○'])
 })
 
 // Rows sit one step in under their header, in both sections alike.
@@ -946,8 +953,10 @@ test('a plugin\'s prompt (review comments) carries the steps instruction, naming
   expect(context).toContain('after')
 })
 
-test('a task notification carries no steps instruction', async ($, on) => {
-  expect(await submitted($, on, '<task-notification>done</task-notification>', { kind: 'task-notification' })).not.toContain('track_steps')
+test('a model-bound task notification carries the generic rule but informational content alone needs no row', async ($, on) => {
+  const context = await submitted($, on, '<task-notification>done</task-notification>', { kind: 'task-notification' })
+  expect(context).toContain('regardless of sender')
+  expect(context).toContain('informational notifications alone need no row')
 })
 
 test('no steps instruction rides on the prompt once the system rule reached the model', async ($, on) => {
@@ -1050,8 +1059,8 @@ test('the banner says Waiting on you while a question to the user is open', asyn
   expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true, askCalls: ['toolu_ask'] })).toContain('Waiting on you')
 })
 
-test('the banner says Waiting on you after the turn while a question or step is open', async ($, on) => {
-  expect(await banner($, on, OPEN_ONE, IDLE)).toContain('Waiting on you')
+test('the banner says Paused after the turn while an unanswered question remains', async ($, on) => {
+  expect(await banner($, on, OPEN_ONE, IDLE)).toContain('Paused')
 })
 
 test('the banner says Safe to close when the turn ended and nothing is open or running', async ($, on) => {
@@ -1192,9 +1201,9 @@ test('while the session waits on agents, the step in progress pulses amber under
   expect(r - b).toBeGreaterThan(60)
 })
 
-test('while the session waits on the person, the step in progress holds still in purple', async ($, on) => {
+test('with unknown activity, the step in progress holds a neutral glyph', async ($, on) => {
   const row = await stepRow($, on, IDLE, 3)
-  expect(row).toMatchObject({ glyph: '◆', glyphColor: 'permission' })
+  expect(row).toMatchObject({ glyph: '◐', glyphColor: undefined })
 })
 
 test('the pulse ticks only while a step is in progress and the session or its agents work', async ($, on) => {
@@ -1386,7 +1395,7 @@ test('the banner words carry no glyph before them', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts.at(-1)?.trim()).toBe('Safe to close')
+  expect(texts.at(-1)?.trim()).toBe('Idle · Safe to close')
 })
 
 // A step can be paused (started, then parked) or waiting on the person (it
@@ -1523,8 +1532,8 @@ test('clear completed above the steps hides the done steps and keeps the rest', 
 })
 
 // The context-handoff session, 2026-10-07: after a handoff the fresh session's pane is empty.
-// restore_steps copies the old session's steps from the store with one call, keyed by the brief's
-// session id; the questions stay behind.
+// restore_tracker copies the old session's steps from the store with one call, keyed by the brief's
+// session id; its questions come back too (handoff-qa.test.tsx).
 const OLD = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 const SAVED_STEPS = [
   { id: 'plan:1', source: 'plan', subject: 'Fix the pane', status: 'completed' },
@@ -1547,9 +1556,9 @@ const restoreCase = (on: Parameters<TestBody>[1], current: unknown, saved: unkno
 }
 
 const restore = ($: Parameters<TestBody>[0], input: Record<string, unknown>) =>
-  $.tool.call({ tool: 'mcp__track__restore_steps', ...input } as never) as Promise<{ result?: unknown; deny?: string }>
+  $.tool.call({ tool: 'mcp__track__restore_tracker', ...input } as never) as Promise<{ result?: unknown; deny?: string }>
 
-test('restore_steps copies the old steps in order with their ids and statuses, and no questions', async ($, on) => {
+test('restore_tracker copies the old steps in order with their ids and statuses, and the open question', async ($, on) => {
   const writes = restoreCase(on, withSteps([]), SAVED)
 
   const ran = await restore($, { from_session: OLD })
@@ -1559,12 +1568,12 @@ test('restore_steps copies the old steps in order with their ids and statuses, a
     'plan:3|Deploy|in_progress',
     'plan:2|Clean up|pending',
   ])
-  expect(writes.at(-1)?.questions).toHaveLength(0)
+  expect(writes.at(-1)?.questions).toHaveLength(1)
   expect(String(ran.result)).toContain('Restored 3 steps')
   expect(String(ran.result)).toContain('In progress: S2 Deploy')
 })
 
-test('restore_steps refuses to replace steps the session already has, unless replace is true', async ($, on) => {
+test('restore_tracker refuses to replace steps the session already has, unless replace is true', async ($, on) => {
   const writes = restoreCase(on, withSteps([{ id: 'plan:1', source: 'plan', subject: 'Live step', status: 'in_progress' }]), SAVED)
 
   const refused = await restore($, { from_session: OLD })
@@ -1575,7 +1584,7 @@ test('restore_steps refuses to replace steps the session already has, unless rep
   expect(writes.at(-1)?.steps.map(s => s.subject)).toEqual(['Fix the pane', 'Deploy', 'Clean up'])
 })
 
-test('restore_steps changes nothing for a session id with nothing saved, or one that is not an id', async ($, on) => {
+test('restore_tracker changes nothing for a session id with nothing saved, or one that is not an id', async ($, on) => {
   const writes = restoreCase(on, withSteps([]), SAVED)
 
   const missing = await restore($, { from_session: '00000000-0000-4000-8000-000000000000' })
@@ -1586,7 +1595,7 @@ test('restore_steps changes nothing for a session id with nothing saved, or one 
   expect(writes).toHaveLength(0)
 })
 
-test('restore_steps keeps only well-formed steps, and a subagent cannot call it', async ($, on) => {
+test('restore_tracker keeps only well-formed steps, and a subagent cannot call it', async ($, on) => {
   const odd = { ...SAVED, ledger: { ...SAVED.ledger, steps: [...SAVED_STEPS, { id: 'plan:9', subject: 'Bad status', status: 'done' }, 'not a step', null] } }
   const writes = restoreCase(on, withSteps([]), odd)
 
