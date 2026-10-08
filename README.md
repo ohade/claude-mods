@@ -78,6 +78,11 @@ running turn. Doorbells and informational notifications alone need no row. Track
   when the main session resumes that step. This is explicit ownership, not a peer-liveness probe.
   Completed steps clear it. Concurrent main work stays grey on its own row.
   Explicit ownership leaves agent counts unknown; only native-only activity supplies a count.
+  User waiting does not hide concurrent work: the banner also names active agents, tasks or
+  main work, and their pulse continues. A 17-column pane uses `You · agents work` when needed.
+  Paused, pending and user-waiting rows retain ownership metadata but do not count as active
+  delegated work or show a running hourglass. An open question dialog alone does not imply
+  that the main session is working. Actual native background activity still shows and pulses.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and explicit
   `track_steps` calls. Successful plan approval adds one reminder to reuse open steps and register
   missing work. It leaves the entire register unchanged. A Task named like a plan step links to it.

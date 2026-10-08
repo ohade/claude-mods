@@ -364,16 +364,19 @@ const isDefined = <T,>(value: T | undefined): value is T => value !== undefined
 const textField = <K extends string>(key: K, value: unknown): Partial<Record<K, string>> =>
   typeof value === 'string' ? ({ [key]: value } as Record<K, string>) : {}
 
-// Only an explicit waiting step or question dialog asks the person to act.
+// Ownership is retained when parked; only an uncleared in-progress row signals active work.
+const isDelegatedWork = (step: Step): boolean => step.cleared !== true && step.delegated === true && step.status === 'in_progress'
+
+// Work activity is independent of whether another item needs the person's action.
 // Incomplete work without current runtime activity is paused or unknown.
-const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
+const workState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
   const steps = l.steps.filter(s => s.cleared !== true)
   const unfinished = l.questions.some(q => q.cleared !== true && q.status !== 'answered') || steps.some(s => s.status !== 'completed')
-  if (now.askCalls.length > 0 || steps.some(s => s.status === 'waiting')) return 'you'
   if (now.agentCalls.length > 0) return 'agents'
-  const delegated = steps.some(s => s.delegated === true && s.status !== 'completed')
-  if (delegated && !(now.isWorking && steps.some(s => s.status === 'in_progress' && s.delegated !== true))) return 'agents'
-  if (now.isWorking) return 'working'
+  const mainWorks = now.isWorking && now.askCalls.length === 0
+  const delegated = steps.some(isDelegatedWork)
+  if (delegated && !(mainWorks && steps.some(s => s.status === 'in_progress' && s.delegated !== true))) return 'agents'
+  if (mainWorks) return 'working'
   if (now.background.length > 0) return 'agents'
   if ((now.tasks ?? []).length > 0) return 'tasks'
 
@@ -381,12 +384,16 @@ const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
   return unfinished ? 'paused' : 'done'
 }
 
-// Waiting on agents or tasks always pulses (the banner blinks amber); the main session's work
-// pulses only the step in progress, so with none there is nothing to animate.
-const isPulsing = (l: Ledger, now: Activity): boolean => {
-  const state = sessionState(l, now)
+// Only an explicit waiting step or question dialog asks the person to act.
+const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS =>
+  now.askCalls.length > 0 || l.steps.some(s => s.cleared !== true && s.status === 'waiting') ? 'you' : workState(l, now)
 
-  return state === 'agents' || state === 'tasks' || (state === 'working' && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true))
+// Background work pulses even beside a user wait or a main turn. Main work alone pulses
+// only a step in progress; an open question dialog is not evidence of main work.
+const isPulsing = (l: Ledger, now: Activity): boolean => {
+  const state = workState(l, now)
+
+  return now.background.length > 0 || (now.tasks ?? []).length > 0 || state === 'agents' || state === 'tasks' || (state === 'working' && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true))
 }
 
 // Started from the pane's drawing when a step should pulse; each tick stops it once nothing does.
@@ -2308,6 +2315,7 @@ export const register: Register = on => {
     const clearWidths = [l.steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)]
     const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
 
+    const work = workState(l, now)
     const state = isUnsaved ? 'unsaved' : sessionState(l, now)
     const shown = BANNERS[state]
     const countLabel = (done: number, total: number) => {
@@ -2379,7 +2387,7 @@ export const register: Register = on => {
     })
     // Background agents and tasks show in the banner while the main turn runs too: the session
     // works and waits on them at once, and names each kind apart. Waiting on either blinks amber.
-    const delegatedCount = steps.filter(s => s.delegated === true && s.status !== 'completed').length
+    const delegatedCount = steps.filter(isDelegatedWork).length
     // Ownership identifies agents without telling how many. Count only native
     // activity when no explicit ownership with an unknown count is present.
     const agentCount = now.background.length
@@ -2387,7 +2395,9 @@ export const register: Register = on => {
     const taskCount = (now.tasks ?? []).length
     const title = shown.text.trimEnd()
     const parts =
-      state === 'working'
+      state === 'you'
+        ? [title, work === 'working' && 'Working', agents !== undefined ? `${agents} working` : work === 'agents' && 'agents working', taskCount > 0 && `tasks (${taskCount}) working`]
+        : state === 'working'
         ? [title, agents, taskCount > 0 && `tasks (${taskCount})`]
         : state === 'agents'
           ? [delegatedCount === 0 && agentCount > 0 ? `${title} (${agentCount})` : title, delegatedCount === 0 && taskCount > 0 && `tasks (${taskCount})`]
@@ -2396,8 +2406,12 @@ export const register: Register = on => {
             : [title]
     const fullBanner = `${parts.filter(Boolean).join(' · ')} `
     // Keep the state visible on one row. Optional background counts yield to it at narrow widths.
-    const bannerText = fullBanner.length <= width ? fullBanner : shown.compact
-    const bannerColor = state === 'agents' || state === 'tasks' ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
+    const mixedCompact = state === 'you'
+      ? agents !== undefined || work === 'agents' ? 'You · agents work' : work === 'tasks' ? 'You · tasks work' : work === 'working' ? 'You · Working' : shown.compact
+      : shown.compact
+    const bannerText = fullBanner.length <= width ? fullBanner : state === 'you' ? fitLines(mixedCompact, width, 1) : shown.compact
+    const backgroundRuns = work === 'agents' || work === 'tasks' || agents !== undefined || taskCount > 0
+    const bannerColor = state === 'agents' || state === 'tasks' || (state === 'you' && backgroundRuns) ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
 
     return (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
@@ -2510,17 +2524,19 @@ export const register: Register = on => {
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
           // hourglass for background agents or tasks, a still purple mark when it waits on the person.
           const look =
-            s.delegated === true && s.status !== 'completed' && s.status !== 'waiting'
+            isDelegatedWork(s)
               ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
               : s.status === 'paused'
               ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
               : s.status === 'waiting'
                 ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
-                : s.status !== 'in_progress'
+              : s.status !== 'in_progress'
               ? { glyph: s.status === 'completed' ? '●' : '○', glyphColor: color, textColor: color }
-              : state === 'working'
+              : now.askCalls.length > 0
+                ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
+                : work === 'working'
                 ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
-                : state === 'agents' || state === 'tasks'
+                : work === 'agents' || work === 'tasks'
                   ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
                   : state === 'you'
                     ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
