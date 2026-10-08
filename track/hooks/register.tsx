@@ -190,12 +190,12 @@ const capSteps = (steps: Step[]): Step[] => capRows(steps, MAX_STEPS, s => s.sta
 
 // A step at a new status. Its clock starts the first time it goes in progress and stops when it
 // is done; a done step that is opened again runs on from its first start.
-const withStatus = (s: Step, status: Step['status'], now: number): Step => {
-  const { endedAt: _ended, delegated, ...rest } = s
+const withStatus = (s: Step, status: Step['status'], now: number, turnId?: string | null): Step => {
+  const { endedAt: _ended, delegated, activeTurnId: _turn, ...rest } = s
   const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
 
-  return { ...rest, status, ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
+  return { ...rest, status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
 }
 
 // A stretch of wall-clock time: m:ss under an hour, then 1h 05m.
@@ -1051,6 +1051,7 @@ const savedStep = (row: unknown): Step | undefined => {
     ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
     ...(r.cleared === true ? { cleared: true as const } : {}),
     ...(r.delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }),
+    ...(status === 'in_progress' && typeof r.activeTurnId === 'string' && { activeTurnId: r.activeTurnId }),
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
     ...textField('sourceId', r.sourceId),
@@ -1358,7 +1359,7 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     await update($, turn, t => ({ ...t, currentId: e.turnId }))
-    await update($, activity, a => ({ ...a, isWorking: true }))
+    await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
@@ -1486,7 +1487,11 @@ export const register: Register = on => {
   // Each finished main-loop turn saves the ledger, so /resume finds it.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
-      await update($, activity, a => ({ ...a, isWorking: false, agentCalls: [], askCalls: [] }))
+      const currentId = (await read($, turn)).currentId
+      // The activity atom's own identity fences a new turn that starts during this update.
+      await update($, activity, a => (a.mainTurnId ?? currentId) === e.turnId || (a.mainTurnId ?? currentId) === null
+        ? { ...a, isWorking: false, agentCalls: [], askCalls: [] }
+        : a)
     } else {
       // A background agent's loop ended.
       const agentId = e.agentId
@@ -1494,6 +1499,13 @@ export const register: Register = on => {
     }
     const done = await next(e)
     if (e.agentId === undefined) {
+      if (e.isAborted) {
+        const now = await $.clock.now()
+        await update<Ledger>($, ledger, l => ({ ...l, steps: l.steps.map(s => {
+          if (s.cleared === true || s.status !== 'in_progress' || s.delegated === true || s.activeTurnId !== e.turnId) return s
+          return { ...withStatus(s, 'paused', now), note: s.note ? `${truncate(s.note, HEAD_CHARS - 13)}; interrupted` : 'interrupted' }
+        }) }))
+      }
       await saveLedger($)
     }
 
@@ -1698,6 +1710,7 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const currentId = e.agentId === undefined ? (await read($, turn)).currentId : null
     const ran = await next(e)
     const status = e.status
     const failed = (ran.result as { success?: unknown } | undefined)?.success === false
@@ -1719,13 +1732,14 @@ export const register: Register = on => {
 
                 return plan
               })
-          : cur.steps.map(s => (s.taskId === taskId ? withStatus(s, status, now) : s)),
+          : cur.steps.map(s => (s.taskId === taskId ? withStatus(s, status, now, currentId) : s)),
     }))
 
     return ran
   })
 
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
+    const currentId = e.agentId === undefined ? (await read($, turn)).currentId : null
     const ran = await next(e)
     const todos = (ran.result as { newTodos?: Array<{ content: string; status: Step['status'] }> } | undefined)?.newTodos
     if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || todos === undefined) {
@@ -1745,7 +1759,7 @@ export const register: Register = on => {
         const was = before.get(id)
         const row: Step = { ...(was ?? { id, source: 'todo' as const, status: 'pending' as const }), subject: headOf(t.content) }
 
-        return withStatus(row, t.status, now)
+        return withStatus(row, t.status, now, currentId)
       })
 
       return { ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }
@@ -1883,7 +1897,7 @@ export const register: Register = on => {
     const steps = capSteps(rows
       .map(savedStep)
       .filter(isDefined)
-      .map(({ taskId: _old, ...s }) => ({ ...s, sourceId: s.sourceId ?? `${from}:${s.id}`, ...(s.source === 'task' && !s.id.startsWith('restored:') && { id: `restored:${s.id}` }) })))
+      .map(({ taskId: _old, activeTurnId: _turn, ...s }) => ({ ...s, sourceId: s.sourceId ?? `${from}:${s.id}`, ...(s.source === 'task' && !s.id.startsWith('restored:') && { id: `restored:${s.id}` }) })))
     const questionRows = Array.isArray(saved?.ledger?.questions) ? (saved.ledger.questions as unknown[]) : []
     const questions = capRows(questionRows
       .map(savedQuestion)
@@ -1991,6 +2005,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
     }
+    const currentId = (await read($, turn)).currentId
     if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
     const id = String(e.id)
     const status = STEP_STATUSES.find(one => one === e.status)
@@ -2001,7 +2016,7 @@ export const register: Register = on => {
     const now = await $.clock.now()
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => {
       if (s.id !== id) return s
-      const { delegated: _delegated, ...changed } = withStatus(s, status, now)
+      const { delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
       return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: truncate(e.note, HEAD_CHARS) }) }
     }) }))
 

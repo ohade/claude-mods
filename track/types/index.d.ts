@@ -74,6 +74,8 @@ export type Step = {
   note?: string
   // Explicit work ownership, independent of whether agents run through Agent or a shell.
   delegated?: true
+  // The main turn that last started this work. Kept for reload, removed on cross-session restore.
+  activeTurnId?: string
   cleared?: true
   // The step's wall clock: when it first went in progress, and when it was done.
   startedAt?: number
@@ -114,7 +116,7 @@ export type ScrollAt = { questions: number | null; steps: number | null }
 // What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
 // calls in flight (tool_use ids), background agents still running, and other background work
 // still running, such as shell tasks (their ids). An activity saved before tasks existed has none.
-export type Activity = { isWorking: boolean; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[] }
+export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[] }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.
