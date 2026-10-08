@@ -44,7 +44,12 @@ running turn. Doorbells and informational notifications alone need no row. Track
   (ctrl+x tab).
 - **Layout.** The title stays at the top and the banner at the bottom. Questions and Steps are
   fixed regions, about a third and two thirds; each scrolls on its own under the wheel, and its
-  header counts the rows hidden above and below (`↑2 ↓5`).
+  header counts the rows hidden above and below (`↑2 ↓5`). Empty sections say only "None yet."
+  Below 40 body columns, counts use `12/39`, questions place their Q/A controls below the text,
+  and step clocks use a separate line. Short controls and hints fit a 17-column body. The banner
+  keeps the state on one line and omits background counts when space is tight.
+  Claude Code owns the draggable transcript/dock divider. Its 2.1.293 plugin API exposes no
+  hover mouse-cursor control for that divider; Track cannot set a horizontal resize cursor there.
 - **Banner.** A full-width colored line at the bottom says where the session stands: Working, Waiting on agents
   (an Agent call or background agents), Waiting on tasks (background shell tasks), Waiting on you
   (a question dialog or an explicit waiting step), Paused, Activity unknown, Unsaved, or Idle.

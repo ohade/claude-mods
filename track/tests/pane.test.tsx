@@ -151,13 +151,13 @@ const layout = async ($: Engine, on: On, ledger: unknown, columns: number, rows 
   return (await ui.findAll({})) as Box[]
 }
 
-test('with no questions and no steps, each placeholder wraps whole in a narrow pane', async ($, on) => {
+test('with no questions and no steps, each concise placeholder takes one row', async ($, on) => {
   const all = await layout($, on, EMPTY, 30)
 
-  const placeholder = all.find(el => el.type === 'Text' && /none yet — the model adds a question/.test(String(el.text ?? '')))
+  const placeholder = all.find(el => el.type === 'Text' && String(el.text ?? '').trim() === 'None yet.')
   expect((placeholder?.props as { wrap?: string } | undefined)?.wrap).toBe('wrap')
-  expect(heightOf(all, 'questions')).toBeGreaterThanOrEqual(2)
-  expect(heightOf(all, 'steps')).toBeGreaterThanOrEqual(2)
+  expect(heightOf(all, 'questions')).toBe(1)
+  expect(heightOf(all, 'steps')).toBe(1)
 })
 
 test('a steps header too wide for the pane wraps, and the regions give up the extra row', async ($, on) => {

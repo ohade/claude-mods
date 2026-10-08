@@ -90,14 +90,14 @@ const STEPS_LINE = RULE
 
 // The banner pinned at the bottom of the pane: what the session is doing, in one colored line.
 const BANNERS = {
-  working: { text: ' Working ', color: 'suggestion' },
-  agents: { text: ' Waiting on agents ', color: 'warning' },
-  tasks: { text: ' Waiting on tasks ', color: 'warning' },
-  you: { text: ' Waiting on you ', color: 'permission' },
-  paused: { text: ' Paused ', color: 'warning' },
-  unknown: { text: ' Activity unknown ', color: 'warning' },
-  unsaved: { text: ' Unsaved ', color: 'warning' },
-  done: { text: ' Idle · Safe to close ', color: 'success' },
+  working: { text: ' Working ', compact: 'Working', color: 'suggestion' },
+  agents: { text: ' Waiting on agents ', compact: 'Waiting agents', color: 'warning' },
+  tasks: { text: ' Waiting on tasks ', compact: 'Waiting tasks', color: 'warning' },
+  you: { text: ' Waiting on you ', compact: 'Waiting on you', color: 'permission' },
+  paused: { text: ' Paused ', compact: 'Paused', color: 'warning' },
+  unknown: { text: ' Activity unknown ', compact: 'Unknown', color: 'warning' },
+  unsaved: { text: ' Unsaved ', compact: 'Unsaved', color: 'warning' },
+  done: { text: ' Idle · Safe to close ', compact: 'Idle', color: 'success' },
 } as const
 // The step in progress breathes while work runs: one phase every PULSE_MS, a
 // spinner and grey shades while the main session works, an hourglass and amber shades while it
@@ -121,9 +121,10 @@ const QUESTION_SHARE = 0.35
 const QUESTION_CHROME = 18
 // Columns between the items of a header or bar; a narrow pane wraps between items, never inside one.
 const HEADER_GAP = 2
+// Below this width the Q/A columns crowd out the question; place them on the next line.
+const COMPACT_COLUMNS = 40
 const HINT = '/track hides · ctrl+x x closes for good'
-const NO_QUESTIONS = '  none yet — the model adds a question with track_question'
-const NO_STEPS = '  none yet — tasks and approved plan steps appear here'
+const NONE_YET = '  None yet.'
 const ALL_CLEARED = '  all cleared'
 const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0, qLast: 0, sLast: 0, last: 'steps' as 'questions' | 'steps' }
 // Fast wheel ticks are summed and written once per SCROLL_FLUSH_MS, so a quick flick costs one
@@ -2145,11 +2146,13 @@ export const register: Register = on => {
     // A step's clock: its time so far while it runs, how long it took once done.
     const clockOf = (s: Step): string =>
       s.startedAt === undefined ? '' : clockText((s.endedAt ?? Math.max(nowMs, s.startedAt)) - s.startedAt)
-    const width = Math.max(20, e.props.bodyColumns)
+    const width = Math.max(1, e.props.bodyColumns)
+    const compact = width < COMPACT_COLUMNS
+    const rowIndent = compact ? 0 : ROW_INDENT
     const bodyRows = Math.max(8, e.props.scroll.bodyRows)
     const at = await read($, scrollAt)
-    const titleLabel = ` ${TITLE.toUpperCase()} `
-    const titleSide = Math.max(2, Math.floor((width - titleLabel.length) / 2))
+    const titleLabel = fitLines(width < TITLE.length + 4 ? ' TRACK ' : ` ${TITLE.toUpperCase()} `, width, 1)
+    const titleSide = Math.max(0, Math.floor((width - titleLabel.length) / 2))
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
     // stay reachable above the newest (track_question scrolls the newest into view).
     // The rings count the rows shown: a cleared row leaves its ring too. A deferred answer still
@@ -2177,34 +2180,44 @@ export const register: Register = on => {
         {child}
       </Box>
     )
+    const allLabel = compact ? 'all' : 'clear all'
+    const doneLabel = compact ? 'done' : 'clear completed'
     const clearButtons = (suffix: '' | '-bottom') => [
       ...(l.steps.length > 0
-        ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label="clear all" onPress={() => clearSteps($)} />)]
+        ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label={allLabel} onPress={() => clearSteps($)} />)]
         : []),
-      item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label="clear completed" onPress={clearCompleted} />),
+      item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompleted} />),
     ]
-    const clearWidths = [l.steps.length > 0 ? buttonWidth('s', 'clear all') : 0, buttonWidth('c', 'clear completed')]
+    const clearWidths = [l.steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)]
+    const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
 
     const state = isUnsaved ? 'unsaved' : sessionState(l, now)
     const shown = BANNERS[state]
-    const qRing = ring(qDone, questions.length)
-    const sRing = ring(sDone, steps.length)
-    const qEmpty = l.questions.length === 0 ? NO_QUESTIONS : ALL_CLEARED
-    const sEmpty = l.steps.length === 0 ? NO_STEPS : ALL_CLEARED
+    const countLabel = (done: number, total: number) => {
+      const full = ring(done, total)
+
+      return compact && total > 0 ? `${full.split(' ')[0]} ${done}/${total}` : full
+    }
+    const qRing = countLabel(qDone, questions.length)
+    const sRing = countLabel(sDone, steps.length)
+    const qEmpty = l.questions.length === 0 ? NONE_YET : ALL_CLEARED
+    const sEmpty = l.steps.length === 0 ? NONE_YET : ALL_CLEARED
 
     // The layout: the title, the two headers, the separator, the bottom bar and the banner take
     // fixed rows, a header or the bar as many as its items wrap onto; the two regions share the
     // room left, measured in wrapped lines.
     const roomy = bodyRows >= 16
     const titleRows = roomy ? 2 : 1
-    const bottomRows = flowRows([...clearWidths, HINT.length], width, HEADER_GAP)
-    const qButtons = [l.questions.length > 0 ? buttonWidth('q', 'clear all') : 0]
+    const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
+    const qButtons = [l.questions.length > 0 ? buttonWidth('q', allLabel) : 0]
     const sButtons = l.steps.length > 0 ? clearWidths : []
-    const qWidth = Math.max(8, width - ROW_INDENT - 2 - QUESTION_CHROME)
-    const sWidth = Math.max(8, width - ROW_INDENT - 2)
-    const qLines = questions.map(q => wrappedLines(`Q${q.id} ${q.head}`, qWidth))
-    const stepWidth = (s: Step) => Math.max(8, sWidth - (s.startedAt === undefined ? 0 : clockOf(s).length + 1))
-    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1} ${s.subject}`, stepWidth(s)))
+    const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))
+    const sWidth = Math.max(1, width - rowIndent - 2)
+    const qControlsRows = compact ? 1 : 0
+    const qLines = questions.map(q => wrappedLines(`Q${q.id} ${q.head}`, qWidth) + qControlsRows)
+    const clockRows = (s: Step) => compact && s.startedAt !== undefined ? 1 : 0
+    const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || s.startedAt === undefined ? 0 : clockOf(s).length + 1))
+    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1} ${s.subject}`, stepWidth(s)) + clockRows(s))
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
@@ -2212,7 +2225,9 @@ export const register: Register = on => {
       const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
       const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
       const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + 1))
-      let qRows = Math.min(needQ, room, Math.max(1, Math.round(room * QUESTION_SHARE)))
+      // A compact question needs a text line plus its Q/A controls even in a short pane.
+      const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
+      let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
       let sRows = Math.max(0, room - qRows)
       if (needS < sRows) {
         qRows = Math.min(needQ, qRows + sRows - needS)
@@ -2257,7 +2272,9 @@ export const register: Register = on => {
           : state === 'tasks'
             ? [`${title} (${taskCount})`]
             : [title]
-    const bannerText = `${parts.filter(Boolean).join(' · ')} `
+    const fullBanner = `${parts.filter(Boolean).join(' · ')} `
+    // Keep the state visible on one row. Optional background counts yield to it at narrow widths.
+    const bannerText = fullBanner.length <= width ? fullBanner : shown.compact
     const bannerColor = state === 'agents' || state === 'tasks' ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
 
     return (
@@ -2268,13 +2285,13 @@ export const register: Register = on => {
           <Text bold color="claude">
             {titleLabel}
           </Text>
-          <Text dimColor>{'─'.repeat(Math.max(2, width - titleLabel.length - titleSide))}</Text>
+          <Text dimColor>{'─'.repeat(Math.max(0, width - titleLabel.length - titleSide))}</Text>
         </Box>
         <Box key="questions-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('questions-word', <Text bold>Questions</Text>)}
           {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
           {/* The engine draws "q: label", so the gap is the header's, not padding in the label. */}
-          {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label="clear all" onPress={() => clearQuestions($)} />)}
+          {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />)}
           {qHidden !== '' && item('questions-hidden', <Text dimColor>{qHidden}</Text>)}
         </Box>
         <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
@@ -2305,36 +2322,47 @@ export const register: Register = on => {
                 ? { ids: [q.restoredBy], block: 'start' }
                 : undefined
 
-          // The dot is a column of its own and the question a wrapping column beside it, so a
-          // long question is shown whole and its next lines align with the text, not the dot.
-          return (
-            <Box key={`row-q-${q.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
-              <Text color={color} dimColor={q.status === 'deferred'}>
-                {statusGlyph(q)}
+          const dot = (
+            <Text color={color} dimColor={q.status === 'deferred'}>
+              {statusGlyph(q)}
+            </Text>
+          )
+          const markers = (
+            <Box key={`q-markers-${q.id}`} width={13} flexShrink={0} flexDirection="row" columnGap={1}>
+              <Box key={`q-question-slot-${q.id}`} width={6} flexShrink={0}>
+                {askedAt === undefined
+                  ? <Text dimColor>[ Q ]</Text>
+                  : <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />}
+              </Box>
+              <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
+                {answerJump === undefined
+                  ? <Text dimColor>[ A ]</Text>
+                  : <Button key={`a-${q.id}`} variant="primary" hotkey={answered ? hotkey : undefined} label="A" onPress={() => jump($, answerJump.ids, answerJump.block)} />}
+              </Box>
+            </Box>
+          )
+          const text = (
+            <Box key={`q-text-${q.id}`} flexShrink={1} width={qWidth}>
+              <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
+                {fitLines(`Q${q.id} ${q.head}`, qWidth, qRows - qControlsRows)}
               </Text>
-              <Box key={`q-markers-${q.id}`} width={13} flexShrink={0} flexDirection="row" columnGap={1}>
-                <Box key={`q-question-slot-${q.id}`} width={6} flexShrink={0}>
-                  {askedAt === undefined
-                    ? <Text dimColor>[ Q ]</Text>
-                    : <Button key={`q-${q.id}`} hotkey={answered ? undefined : hotkey} label="Q" onPress={() => jump($, [askedAt], 'start')} />}
-                </Box>
-                <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
-                  {answerJump === undefined
-                    ? <Text dimColor>[ A ]</Text>
-                    : <Button key={`a-${q.id}`} variant="primary" hotkey={answered ? hotkey : undefined} label="A" onPress={() => jump($, answerJump.ids, answerJump.block)} />}
-                </Box>
-              </Box>
-              <Box key={`q-text-${q.id}`} flexShrink={1} width={qWidth}>
-                <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                  {fitLines(`Q${q.id} ${q.head}`, qWidth, qRows)}
-                </Text>
-              </Box>
-              <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
+            </Box>
+          )
+          const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
+
+          // The text gets the pane's width when its fixed jump column would crowd it out.
+          // Both layouts use the same controls and sources; the extra row is budgeted above.
+          return (
+            <Box key={`row-q-${q.id}`} flexDirection={compact ? 'column' : 'row'} columnGap={1} marginLeft={rowIndent}>
+              {compact ? <>
+                <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>
+                <Box flexDirection="row" columnGap={1}>{markers}{remove}</Box>
+              </> : <>{dot}{markers}{text}{remove}</>}
             </Box>
           )
         })}
         </Box>
-        <Text dimColor>{'─'.repeat(Math.max(10, width))}</Text>
+        <Text dimColor>{'─'.repeat(width)}</Text>
         <Box key="steps-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('steps-word', <Text bold>Steps</Text>)}
           {item('steps-ring', <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{sRing}</Text>)}
@@ -2369,19 +2397,26 @@ export const register: Register = on => {
                     ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
                     : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
+          const dot = <Text color={look.glyphColor}>{look.glyph}</Text>
+          const text = (
+            <Box flexShrink={1} flexGrow={1}>
+              <Text color={look.textColor} wrap="wrap">
+                {fitLines(`S${index + 1} ${s.subject}`, stepWidth(s), sRows - clockRows(s))}
+              </Text>
+            </Box>
+          )
+          const clock = s.startedAt !== undefined && (
+            <Box key={`s-clock-${s.id}`} flexShrink={0} alignSelf={compact ? 'flex-end' : undefined}>
+              <Text dimColor color={s.endedAt === undefined ? look.textColor : undefined}>
+                {clockOf(s)}
+              </Text>
+            </Box>
+          )
+
           return (
-            <Box key={`row-s-${s.id}`} flexDirection="row" columnGap={1} marginLeft={ROW_INDENT}>
-              <Text color={look.glyphColor}>{look.glyph}</Text>
-              <Box flexShrink={1} flexGrow={1}>
-                <Text color={look.textColor} wrap="wrap">
-                  {fitLines(`S${index + 1} ${s.subject}`, stepWidth(s), sRows)}
-                </Text>
-              </Box>
-              {s.startedAt !== undefined && (
-                <Text dimColor color={s.endedAt === undefined ? look.textColor : undefined}>
-                  {clockOf(s)}
-                </Text>
-              )}
+            <Box key={`row-s-${s.id}`} flexDirection={compact ? 'column' : 'row'} columnGap={1} marginLeft={rowIndent}>
+              {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : <>{dot}{text}</>}
+              {clock}
             </Box>
           )
         })}
@@ -2389,7 +2424,7 @@ export const register: Register = on => {
         <Box flexGrow={1} />
         <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={roomy ? 1 : 0}>
           {clearButtons('-bottom')}
-          {item('hint', <Text dimColor>{HINT}</Text>)}
+          {hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
         </Box>
         {/* The banner, pinned at the bottom: its color across the whole width, its words centered. */}
         <Box key="banner" width={width} justifyContent="center" backgroundColor={bannerColor}>
