@@ -94,7 +94,7 @@ test('a restored question answered on the next turn keeps the new answer text', 
   const { l } = prepare(on, { ...EMPTY, nextQuestionId: 2, questions: [{ ...q(), turnId: 'restored', restoredFrom: OLD }] })
   on('session.append', (_, e, next) => next(e))
   await $.session.append({ door: 'response', uuid: 'aaaaaaaa-bbbb-cccc-dddd-111111111111', message: { role: 'assistant', content: [{ type: 'text', text: 'תשובה 😀' }] }, origin: { kind: 'agent' } } as never)
-  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered' } as never)
+  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', answer_text: 'תשובה 😀' } as never)
   expect((l.value as any).questions[0]?.answerText).toBe('תשובה 😀')
 })
 

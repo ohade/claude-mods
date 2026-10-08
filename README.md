@@ -36,8 +36,12 @@ running turn. Doorbells and informational notifications alone need no row. Track
 - **Questions.** The model sends each question to the pane with `track_question` and closes it
   with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
   A question with a verified user source links to that source. Otherwise its tracking call is the
-  visible source. The answer update draws one dim
-  `✓ Q<n>. answered` line. An answered question turns green. The instruction explicitly includes
+  visible source. To mark it answered, Claude supplies the completed `answer_text`, or explicitly
+  identifies the latest verified native response with `answer_request_id`. A bare answered status
+  is refused without changing the ledger; latest progress text cannot supply an answer.
+  The update draws one dim `✓ Q<n>. answered` line. If the explicit text has no verified native
+  source, a separate answer row displays the saved words at that call. This can add answer tokens;
+  the call's displayed answer may be the answer's first visible delivery. An answered question turns green. The instruction explicitly includes
   short follow-up questions before answering; a row still requires Claude to register it.
 - **Jump.** The fixed `[ Q ]` and `[ A ]` columns scroll to the verified source and answer. The row you land
   on lights up and fades out over about two seconds: your prompt or the actual answer text alone.
@@ -103,8 +107,11 @@ running turn. Doorbells and informational notifications alone need no row. Track
   reuses stable source identities and keeps local progress. A model call supplies its displayed
   restore row; a programmatic call first appends and validates a visible system snapshot. A refused
   or altered snapshot leaves the ledger unchanged. Repeat calls reuse its native message UUID.
-  A matching saved snapshot receives separate keyed targets through the native `InfoNotice`
-  render hook. Active target records stay while their questions are uncleared; only inactive
+  A matching saved snapshot has separate keyed targets in the `InfoNotice` render fixture.
+  Native routing of a system snapshot to that hook is unverified. After plugin reload, the user
+  also observed failures for older native question and answer targets; only the newest pair jumped.
+  Restored data and passing render fixtures do not prove native jump behavior.
+  Active target records stay while their questions are uncleared; only inactive
   snapshot history is capped at three. Store capacity failures remain visible.
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
@@ -118,9 +125,18 @@ running turn. Doorbells and informational notifications alone need no row. Track
   that older calls were rewound. A refused rewind save holds the prompt until the save can succeed.
   Answer jumps use event order within the question's actual tracking turn. Text before the tracking
   call cannot become its answer, even when wall-clock timestamps are equal. A later turn may answer
-  an older question. A mark before text binds the next response only when one question is pending.
+  an older question. A mark before a response must provide completed `answer_text`. A later response
+  can reanchor it only when the full completed words match exactly and only one eligible question matches.
+  Unidentified future text never supplies missing answer words.
   An explicit `answer_request_id` must match the latest host-observed response; unknown sources
-  are refused. An already captured answer stays unchanged. Step updates name the affected step.
+  are refused. If both text and a native source id are provided, their full words must match.
+  A bounded SHA-256 fingerprint compares full answers before the saved-text limit is applied;
+  different endings cannot match just because their saved prefixes are equal. Event order is
+  reserved before fingerprint calculation. During that calculation, a concurrent source-id call
+  with long text can be refused; it leaves the ledger unchanged. Explicit text alone can still
+  save its words at the tracking call. This concurrent publication window is not live-proven.
+  Saved text is bounded to 1,000 Unicode code points. Legacy progress saved as an answer is not
+  silently rewritten. An already captured answer stays unchanged. Step updates name the affected step.
 
 It opens by itself by the built-in diff panel's rule, less the git condition: in the fullscreen
 layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). A reload of

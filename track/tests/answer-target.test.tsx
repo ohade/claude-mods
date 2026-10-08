@@ -23,7 +23,7 @@ test('answer-before-mark links and highlights only the real answer row', async (
   })
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'The question', tool_use_id: 'toolu_question' } as never)
   await $.session.append({ door: 'response', uuid: UUID, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Actual answer 😀' }] }, origin: { kind: 'model', model: 'fixture' } } as never)
-  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', tool_use_id: 'toolu_ack' } as never)
+  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', answer_request_id: UUID, tool_use_id: 'toolu_ack' } as never)
   expect(ledger.value.questions[0].answerRequestId).toBe(UUID)
   expect(ledger.value.questions[0].answeredBy).toBe('toolu_ack')
   const answer = await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: DRAWN, props: { text: 'Actual answer 😀', isFirstOfReply: true } } as never)

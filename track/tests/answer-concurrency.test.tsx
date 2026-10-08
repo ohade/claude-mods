@@ -22,7 +22,7 @@ test('an overlapping response keeps its own text and acknowledged message identi
     return { value: { isSet: true as const, version: held.version } }
   })
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'A question', tool_use_id: 'question-call' } as never)
-  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', tool_use_id: 'mark-call' } as never)
+  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', answer_text: 'First actual answer', tool_use_id: 'mark-call' } as never)
   const response = (uuid: string, text: string) => $.session.append({ door: 'response', uuid, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, origin: { kind: 'model', model: 'fixture' } } as never)
   const first = response('11111111-2222-4333-8444-555555555555', 'First actual answer')
   await firstEntered
