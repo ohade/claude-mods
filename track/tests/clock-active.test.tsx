@@ -14,7 +14,7 @@ for (const delegated of [false, true]) {
     const tick = atomStore(on, 'tick', 0)
     const ui = await $.ui.mount(pane('dock', 60, 30))
     expect((await ui.find({ key: 's-clock-plan:1' }))?.key).toBe('s-clock-plan:1')
-    expect((await ui.findAll({ type: 'Text' })).map(row => row.text)).toContain('0:07')
+    expect((await ui.findAll({ type: 'Text' })).map(row => row.text)).toContain('<1m')
     const writes = tick.writes.length
     await clock.advance(3000)
     expect(tick.writes.length - writes).toBeGreaterThanOrEqual(3)

@@ -4,8 +4,8 @@ import { EMPTY, atomStore, pane } from './kit'
 import type { Engine, On } from './kit'
 
 // Each step row ends in a wall clock: running while the step is under way, and once it is done,
-// how long it took. Under an hour it reads m:ss and moves every second; past an hour it reads
-// 1h 05m and moves once a minute.
+// how long it took. Below an hour it shows whole minutes (or <1m), with the existing
+// second tick unchanged; past an hour it reads 1h 05m and moves once a minute.
 
 type StepRow = { id: string; status: string; startedAt?: number; endedAt?: number }
 type Held = { steps: StepRow[] }
@@ -52,13 +52,13 @@ test('a step starts its clock when it goes in progress and stops it when done', 
 test('a done step shows how long it took', async ($, on) => {
   const { ui } = await drawAt($, on, [plan(1, 'completed', { startedAt: T0, endedAt: T0 + 125_000 })], T0 + 999_000)
 
-  expect(await texts(ui)).toContain('2:05')
+  expect(await texts(ui)).toContain('2m')
 })
 
 test('a running step shows its time so far, and the clock moves every second', async ($, on) => {
   const { ui, clock, tick } = await drawAt($, on, [plan(1, 'in_progress', { startedAt: T0 - 7_000 })], T0)
 
-  expect(await texts(ui)).toContain('0:07')
+  expect(await texts(ui)).toContain('<1m')
   await clock.advance(3_000)
   expect(tick.writes.length).toBeGreaterThanOrEqual(3)
 })
@@ -89,5 +89,5 @@ test('a todo keeps its clock when the list is written again', async ($, on) => {
 test('a pending step shows no clock', async ($, on) => {
   const { ui } = await drawAt($, on, [plan(1, 'pending')], T0)
 
-  expect((await texts(ui)).some(t => /^\d+:\d\d$|^\d+h \d\dm$/.test(t))).toBe(false)
+  expect((await texts(ui)).some(t => /^\d+:\d\d$|^\d+h \d\dm$|^\d+m$|^<1m$/.test(t))).toBe(false)
 })

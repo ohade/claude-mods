@@ -92,6 +92,8 @@ running turn. Doorbells and informational notifications alone need no row. Track
   and waiting rows hide their clocks and reserve no clock space, even if an earlier start is
   retained. Completed rows show a fixed duration only when both times are known. These are
   wall-clock durations from the first start; resuming does not subtract parked intervals.
+  Below a minute they show `<1m`; below an hour they show whole minutes such as `4m`
+  or `11m`, without seconds or padding. At an hour or above they retain `1h 05m`.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over visible rows. **Clear completed**
   hides finished rows in its own section and removes them from that section's count.
   Questions has `a: clear completed` for answered questions; it keeps open and deferred
