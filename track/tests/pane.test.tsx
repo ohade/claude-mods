@@ -102,8 +102,8 @@ test('a deferred question is not done: the ring leaves it out and clear complete
   const ui = await $.ui.mount(pane('dock'))
 
   expect(await textsOf(ui as unknown as Drawn)).toContain('◑ 1 of 2 · 50%')
-  // With no steps only the bottom bar is drawn.
-  await ui.press({ key: 'clear-completed-bottom' })
+  // Completed Questions have their own control; Steps controls preserve them.
+  await ui.press({ key: 'clear-answered' })
   const rows = (ledger.value as { questions: Array<{ id: number; cleared?: true }> }).questions
   expect(rows.map(q => `${q.id}:${q.cleared === true ? 'cleared' : 'shown'}`)).toEqual(['1:cleared', '2:shown'])
 })

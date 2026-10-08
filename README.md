@@ -84,8 +84,12 @@ running turn. Doorbells and informational notifications alone need no row. Track
   and waiting rows hide their clocks and reserve no clock space, even if an earlier start is
   retained. Completed rows show a fixed duration only when both times are known. These are
   wall-clock durations from the first start; resuming does not subtract parked intervals.
-- **Rings.** `◑ 4 of 8 · 50%` per section, counted over visible rows. **Clear completed** (`c`)
-  hides finished rows and removes them from those counts.
+- **Rings.** `◑ 4 of 8 · 50%` per section, counted over visible rows. **Clear completed**
+  hides finished rows in its own section and removes them from that section's count.
+  Questions has `a: clear completed` for answered questions; it keeps open and deferred
+  questions and every step. Steps' `c: clear completed`, in both the header and bottom
+  bar, keeps every question. Narrow panes shorten the labels to `a: done` and `c: done`.
+  Each explicit action saves the ledger; rendering does not save it.
 - **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions
   are withdrawn, so the model is told not to answer them. The Steps controls (`s: clear all`,
   `c: clear completed`) appear twice, in the Steps header and in the bottom bar, and neither

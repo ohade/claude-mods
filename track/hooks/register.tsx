@@ -2269,10 +2269,17 @@ export const register: Register = on => {
     const qDone = questions.filter(q => q.status === 'answered').length
     const steps = l.steps.filter(s => s.cleared !== true)
     const sDone = steps.filter(s => s.status === 'completed').length
-    const clearCompleted = async () => {
+    const clearAnsweredQuestions = async () => {
       await update($, ledger, cur => ({
         ...cur,
         questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
+      }))
+      await publishGate($)
+      await saveLedger($)
+    }
+    const clearCompletedSteps = async () => {
+      await update($, ledger, cur => ({
+        ...cur,
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
       await publishGate($)
@@ -2294,7 +2301,7 @@ export const register: Register = on => {
       ...(l.steps.length > 0
         ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label={allLabel} onPress={() => clearSteps($)} />)]
         : []),
-      item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompleted} />),
+      item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
     ]
     const clearWidths = [l.steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)]
     const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
@@ -2317,7 +2324,7 @@ export const register: Register = on => {
     const roomy = bodyRows >= 16
     const titleRows = roomy ? 2 : 1
     const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
-    const qButtons = [l.questions.length > 0 ? buttonWidth('q', allLabel) : 0]
+    const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
     const sButtons = l.steps.length > 0 ? clearWidths : []
     const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))
     // Status owns two cells, including the paused/hourglass glyphs, then a gap.
@@ -2405,6 +2412,7 @@ export const register: Register = on => {
           {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
           {/* The engine draws "q: label", so the gap is the header's, not padding in the label. */}
           {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />)}
+          {l.questions.length > 0 && item('questions-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />)}
           {qHidden !== '' && item('questions-hidden', <Text dimColor>{qHidden}</Text>)}
         </Box>
         <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
