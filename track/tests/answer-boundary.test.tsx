@@ -108,7 +108,7 @@ test('a call-sourced A jump highlights its completed answer separately from the 
   expect((await answer.findAll({ type: 'Text' })).map(one => String(one.text ?? '')).join('\n')).toContain('The completed answer 😀')
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
-  expect(lines).toContain('track: jump {"to":{"key":"answer:answer-call"},"block":"start"}')
+  expect(lines.filter(line => line.startsWith('track: jump'))).toEqual(['track: jump {"to":{"requestId":"answer-call"},"block":"start"}'])
   const target = await answer.find({ key: 'answer:answer-call' })
   expect(target?.props.backgroundColor).toBeDefined()
   expect(target?.text).toBe('The completed answer 😀')

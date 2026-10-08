@@ -1,13 +1,18 @@
-// FIXTURE: 2026-10-08 restored answers shared one target and could not be
-// found under its transcript UUID. Use each answer's own rendered element.
+// FIXTURE: legacy InfoNotice rendering remembers its host and shades each
+// restored subrow. A requestId reveals the whole host; native placement of a
+// later Q/A within that host remains unverified by these fixtures.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
 
 const FROM = '11111111-2222-4333-8444-555555555555'
 const BY = '66666666-7777-4888-8999-aaaaaaaaaaaa'
 const QUESTIONS = [1, 2].map(id => ({ id, head: `Question ${id}`, at: 1, turnId: 'restored', status: 'answered', answerText: `Answer ${id} 😀`, restoredFrom: FROM, restoredBy: BY, sourceId: `${FROM}:Q${id}` }))
+const NOTICE = {
+  plugin: 'track', surface: 'terminal', component: 'InfoNotice', requestId: 'engine-notice-instance',
+  props: { text: `Track source snapshot from session ${FROM}: 0 steps, 2 questions\nRestore status is confirmed by the tool receipt.\nQ1 answered: Question 1\nAnswer 1 😀\nQ2 answered: Question 2\nAnswer 2 😀`, command: null },
+}
 
-test('restored A targets and highlights only its own answer in the visible notice', async ($, on) => {
+test('restored A reveals the observed notice host and shades only its answer', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 3, questions: QUESTIONS, restores: [{ by: BY, from: FROM, steps: 0, questions: QUESTIONS }] })
   const flashes = new Map<string, number>()
@@ -16,30 +21,28 @@ test('restored A targets and highlights only its own answer in the visible notic
   const logs: string[] = []
   on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
   on('ui.render', { component: 'InfoNotice' }, () => ({ type: 'Text', props: {}, children: ['default notice'] }))
-  const notice = {
-    plugin: 'track', surface: 'terminal', component: 'InfoNotice', requestId: 'engine-notice-instance',
-    props: { text: `Track source snapshot from session ${FROM}: 0 steps, 2 questions\nRestore status is confirmed by the tool receipt.\nQ1 answered: Question 1\nAnswer 1 😀\nQ2 answered: Question 2\nAnswer 2 😀`, command: null },
-  }
-  const before = await $.ui.mount(notice as never)
+  const before = await $.ui.mount(NOTICE as never)
   expect((await before.find({ key: `restored-a:${BY}:2` }))?.text).toBe('Answer 2 😀')
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-2' })
-  expect(logs).toContain(`track: jump {"to":{"key":"restored-a:${BY}:2"},"block":"start"}`)
+  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual(['track: jump {"to":{"requestId":"engine-notice-instance"},"block":"start"}'])
   await before.unmount()
-  const after = await $.ui.mount(notice as never)
+  const after = await $.ui.mount(NOTICE as never)
   expect((await after.find({ key: `restored-a:${BY}:2` }))?.props.backgroundColor).toBeDefined()
   expect((await after.find({ key: `restored-a:${BY}:1` }))?.props.backgroundColor).toBeUndefined()
   expect((await after.find({ key: `restored-q:${BY}:2` }))?.props.backgroundColor).toBeUndefined()
 })
 
-test('restored Q targets its own question rather than the raw notice UUID', async ($, on) => {
+test('restored Q reveals its observed host rather than guessing from the notice UUID', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, questions: QUESTIONS, restores: [{ by: BY, from: FROM, steps: 0, questions: QUESTIONS }] })
   const logs: string[] = []
   on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'InfoNotice' }, () => ({ type: 'Text', props: {}, children: ['default notice'] }))
+  await $.ui.mount(NOTICE as never)
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'q-2' })
-  expect(logs).toContain(`track: jump {"to":{"key":"restored-q:${BY}:2"},"block":"start"}`)
+  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual(['track: jump {"to":{"requestId":"engine-notice-instance"},"block":"start"}'])
 })
 
 test('resume retains a restore record still needed by an uncleared question', async ($, on) => {

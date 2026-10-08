@@ -468,15 +468,14 @@ const flashRows = async ($: EngineInterface, ids: string[]): Promise<void> => {
 // here, so it must not wait behind the state writes. A refusal is a toast. The debug line
 // carries the scroll's exact arguments.
 const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', key?: string, instance?: string): Promise<void> => {
-  // First resolve a known host row, then select only the answer's owned text. An unknown host
-  // keeps the key attempt and its visible refusal; an acknowledgement is never a substitute.
-  if (key !== undefined && instance !== undefined) {
-    const host = { to: { requestId: instance }, block }
-    $.ui.log(`track: jump ${JSON.stringify(host)}`, { to: 'debug' })
-    const moved = await $.ui.scroll(host).catch((error: unknown) => ({ deny: reason(error) }))
-    if (moved.deny !== undefined) $.ui.log(`track: host lookup refused: ${moved.deny}`, { to: 'debug' })
+  // 2026-10-08 native A clicks proved that Box keys resolve only inside plugin sites,
+  // not transcript rows. Reveal the exact host; the flash still selects only its text.
+  // A missing host never falls back to the acknowledgement or a guessed transcript key.
+  if (key !== undefined && instance === undefined) {
+    $.ui.toast('track: cannot jump — the source row has not been drawn on this load')
+    return
   }
-  const target = { to: key === undefined ? { requestId: ids[0] as string } : { key }, block }
+  const target = { to: { requestId: instance ?? ids[0] as string }, block }
   $.ui.log(`track: jump ${JSON.stringify(target)}`, { to: 'debug' })
   const moving = $.ui.scroll(target).then(
     moved => moved,
@@ -2139,6 +2138,7 @@ export const register: Register = on => {
       if (restore === undefined) {
         return <Box />
       }
+      rememberRender(`restore:${restore.by}`, e.requestId)
       return renderRestore($, $.ui.resolve(e), restore)
     }
     if (e.props.tool === MARK_STEP) {
@@ -2178,7 +2178,9 @@ export const register: Register = on => {
   // documented system-transcript route. New mechanical snapshots use UserMessage.
   on('ui.render', { component: 'InfoNotice' }, async ($, e, next) => {
     const restore = (await read($, ledger)).restores?.find(r => r.display !== 'user' && restoreNotice(r) === e.props.text)
-    return restore === undefined ? next(e) : renderRestore($, $.ui.resolve(e), restore)
+    if (restore === undefined) return next(e)
+    rememberRender(`restore:${restore.by}`, e.requestId)
+    return renderRestore($, $.ui.resolve(e), restore)
   })
 
   // The answer's text row alone. Each row reads only the
@@ -2441,6 +2443,10 @@ export const register: Register = on => {
           const hasAnswerAnchor = answerKey !== undefined || q.answerRequestId !== undefined
           const answerIds = q.answerKey !== undefined ? [q.answerKey] : answerKey !== undefined ? [answerKey] : []
           const restoreInstance = q.restoredBy === undefined ? undefined : renderInstances.get(`restore:${q.restoredBy}`)
+          // A completed answer displayed by mark_answered owns its ToolUse row: the native
+          // contract makes that call id the requestId, even before its first draw after reload.
+          const answerInstance = q.answerKey === undefined ? restoreInstance
+            : q.answerKey === q.answeredBy ? q.answerKey : renderInstances.get(q.answerKey)
 
           const dot = (
             <Text color={color} dimColor={q.status === 'deferred'}>
@@ -2457,7 +2463,7 @@ export const register: Register = on => {
               <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
                 {!hasAnswerAnchor
                   ? <Text color="subtle" dimColor>[ A ]</Text>
-                  : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, q.answerKey === undefined ? restoreInstance : renderInstances.get(q.answerKey)) : undefined} />}
+                  : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />}
               </Box>
             </Box>
           )

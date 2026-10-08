@@ -674,6 +674,13 @@ const jumpLog = (on: Parameters<TestBody>[1]) => {
   return { logs, toasts }
 }
 
+// Successful assistant-answer jumps require the exact observed render host.
+const mountAnswerRow = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
+  const text = ANSWERED.questions[0].answerText
+  on('ui.render', { component: 'AssistantMessage' }, () => ({ type: 'Text', props: {}, children: [text] }))
+  return $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: 'aaaa1111-bbbb-cccc-dddd-000000000000', props: { text, isFirstOfReply: true } } as never)
+}
+
 test('[ Q ] jumps to where the question was asked; there is no asked button', async ($, on) => {
   mock.clock(on)
   const levels = lightLog(on)
@@ -695,11 +702,12 @@ test('[ A ] jumps to the actual answer text', async ($, on) => {
   mock.clock(on)
   const { logs } = jumpLog(on)
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: ANSWERED, version: 1 } }))
+  await mountAnswerRow($, on)
 
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
 
-  expect(logs).toContain('track: jump {"to":{"key":"answer:aaaa1111-bbbb-cccc-dddd"},"block":"start"}')
+  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual(['track: jump {"to":{"requestId":"aaaa1111-bbbb-cccc-dddd-000000000000"},"block":"start"}'])
 })
 
 test('a jump to the question lights its prompt row, then fades it out', async ($, on) => {
@@ -724,6 +732,7 @@ test('a jump to the answer lights only the answer text', async ($, on) => {
   const levels = lightLog(on)
   const withText = { ...ANSWERED, questions: [{ ...ANSWERED.questions[0], answerKey: 'aaaa1111-bbbb-cccc-dddd' }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: withText, version: 1 } }))
+  await mountAnswerRow($, on)
 
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
@@ -852,6 +861,7 @@ test('a fade step under way when a new jump lands does not undo the new jump', a
     return { value: { isSet: true as const, version } }
   })
 
+  await mountAnswerRow($, on)
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'q-1' })
   await clock.advance(5000)

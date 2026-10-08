@@ -52,10 +52,13 @@ running turn. Doorbells and informational notifications alone need no row. Track
   Groups containing an uncleared question's tracking source or displayed restore stay unfolded;
   unrelated groups retain their native collapsed state. This exposes the ToolUse child that owns
   the target and changes how those groups appear in the transcript. Composer rows always have
-  an owned wrapper. When an answer's exact host render instance was observed on this load, a jump
-  resolves it before selecting the answer text. The bounded presentation cache is lost on reload;
-  an unseen target still gets a key attempt and a visible refusal if unavailable. Native jumps
-  after reload remain an acceptance gate, including oldest and middle rows away from the viewport.
+  an owned wrapper. Transcript jumps use `requestId`; `{ key }` resolves only plugin panes and
+  AbovePrompt, so it cannot reveal a transcript answer Box. Call-sourced answers use their stable
+  ToolUse call ID. Assistant answers use the exact host render instance observed on this load.
+  The bounded presentation cache is lost on reload; an unseen assistant or restore host refuses
+  visibly, without falling back to an acknowledgement or a guessed key. Shading still selects
+  only the answer text. Native jumps after reload remain an acceptance gate, including oldest
+  and middle rows away from the viewport.
 - **Layout.** The title stays at the top and the banner at the bottom. Questions and Steps are
   fixed regions, about a third and two thirds; each scrolls on its own under the wheel, and its
   header counts the rows hidden above and below (`↑2 ↓5`). Empty sections say only "None yet."
@@ -110,7 +113,9 @@ running turn. Doorbells and informational notifications alone need no row. Track
   no link to the old Task. When the model marks a question answered, the mod keeps the answer's
   text (up to 1,000 characters), and the restore call's row in the transcript shows each restored
   question with its answer, its deferral note, or "(answer text was not saved)" for one answered
-  before answers were kept. `[ Q ]` and `[ A ]` target their own question or answer inside that row. The call
+  before answers were kept. `[ Q ]` and `[ A ]` reveal the observed restore row and shade their own
+  question or answer inside it. A requestId reveals the whole row; a later question or answer may
+  remain below the viewport in a large snapshot. Exact placement within that row is unresolved. The call
   refuses to overwrite unrelated steps unless `replace: true` is passed. Repeated restoration
   reuses stable source identities and keeps local progress. A model call supplies its displayed
   restore row; a programmatic call first appends and validates a plugin-owned user note.

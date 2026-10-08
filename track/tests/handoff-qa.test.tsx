@@ -269,26 +269,28 @@ test('the restore row still shows the answers after the questions are cleared fr
 })
 
 // A restored question's rows are in the old transcript; the restore row is where it shows here.
-test('[ A ] of a restored question jumps to its own restored answer', async ($, on) => {
+test('[ A ] of a restored question reveals the observed restore row', async ($, on) => {
   mock.clock(on)
   setUp(on)
   const lines = logs(on)
   await restore($, { from_session: OLD })
+  await rowTexts($)
   const ui = await $.ui.mount(pane('dock', 60, 40))
 
   await ui.press({ key: 'a-2' })
 
-  expect(lines).toContain(`track: jump {"to":{"key":"restored-a:${RESTORE}:2"},"block":"start"}`)
+  expect(lines.filter(line => line.startsWith('track: jump'))).toEqual([`track: jump {"to":{"requestId":"${RESTORE}"},"block":"start"}`])
 })
 
-test('[ Q ] of a restored question jumps to its own restored question', async ($, on) => {
+test('[ Q ] of a restored question reveals the observed restore row', async ($, on) => {
   mock.clock(on)
   setUp(on)
   const lines = logs(on)
   await restore($, { from_session: OLD })
+  await rowTexts($)
   const ui = await $.ui.mount(pane('dock', 60, 40))
 
   await ui.press({ key: 'q-5' })
 
-  expect(lines).toContain(`track: jump {"to":{"key":"restored-q:${RESTORE}:5"},"block":"start"}`)
+  expect(lines.filter(line => line.startsWith('track: jump'))).toEqual([`track: jump {"to":{"requestId":"${RESTORE}"},"block":"start"}`])
 })

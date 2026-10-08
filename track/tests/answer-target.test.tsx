@@ -30,19 +30,21 @@ test('answer-before-mark links and highlights only the real answer row', async (
   await clock.advance(0)
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
-  expect(logs).toContain(`track: jump {"to":{"key":"answer:${KEY}"},"block":"start"}`)
+  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual([`track: jump {"to":{"requestId":"${DRAWN}"},"block":"start"}`])
   expect(lit).toContain(KEY)
   expect(lit).not.toContain('toolu_ack')
   await answer.unmount()
 })
 
-test('an older saved answer prefers its text key over an acknowledgement target', async ($, on) => {
+test('an older saved answer uses its drawn text host rather than an acknowledgement target', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'Legacy question', at: 1, turnId: 'old', status: 'answered', answerRequestId: 'toolu_ack', answerKey: KEY, answerText: 'The saved answer' }] })
   const logs: string[] = []
   on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  on('ui.render', { component: 'AssistantMessage' }, () => ({ type: 'Text', props: {}, children: ['The saved answer'] }))
+  await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: DRAWN, props: { text: 'The saved answer', isFirstOfReply: true } } as never)
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
-  expect(logs).toContain(`track: jump {"to":{"key":"answer:${KEY}"},"block":"start"}`)
+  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual([`track: jump {"to":{"requestId":"${DRAWN}"},"block":"start"}`])
   expect(logs.join('\n')).not.toContain('toolu_ack')
 })

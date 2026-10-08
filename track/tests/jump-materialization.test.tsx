@@ -1,5 +1,5 @@
-// FIXTURE: native scroll resolves a render instance, while an element key
-// requires a drawn owned element. These checks do not prove native clicks.
+// FIXTURE: transcript scroll resolves a requestId. Element keys search plugin
+// panes and AbovePrompt only. These checks do not prove native clicks.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore, logs, pane } from './kit'
 
@@ -36,7 +36,7 @@ test('an unlit verified composer row still has a Track-owned element', async ($,
   expect((await ui.find({ key: `question:${ROW}` }))?.text).toBe('Older question')
 })
 
-test('a native answer jump resolves its host instance before selecting only its text key', async ($, on) => {
+test('an answer jump resolves its host instance without a plugin-site key scroll', async ($, on) => {
   mock.clock(on)
   const lines = logs(on)
   atomStore(on, 'ledger', { ...EMPTY, questions: [{ id: 1, head: 'Older question', at: 1, turnId: 't1', status: 'answered', answerRequestId: UUID, answerKey: ROW, answerText: 'Actual answer' }] })
@@ -45,8 +45,7 @@ test('a native answer jump resolves its host instance before selecting only its 
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
   const moves = lines.filter(line => line.startsWith('track: jump'))
-  expect(moves[0]).toBe(`track: jump {"to":{"requestId":"${DRAWN}"},"block":"start"}`)
-  expect(moves[1]).toBe(`track: jump {"to":{"key":"answer:${ROW}"},"block":"start"}`)
+  expect(moves).toEqual([`track: jump {"to":{"requestId":"${DRAWN}"},"block":"start"}`])
 })
 
 test('the generic instruction treats read requests as work even for a single command', async ($, on) => {
