@@ -1,5 +1,5 @@
-// FIXTURE pins for the native 2026-10-08 observation: mark_answered can precede
-// the final visible response. Thinking/narration is never saved as an answer.
+// FIXTURE: explicit completed text can precede its matching native response.
+// Unidentified thinking/narration cannot supply unknown answer words.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 
@@ -13,13 +13,14 @@ const prepare = (on: any) => {
 }
 const response = ($: any, text: string, uuid = '11111111-2222-4333-8444-555555555555') => $.session.append({ door: 'response', uuid, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, origin: { kind: 'model', model: 'fixture' } })
 const ask = ($: any) => $.tool.call({ tool: 'mcp__track__track_question', summary: 'What is saved?', tool_use_id: 'question-call' })
-const mark = ($: any) => $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', tool_use_id: 'mark-call' })
+const mark = ($: any, input: object = {}) => $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', tool_use_id: 'mark-call', ...input })
 
-test('a later actual response binds an already marked answer and is durable before turn end', async ($, on) => {
+test('a later matching response reanchors an explicit answer and is durable before turn end', async ($, on) => {
   const { l, store } = prepare(on)
   await ask($)
-  await mark($)
-  expect((l.value as any).questions[0].answerText).toBeUndefined()
+  await mark($, { answer_text: 'תשובה נשמרת 😀' })
+  expect((l.value as any).questions[0].answerText).toBe('תשובה נשמרת 😀')
+  expect((l.value as any).questions[0].answerKey).toBe('mark-call')
   await response($, 'תשובה נשמרת 😀')
   const answered = (l.value as any).questions[0]
   expect(answered.answerText).toBe('תשובה נשמרת 😀')
@@ -32,38 +33,41 @@ test('pre-question text remains ineligible when the answer is marked before late
   const { l } = prepare(on)
   await response($, 'Earlier unrelated text')
   await ask($)
-  await mark($)
+  expect((await mark($)).deny).toContain('answer_text')
   expect((l.value as any).questions[0].answerText).toBeUndefined()
   await response($, 'The later answer')
+  await mark($, { answer_request_id: '11111111-2222-4333-8444-555555555555' })
   expect((l.value as any).questions[0].answerText).toBe('The later answer')
 })
 
-test('a response in another turn cannot bind the old pending answer', async ($, on) => {
+test('a response in another turn cannot close an unidentified answer', async ($, on) => {
   const { l, t } = prepare(on)
   await ask($)
-  await mark($)
+  expect((await mark($)).deny).toContain('answer_text')
   t.value = { ...t.value, currentId: 't2' }
   await response($, 'A different turn')
   expect((l.value as any).questions[0].answerText).toBeUndefined()
+  expect((l.value as any).questions[0].status).toBe('open')
 })
 
 test('an already captured answer is not replaced by a later response', async ($, on) => {
   const { l } = prepare(on)
   await ask($)
   await response($, 'The actual first answer')
-  await mark($)
+  await mark($, { answer_request_id: '11111111-2222-4333-8444-555555555555' })
   await response($, 'A later status note')
   expect((l.value as any).questions[0].answerText).toBe('The actual first answer')
 })
 
-test('two pending questions cannot guess that the same later response answers both', async ($, on) => {
+test('two unidentified questions cannot guess that the same later response answers both', async ($, on) => {
   const { l } = prepare(on)
   await ask($)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Another question', tool_use_id: 'second-question' } as never)
-  await mark($)
-  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 2, status: 'answered', tool_use_id: 'second-mark' } as never)
+  expect((await mark($)).deny).toContain('answer_text')
+  expect((await $.tool.call({ tool: 'mcp__track__mark_answered', id: 2, status: 'answered', tool_use_id: 'second-mark' } as never)).deny).toContain('answer_text')
   await response($, 'An ambiguous later response')
   expect((l.value as any).questions.map((q: any) => q.answerText)).toEqual([undefined, undefined])
+  expect((l.value as any).questions.map((q: any) => q.status)).toEqual(['open', 'open'])
   const resolved = await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', answer_request_id: '11111111-2222-4333-8444-555555555555', tool_use_id: 'verified-mark' } as never)
   expect(resolved.deny).toBeUndefined()
   expect((l.value as any).questions[0].answerText).toBe('An ambiguous later response')
@@ -85,7 +89,7 @@ test('a repeated answered status preserves the known answer against later status
   const { l } = prepare(on)
   await ask($)
   await response($, 'The known answer')
-  await mark($)
+  await mark($, { answer_request_id: '11111111-2222-4333-8444-555555555555' })
   await response($, 'Later unrelated status')
   await mark($)
   expect((l.value as any).questions[0].answerText).toBe('The known answer')

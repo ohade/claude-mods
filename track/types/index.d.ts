@@ -10,7 +10,8 @@ export type Prompt = {
 }
 
 // A question the model sent to the panel with `track_question`. `askedRequestId` is
-// the prompt row it was asked in; `answerRequestId` identifies verified answer text.
+// its verified source or tracking call; `answerRequestId` identifies the native answer
+// or the call that first displayed explicitly supplied completed text.
 // Legacy ledgers may still have the acknowledgement there; jumps use answerKey.
 export type Question = {
   id: number
@@ -23,10 +24,10 @@ export type Question = {
   answerRequestId?: string
   // The status call is kept separately when a later response is the visible answer.
   answeredBy?: string
-  // A mark before the real text can bind only a later response in this same turn.
+  // Explicit completed words can reanchor to matching later text in this same turn.
   answerTurnId?: string
   answerOrder?: number
-  // The answer's last text row, by its row key (the row uuid's first four groups).
+  // The verified native text row key, or the call displaying explicit answer text.
   answerKey?: string
   note?: string
   cleared?: true
@@ -36,9 +37,11 @@ export type Question = {
   // Monotonic order of the tracking event, compared with text in the same turn.
   trackedOrder?: number
   answeredAt?: number
-  // The answer's words, from that last text row, cut to ANSWER_CHARS: a later session shows them
+  // The model-identified completed answer, cut to ANSWER_CHARS: a later session shows it
   // in its restore row, since the row itself is in this session's transcript.
   answerText?: string
+  // SHA-256 of the full completed words, for source matching beyond the saved cap.
+  answerTextHash?: string
   // Brought back after a handoff: the session it came from, and the restore_tracker call whose
   // row shows it here (that row is where [ Q ] and [ A ] jump).
   restoredFrom?: string
@@ -98,7 +101,7 @@ export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
   eventOrder?: number
-  lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string }
+  lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string; textHash?: string }
   composeSeen?: true
   composedRule?: string
 }

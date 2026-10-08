@@ -43,9 +43,12 @@ test('same-turn text before the question is never its answer, even at equal time
   const ledger = atomStore(on, 'ledger', { ...EMPTY, questions: [{ id: 1, head: 'Later question', at: 100, turnId: 't1', trackedOrder: 2, status: 'open', answerKey: 'stale' }] })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 2, lastText: { row: 'earlier-text', turnId: 't1', order: 1, at: 100 } })
 
-  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'answer', id: 1, status: 'answered' } as never)
+  const before = JSON.stringify(ledger.value)
+  const refused = await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'answer', id: 1, status: 'answered' } as never)
 
-  expect((ledger.value.questions[0] as { answerKey?: string }).answerKey).toBeUndefined()
+  expect(refused.deny).toContain('answer_text')
+  expect(JSON.stringify(ledger.value)).toBe(before)
+  expect(ledger.value.questions[0].status).toBe('open')
 })
 
 test('same-turn answer linking fails closed when event order is unknown', async ($, on) => {
@@ -89,8 +92,8 @@ test('equal event orders fail closed when linking an answer', async ($, on) => {
 
 test('a question from an earlier turn may link to text in a fresh later turn', async ($, on) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, questions: [{ id: 1, head: 'Saved question', turnId: 'old', trackedOrder: 5, status: 'open', at: 100 }] })
-  atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null, eventOrder: 1, lastText: { row: 'later-answer', turnId: 'new', order: 1 } })
-  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered' } as never)
+  atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null, eventOrder: 1, lastText: { row: 'later-answer', requestId: 'later-response', text: 'A later answer', turnId: 'new', order: 1 } })
+  await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', answer_request_id: 'later-response' } as never)
   expect((ledger.value.questions[0] as { answerKey?: string }).answerKey).toBe('later-answer')
 })
 

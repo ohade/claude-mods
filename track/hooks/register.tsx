@@ -81,7 +81,7 @@ const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as
 const STEPS =
   'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
 
-const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Update status with mcp__track__mark_step / mcp__track__mark_answered. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.'
+const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Update status with mcp__track__mark_step / mcp__track__mark_answered; when answered, pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.'
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -521,7 +521,7 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
       if (q.trackedBy === old.trackedBy && q.at === old.at && q.trackedBy !== undefined && q.at > compactedAt && !present.has(q.trackedBy)) return []
       const call = answerCall(q)
       if (call === undefined || call !== answerCall(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(call)) return [q]
-      const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerText: _x, ...rest } = q
+      const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerText: _x, answerTextHash: _hash, ...rest } = q
 
       return [{ ...rest, status: 'open' as const }]
     })
@@ -909,6 +909,7 @@ const savedQuestion = (row: unknown): Question | undefined => {
     ...textField('answerRequestId', r.answerRequestId),
     ...textField('answeredBy', r.answeredBy),
     ...textField('answerTurnId', r.answerTurnId),
+    ...(typeof r.answerTextHash === 'string' && /^[0-9a-f]{64}$/.test(r.answerTextHash) && { answerTextHash: r.answerTextHash }),
     ...(typeof r.answerOrder === 'number' && Number.isSafeInteger(r.answerOrder) && r.answerOrder >= 0 && { answerOrder: r.answerOrder }),
     ...textField('answerKey', r.answerKey),
     ...textField('trackedBy', r.trackedBy),
@@ -1161,13 +1162,14 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_answered',
       description:
-        'Mark a tracked question answered or deferred. Call it right after writing the answer. An optional answer_request_id must name the latest host-observed response in this turn; an unknown source is refused. A known answer is kept. If called before text, only one pending question can bind the next response. status "deferred" needs a note saying what it waits for.',
+        'Mark a tracked question answered or deferred. For answered, supply answer_text containing the completed answer, including answers delivered through any tool or file. Progress updates are not answers. Alternatively answer_request_id must name the latest host-observed response in this turn. Missing or unverified answer content is refused; a known answer is kept. Text without a verified native source is shown at this call. status "deferred" needs a note saying what it waits for.',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'number', description: 'The question id returned by track_question' },
           status: { type: 'string', enum: ['answered', 'deferred'] },
           note: { type: 'string', description: 'For deferred: what the answer waits for' },
+          answer_text: { type: 'string', description: 'The completed answer itself, not progress or an acknowledgement. Required for answered unless a verified answer_request_id identifies it. Saved up to 1000 characters.' },
           answer_request_id: { type: 'string', description: 'Optional exact response UUID, verified against the latest host-observed answer text; never guessed from a user prompt' },
         },
         required: ['id', 'status'],
@@ -1282,9 +1284,9 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The model's last text row, by its row key, and its text: the answer a mark_answered call
-  // follows. The engine draws an assistant row under its uuid with the last group zeroed, as a
-  // prompt row. The text is cut here, so a long answer never sits whole in the session's state.
+  // Event order verifies a source, not whether its words answer the question.
+  // A later response can move an explicit answer's call target to the same verified text;
+  // it never supplies unknown answer words from narration.
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const text = textOf(e.message.content).trim()
     if (e.agentId === undefined && text !== '') {
@@ -1294,13 +1296,20 @@ export const register: Register = on => {
         observed = { row: rowKey(e.uuid), requestId: e.uuid, turnId: cur.currentId, order, text: truncate(text, ANSWER_CHARS) }
         return { ...cur, eventOrder: order, lastText: observed }
       })
+      // Reserve event order before hashing. Keep full-word identity in bounded
+      // metadata; comparing only the saved prefix could attach a different answer.
+      const answer = { ...observed!, textHash: await checksumOf(text) }
+      await update($, turn, cur => cur.lastText?.requestId === answer.requestId && cur.lastText.order === answer.order
+        ? { ...cur, lastText: answer }
+        : cur)
       // Keep this message's observation. A later turn-atom write must never
       // replace its text while leaving this message's UUID on the answer.
-      const answer = observed
       let changed = false
       await update<Ledger>($, ledger, cur => {
         changed = false
-        const pending = cur.questions.filter(q => q.status === 'answered' && q.answerText === undefined && q.answerTurnId === answer?.turnId && q.answerOrder !== undefined && answer?.order !== undefined && answer.order > q.answerOrder)
+        const pending = cur.questions.filter(q => q.status === 'answered' && q.answerText !== undefined &&
+          (q.answerTextHash !== undefined ? q.answerTextHash === answer.textHash : q.answerText === text) &&
+          q.answerTurnId === answer.turnId && q.answerOrder !== undefined && answer.order > q.answerOrder)
         if (pending.length !== 1 || answer?.text === undefined) return cur
         const questions = cur.questions.map(q => {
           if (q.id !== pending[0]!.id) return q
@@ -1395,7 +1404,7 @@ export const register: Register = on => {
       busy.length === 0
         ? ''
         : ` In progress: ${busy.map(s => `${s.id} "${truncate(s.subject, 60)}"`).join(', ')}; if this prompt finishes, replaces or drops ${them}, mark ${them} with mcp__track__mark_step first.`
-    const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done.${inProgress} Mark a question with mcp__track__mark_answered when you answer it.`
+    const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done.${inProgress} Mark a question with mcp__track__mark_answered and its completed answer_text when you answer it.`
 
     return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
   })
@@ -1431,7 +1440,7 @@ export const register: Register = on => {
 
     return {
       ...below,
-      block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. If you answered it, call mcp__track__mark_answered({ id: ${first.id}, status: "answered" }); if it must wait, status "deferred" with a note. Then finish.`,
+      block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. If you answered it, call mcp__track__mark_answered with id ${first.id}, status "answered", and answer_text containing the completed answer; if it must wait, status "deferred" with a note. Then finish.`,
     }
   }).catch(($, e, next) => next(e))
 
@@ -1545,7 +1554,7 @@ export const register: Register = on => {
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
 
     // A plugin tool's result is text (or content blocks), never a bare object.
-    return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered({ id: ${minted?.id}, status: "answered" }).` }
+    return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered with id ${minted?.id}, status "answered", and answer_text containing the completed answer.` }
   })
 
   on('tool.call', { tool: MARK_ANSWERED }, async ($, e) => {
@@ -1561,8 +1570,8 @@ export const register: Register = on => {
 
       return { result: `No question with id ${id}. Open: ${open.length > 0 ? open.join('; ') : 'none'}.` }
     }
-    // The answer's text row: the last text the model wrote in this turn, if any. Its words go with
-    // it, so a later session can show the answer after a handoff.
+    // Only the model can identify a completed answer. A latest text observation
+    // establishes where matching words were drawn; progress alone grants no answer.
     const t = await read($, turn)
     const question = l.questions.find(q => q.id === id) as Question
     const text = t.lastText
@@ -1571,26 +1580,47 @@ export const register: Register = on => {
     if (e.answer_request_id !== undefined && (last?.requestId === undefined || last.requestId !== e.answer_request_id)) {
       return { deny: 'track: answer source is not the latest verified response in this turn; nothing changed.' }
     }
+    const supplied = typeof e.answer_text === 'string' ? e.answer_text.trim() : undefined
+    if (status === 'answered' && e.answer_text !== undefined && !supplied) {
+      return { deny: 'track: answer_text must contain the completed answer; nothing changed.' }
+    }
+    const suppliedHash = status === 'answered' && supplied !== undefined ? await checksumOf(supplied) : undefined
+    const matchesNative = supplied !== undefined && last !== undefined &&
+      (last.textHash !== undefined ? suppliedHash === last.textHash : supplied === last.text)
+    if (status === 'answered' && e.answer_request_id !== undefined && supplied !== undefined && !matchesNative) {
+      return { deny: 'track: answer text does not match the verified response; nothing changed.' }
+    }
     if (status === 'answered' && question.answerText !== undefined) return { result: `Q${id} is already answered; its known answer was kept.` }
-    const answerKey = last?.row
-    const answerText = last?.text
+    const native = status === 'answered' && (e.answer_request_id !== undefined || matchesNative) ? last : undefined
+    const answerText = status === 'answered' ? supplied ?? native?.text : undefined
+    if (status === 'answered' && !answerText) {
+      return { deny: 'track: supply completed answer_text or a verified answer_request_id; nothing changed.' }
+    }
+    const answerKey = status === 'answered' ? native?.row ?? e.tool_use_id : undefined
+    if (status === 'answered' && !answerKey) {
+      return { deny: 'track: the answer has no verified response or tracking-call identity; nothing changed.' }
+    }
     const answerOrder = t.eventOrder ?? 0
     await update<Ledger>($, ledger, cur => ({
       ...cur,
       questions: cur.questions.map(q => {
         if (q.id !== id) return q
-        const { answerKey: _old, answerText: _oldText, answerTurnId: _turn, answerOrder: _order, answeredBy: _by, answerRequestId: _request, ...rest } = q
+        // update retries after a competing write. The preflight snapshot is not
+        // authority to replace an answer acknowledged before that retry.
+        if (status === 'answered' && q.answerText !== undefined) return q
+        const { answerKey: _old, answerText: _oldText, answerTextHash: _hash, answerTurnId: _turn, answerOrder: _order, answeredBy: _by, answerRequestId: _request, ...rest } = q
         return {
               ...rest,
               status,
               answeredAt: Date.now(),
               ...(note !== undefined && { note }),
-              ...(last?.requestId !== undefined && { answerRequestId: last.requestId }),
-              ...(last?.requestId === undefined && e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
+              ...(native?.requestId !== undefined && { answerRequestId: native.requestId }),
+              ...(native?.requestId === undefined && e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
               ...(e.tool_use_id !== undefined && { answeredBy: e.tool_use_id }),
               ...(answerKey !== undefined && { answerKey }),
-              ...(answerText !== undefined && { answerText }),
-              ...(status === 'answered' && last === undefined && t.currentId !== null && { answerTurnId: t.currentId, answerOrder }),
+              ...(answerText !== undefined && { answerText: truncate(answerText, ANSWER_CHARS) }),
+              ...((suppliedHash ?? native?.textHash) !== undefined && { answerTextHash: suppliedHash ?? native?.textHash }),
+              ...(status === 'answered' && native === undefined && t.currentId !== null && { answerTurnId: t.currentId, answerOrder }),
             }
       }),
     }))
@@ -2078,11 +2108,16 @@ export const register: Register = on => {
       return <Text dimColor>{`${glyph} ${name} ${status.replace('_', ' ')}`}</Text>
     }
     if (e.props.tool === MARK_ANSWERED) {
-      const { Text } = $.ui.resolve(e)
+      const { Box, Text } = $.ui.resolve(e)
       const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
       const status = input.status === 'deferred' ? 'deferred' : 'answered'
       const level = await read($, memberOf(flash, e))
       const label = `✓ Q${String(input.id ?? '?')}. ${status}`
+      const q = (await read($, ledger)).questions.find(one => one.id === Number(input.id))
+      if (q?.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
+        return <Box flexDirection="column"><Text dimColor>{label}</Text><Box key={`answer:${q.answerKey}`} backgroundColor={shade(level)}><Text wrap="wrap">{q.answerText}</Text></Box></Box>
+      }
+      if (q !== undefined && q.status !== status) return <Text dimColor>{`Q${q.id}. ${q.status}`}</Text>
 
       return level > 0 ? <Text backgroundColor={shade(level)}>{` ${label} `}</Text> : <Text dimColor>{label}</Text>
     }

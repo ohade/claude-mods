@@ -95,7 +95,7 @@ const rowTexts = async ($: Engine) => {
 }
 
 // The answer's own words are what the next session shows; a long answer is cut, not dropped.
-test('mark_answered keeps the last response text as the answer, cut at 1000 characters', async ($, on) => {
+test('mark_answered keeps the explicitly identified response text, cut at 1000 characters', async ($, on) => {
   mock.clock(on)
   // The question precedes the response in the same turn; record that order explicitly.
   const ledger = atomStore<L>(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'why?', status: 'open', at: 1000, turnId: 't1', trackedOrder: 0 }] })
@@ -106,7 +106,7 @@ test('mark_answered keeps the last response text as the answer, cut at 1000 char
     .append({ door: 'response', uuid: 'c0000001-0000-4000-8000-000000000001', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: long }] } } as never)
     .catch(() => undefined)
 
-  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status: 'answered' } as never)
+  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status: 'answered', answer_request_id: 'c0000001-0000-4000-8000-000000000001' } as never)
 
   expect(ledger.value.questions[0]?.answerText).toBe(`${long.slice(0, 999)}…`)
 })

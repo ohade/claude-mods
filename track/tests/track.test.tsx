@@ -773,7 +773,7 @@ test('the lit answer mark is drawn on a highlight', async ($, on) => {
 // now keyed by its row id: the engine draws an assistant row under its uuid with the last group
 // zeroed (seen in a debug log and in the image-thumbs probe), as it draws a prompt row.
 const ROW = 'aaaa1111-bbbb-cccc-dddd'
-const TURN_WITH_TEXT = { currentId: 't1', gatedTurnId: null, eventOrder: 2, lastText: { row: ROW, turnId: 't1', order: 2 } }
+const TURN_WITH_TEXT = { currentId: 't1', gatedTurnId: null, eventOrder: 2, lastText: { row: ROW, requestId: 'response-row', text: 'An actual answer', turnId: 't1', order: 2 } }
 
 const answeredWith = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], turnState: unknown, status = 'answered') => {
   let written: { answerKey?: string } | undefined
@@ -786,12 +786,12 @@ const answeredWith = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>
 
     return { value: { isSet: true as const, version: 2 } }
   })
-  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status } as never)
+  await $.tool.call({ tool: 'mcp__track__mark_answered', tool_use_id: 'toolu_mark', id: 1, status, ...(status === 'answered' && { answer_request_id: (turnState as typeof TURN_WITH_TEXT).lastText?.requestId }) } as never)
 
   return written
 }
 
-test('mark_answered keys the answer by the last text row the model wrote this turn', async ($, on) => {
+test('mark_answered keys an explicitly identified response by its verified text row', async ($, on) => {
   expect((await answeredWith($, on, TURN_WITH_TEXT))?.answerKey).toBe(ROW)
 })
 
