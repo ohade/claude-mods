@@ -80,6 +80,10 @@ running turn. Doorbells and informational notifications alone need no row. Track
   missing work. It leaves the entire register unchanged. A Task named like a plan step links to it.
   The step in progress shows who is on it: a spinner breathing in grey while the main session
   works, an amber hourglass while it waits on agents, a still purple `◆` while it waits on you.
+  A duration runs only for an in-progress step with a known start and no end. Pending, paused
+  and waiting rows hide their clocks and reserve no clock space, even if an earlier start is
+  retained. Completed rows show a fixed duration only when both times are known. These are
+  wall-clock durations from the first start; resuming does not subtract parked intervals.
 - **Rings.** `◑ 4 of 8 · 50%` per section, counted over visible rows. **Clear completed** (`c`)
   hides finished rows and removes them from those counts.
 - **Clear all.** `q` and `s` empty the Questions or the Steps section; cleared open questions
