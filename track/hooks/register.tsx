@@ -200,8 +200,13 @@ const clockText = (ms: number): string => {
   return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}:${String(total % 60).padStart(2, '0')}`
 }
 
-// The shown steps whose clock runs: started, not done.
-const runningClocks = (l: Ledger): Step[] => l.steps.filter(s => s.cleared !== true && s.startedAt !== undefined && s.endedAt === undefined)
+// A retained start time is not current activity (pending-step clock defect, 2026-10-08).
+// Parked work has no clock; completed work needs a known end to show a fixed duration.
+const hasClock = (s: Step): boolean => s.startedAt !== undefined && (
+  s.status === 'in_progress' && s.endedAt === undefined ||
+  s.status === 'completed' && s.endedAt !== undefined
+)
+const runningClocks = (l: Ledger): Step[] => l.steps.filter(s => s.cleared !== true && s.status === 'in_progress' && hasClock(s))
 
 // Lines `text` takes word-wrapped at `width` columns, as the terminal wraps it: a word that does
 // not fit starts a new line, and a word longer than a line is broken.
@@ -2274,8 +2279,8 @@ export const register: Register = on => {
     const sWidth = Math.max(1, width - rowIndent - 3)
     const qControlsRows = compact ? 1 : 0
     const qLines = questions.map(q => wrappedLines(`Q${q.id}. ${q.head}`, qWidth) + qControlsRows)
-    const clockRows = (s: Step) => compact && s.startedAt !== undefined ? 1 : 0
-    const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || s.startedAt === undefined ? 0 : clockOf(s).length + 1))
+    const clockRows = (s: Step) => compact && hasClock(s) ? 1 : 0
+    const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
     const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepWidth(s)) + clockRows(s))
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
@@ -2469,7 +2474,7 @@ export const register: Register = on => {
               </Text>
             </Box>
           )
-          const clock = s.startedAt !== undefined && (
+          const clock = hasClock(s) && (
             <Box key={`s-clock-${s.id}`} flexShrink={0} alignSelf={compact ? 'flex-end' : undefined}>
               <Text dimColor color={s.endedAt === undefined ? look.textColor : undefined}>
                 {clockOf(s)}
