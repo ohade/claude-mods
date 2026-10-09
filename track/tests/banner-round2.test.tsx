@@ -105,7 +105,7 @@ test('the working banner glyph is the row text color, not the row background', a
   const ui = await mount($, on, [step(1, 'in_progress')], { ...IDLE, isWorking: true })
   const row = (await ui.findAll({ type: 'Box' })).find(el => el.key === 'banner-working')
   const glyph = row?.children?.find(el => el.type === 'Text')
-  expect(glyph?.text).toBe('◐')
+  expect(glyph?.text ?? glyph?.children?.join('')).toBe('◐')
   expect(glyph?.props?.color).toBe('inverseText')
   expect(row?.props.backgroundColor).toBe(GREY)
   expect(glyph?.props?.color).not.toBe(row?.props.backgroundColor)
