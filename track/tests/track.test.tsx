@@ -1427,7 +1427,7 @@ test('mark_step sets a step paused or waiting', async ($, on) => {
   expect(writes.at(-1)?.steps.find(s => s.id === 'plan:2')?.status).toBe('waiting')
 })
 
-test('the pane shows a paused step with ⏸ and a waiting step with the purple ◆', async ($, on) => {
+test('the pane shows a paused step with ⏸ and a waiting step with the blue ◆', async ($, on) => {
   const parked = {
     ...ANSWERED,
     steps: [
@@ -1443,7 +1443,7 @@ test('the pane shows a paused step with ⏸ and a waiting step with the purple �
     return { text: String(texts[at - 1]?.text ?? ''), color: (texts[at - 1]?.props as { color?: string } | undefined)?.color }
   }
   expect(glyphBefore('S1. Guard fix').text).toBe('⏸')
-  expect(glyphBefore('S2. Decide the handoff mod')).toEqual({ text: '◆', color: 'permission' })
+  expect(glyphBefore('S2. Decide the handoff mod')).toEqual({ text: '◆', color: '#1a73e8' })
 })
 
 // Regression (a probe on a live pane): ticks past the end of the steps grew the stored
