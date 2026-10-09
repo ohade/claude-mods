@@ -93,6 +93,7 @@ test('a cancelled Agent launch does not mark a delegated step from another turn'
 
 test('a stale open step id does not rewrite a paused step after the next turn starts', async ($, on) => {
   const { ledger, turn } = setup(on, [step('plan:1', { status: 'in_progress', activeTurnId: 't1' })])
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('tool.call', { tool: 'Bash' }, () => ({ result: CANCELLED, isError: true }))
   await call($, { tool: 'mcp__track__mark_step', id: 'plan:1', status: 'paused', note: 'blocked on vendor' })
   await $.turn.start({ text: 'next', turnId: 't2' } as never)
@@ -146,9 +147,12 @@ test('TaskUpdate and TodoWrite clear a finished-work flag when they change statu
   on('tool.call', { tool: 'TaskUpdate' }, () => ({ result: { success: true, taskId: '7', updatedFields: ['status'] } }))
   on('tool.call', { tool: 'TodoWrite' }, () => ({ result: { newTodos: [{ content: 'Ship it', status: 'completed' }] } }))
   await call($, { tool: 'TaskUpdate', taskId: '7', status: 'completed' })
-  expect(ledger.value.steps[0]).toMatchObject({ status: 'completed', followUp: undefined })
+  expect(ledger.value.steps[0]?.status).toBe('completed')
+  expect(ledger.value.steps[0]?.followUp).toBeUndefined()
   await call($, { tool: 'TodoWrite', todos: [{ content: 'Ship it', status: 'completed' }] })
-  expect(ledger.value.steps.find(s => s.id === 'todo:ship it')).toMatchObject({ status: 'completed', followUp: undefined })
+  const todo = ledger.value.steps.find(s => s.id === 'todo:ship it')
+  expect(todo?.status).toBe('completed')
+  expect(todo?.followUp).toBeUndefined()
 })
 
 test('two finished tasks of one step nudge once, and a second finish does not nudge again', async ($, on) => {
