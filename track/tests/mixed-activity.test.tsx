@@ -70,7 +70,7 @@ test('a narrow mixed banner keeps both user waiting and delegated work on one ro
   const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
   const text = rows.map(el => String(el.text ?? '')).join(' ')
   expect(text).toContain('Waiting on you')
-  expect(text).toContain('agents')
+  expect(text).toMatch(/Waiting( on)? agents/)
   expect(text).not.toContain('agents (')
   for (const row of rows) expect(String(row.text ?? '').trim().length).toBeLessThanOrEqual(17)
 })

@@ -53,7 +53,9 @@ test('main work remains grey while unrelated shell tasks run', async ($, on) => 
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
   expect(texts.at(-1)?.text).toContain('Working')
-  expect(texts.find(text => text.text === '◐')?.props.color).toBe('#5f6670')
+  const at = texts.findIndex(text => text.text === 'S1. Consult peers')
+  expect(texts[at - 1]?.text).toBe('◐')
+  expect(texts[at - 1]?.props.color).toBe('#5f6670')
   expect(texts.filter(text => text.text === '⧗')).toHaveLength(1)
 })
 
