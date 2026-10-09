@@ -117,14 +117,16 @@ const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a
 const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
 // Ohad's waiting color, one value for the ◆ and the waiting row. Blue, not the permission token.
 const WAITING_BLUE = '#1a73e8'
+// The agents row's glyph pulses through light shades, never the row's own amber background.
+const AMBER_GLYPH = ['inverseText', '#f2d49b', '#e8bc63', '#f2d49b'] as const
 
 type BannerCount = { kind: 'agents' | 'tasks'; n: number }
 type BannerParts = { label: string; brief: string; questions: string[]; steps: string[]; counts: BannerCount[] }
 type BannerRow = { key: string; glyph: string; words: string; background: string; glyphColor: string; parts: BannerParts }
 
-// A row is parts, not a sentence to parse. The glyph counts toward the width. A shorter label
-// keeps the step ids; a count replaces those ids only when the shorter label still overflows;
-// whatever remains is cut with fitLines.
+// A row is parts, not a sentence to parse. The glyph counts toward the width, in terminal columns.
+// Narrowing order: the shorter label (keeps the step ids), a labelled step count, then no label
+// (the glyph and color still name the row) with ids, then with the count. The shortest form is cut.
 const composeBanner = (label: string, steps: string[], parts: BannerParts): string => {
   const { questions, counts } = parts
   if (questions.length === 0 && steps.length === 0 && counts.length === 1 && counts[0]?.kind === 'tasks' && label === 'Tasks') {
@@ -137,33 +139,39 @@ const composeBanner = (label: string, steps: string[], parts: BannerParts): stri
   return [label, ...questions, ...steps, ...counts.map(count => `${count.kind} ${count.n}`)].filter(part => part !== '').join(' · ')
 }
 const bannerFits = (glyph: string, body: string, width: number): boolean =>
-  (glyph === '' ? body : `${glyph} ${body}`).length <= width
+  columnsOf(glyph === '' ? body : `${glyph} ${body}`) <= width
+const stepCount = (steps: string[]): string[] => (steps.length > 0 ? [`steps ${steps.length}`] : steps)
 const bannerWords = (glyph: string, body: string): string => (glyph === '' ? body : ` ${body}`)
 const bannerLine = (glyph: string, parts: BannerParts, width: number): { glyph: string; words: string } => {
   const full = composeBanner(parts.label, parts.steps, parts)
   const brief = composeBanner(parts.brief, parts.steps, parts)
-  const counted = composeBanner(parts.brief, parts.steps.length > 0 ? [String(parts.steps.length)] : parts.steps, parts)
-  const candidates = [full]
-  if (brief !== full) candidates.push(brief)
-  if (counted !== brief && counted !== full) candidates.push(counted)
-  for (const body of candidates) {
+  const counted = composeBanner(parts.brief, stepCount(parts.steps), parts)
+  const candidates = [full, brief, counted]
+  if (glyph !== '' && (parts.questions.length > 0 || parts.steps.length > 0 || parts.counts.length > 0)) {
+    candidates.push(composeBanner('', parts.steps, parts), composeBanner('', stepCount(parts.steps), parts))
+  }
+  const forms = candidates.filter((body, index) => body !== '' && candidates.indexOf(body) === index)
+  for (const body of forms) {
     if (bannerFits(glyph, body, width)) return { glyph, words: bannerWords(glyph, body) }
   }
-  const glyphCols = glyph === '' ? 0 : glyph.length + 1
+  const glyphCols = glyph === '' ? 0 : columnsOf(glyph) + 1
+  const shortest = forms.reduce((best, body) => (columnsOf(body) < columnsOf(best) ? body : best), full)
 
-  return { glyph, words: bannerWords(glyph, fitLines(full, Math.max(1, width - glyphCols), 1)) }
+  return { glyph, words: bannerWords(glyph, fitLines(shortest, Math.max(1, width - glyphCols), 1)) }
 }
 const collapseBrief = (row: BannerRow): string =>
   row.key === 'banner-unsaved' ? 'Unsaved' : row.key === 'banner-unknown' ? 'Unknown' : row.parts.brief
-const collapseSegment = (row: BannerRow, mode: 'full' | 'brief' | 'count'): string => {
+const collapseSegment = (row: BannerRow, mode: 'full' | 'brief' | 'count' | 'label'): string => {
   const label = mode === 'full' ? row.parts.label : collapseBrief(row)
-  const steps = mode === 'count' ? (row.parts.steps.length > 0 ? [String(row.parts.steps.length)] : []) : row.parts.steps
-  const body = composeBanner(label, steps, row.parts)
+  const steps = mode === 'count' ? stepCount(row.parts.steps) : row.parts.steps
+  const body = mode === 'label' ? label : composeBanner(label, steps, row.parts)
 
   return row.glyph === '' ? body : `${row.glyph} ${body}`
 }
 // One line, priority unsaved, you, unknown, working, agents, paused. Shorten a label before
-// dropping its step ids, then drop the lowest-priority segment except you.
+// dropping its step ids. Then every state by its label alone, before any state is dropped; then
+// drop the lowest-priority segment behind a +n, never Unsaved or You.
+// Widths are terminal columns.
 const collapseLine = (rows: BannerRow[], width: number): BannerRow => {
   const order = ['banner-unsaved', 'banner-you', 'banner-unknown', 'banner-working', 'banner-agents', 'banner-paused']
   const ordered = [...rows].filter(row => row.key !== 'banner-idle').sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key))
@@ -174,7 +182,7 @@ const collapseLine = (rows: BannerRow[], width: number): BannerRow => {
   const modes: Array<'full' | 'brief' | 'count'> = ordered.map(() => 'full')
   const joined = () => ordered.map((row, index) => collapseSegment(row, modes[index] ?? 'full')).join(' · ')
   let text = joined()
-  while (text.length > width) {
+  while (columnsOf(text) > width) {
     const briefAt = modes.findIndex((mode, index) => mode === 'full' && collapseSegment(ordered[index]!, 'brief') !== collapseSegment(ordered[index]!, 'full'))
     if (briefAt >= 0) {
       modes[briefAt] = 'brief'
@@ -189,20 +197,24 @@ const collapseLine = (rows: BannerRow[], width: number): BannerRow => {
     }
     break
   }
-  if (text.length <= width) return asLine(text, first)
-  let kept = [...ordered]
+  if (columnsOf(text) <= width) return asLine(text, first)
+  const kept = [...ordered]
   let dropped = 0
-  while (kept.length > 1) {
-    const victim = [...kept].reverse().find(row => row.key !== 'banner-you')
-    if (victim === undefined || kept[0] === undefined) break
-    kept = kept.filter(row => row !== victim)
+  const lineOf = (mode: 'count' | 'label') => [...kept.map(row => collapseSegment(row, mode)), ...(dropped > 0 ? [`+${dropped}`] : [])].join(' · ')
+  for (;;) {
+    for (const mode of ['count', 'label'] as const) {
+      if (columnsOf(lineOf(mode)) <= width) return asLine(lineOf(mode), kept[0] ?? first)
+    }
+    const victim = kept.length > 1 ? [...kept].reverse().find(row => row.key !== 'banner-you' && row.key !== 'banner-unsaved') : undefined
+    if (victim === undefined) break
+    kept.splice(kept.indexOf(victim), 1)
     dropped += 1
-    const shorter = [...kept.map(row => collapseSegment(row, 'count')), `+${dropped}`].join(' · ')
-    if (shorter.length <= width) return asLine(shorter, kept[0])
   }
-  const only = collapseSegment(kept[0] ?? first, 'count')
+  const suffix = dropped > 0 ? ` · +${dropped}` : ''
+  const body = kept.map(row => collapseSegment(row, 'label')).join(' · ')
+  const room = width - columnsOf(suffix)
 
-  return asLine(only.length <= width ? only : fitLines(only, width, 1), kept[0] ?? first)
+  return asLine(room >= 1 ? `${fitLines(body, room, 1)}${suffix}` : fitLines(`+${dropped}`, width, 1), kept[0] ?? first)
 }
 const pulsing: { timer?: Timer } = {}
 // Each step row ends in its wall clock. It moves every second under an hour, then once a minute.
@@ -2520,11 +2532,16 @@ export const register: Register = on => {
       .map(q => `Q${q.id}`)
     const unfinishedQuestion = questions.some(q => q.status !== 'answered' && q.status !== 'deferred')
     const askOpen = now.askCalls.length > 0
-    const running = agentActivity || work === 'working' || work === 'unknown' || askOpen
-    const piece = (key: string, glyph: string, parts: BannerParts, background: string): BannerRow => {
+    // The main turn runs with no main step of its own (only delegated steps): still a Working row.
+    const mainRuns = now.isWorking && !askOpen && !numbered.some(row => row.step.status === 'in_progress' && row.step.delegated !== true)
+    const mainRow = work === 'working' || mainRuns
+    // An ask dialog in the middle of a step is the person's turn, not unknown activity.
+    const unknownRow = work === 'unknown' && !askOpen
+    const running = agentActivity || mainRow || unknownRow || askOpen
+    const piece = (key: string, glyph: string, parts: BannerParts, background: string, glyphColor = 'inverseText'): BannerRow => {
       const line = bannerLine(glyph, parts, width)
 
-      return { key, glyph: line.glyph, words: line.words, background, glyphColor: 'inverseText', parts }
+      return { key, glyph: line.glyph, words: line.words, background, glyphColor, parts }
     }
     const stack = (): BannerRow[] => {
       const built: BannerRow[] = []
@@ -2543,9 +2560,9 @@ export const register: Register = on => {
           questions: [],
           steps: agentSteps.map(row => `S${row.n}`),
           counts,
-        }, AMBER_SHADES[0]))
+        }, AMBER_SHADES[0], AMBER_GLYPH[phase % AMBER_GLYPH.length]))
       }
-      if (work === 'working') {
+      if (mainRow) {
         built.push(piece('banner-working', '◐', {
           label: 'Working',
           brief: 'Working',
@@ -2554,7 +2571,7 @@ export const register: Register = on => {
           counts: [],
         }, GREY_SHADES[0]))
       }
-      if (work === 'unknown') {
+      if (unknownRow) {
         const label = width < 18 ? 'Unknown' : 'Activity unknown'
         built.push(piece('banner-unknown', '', { label, brief: 'Unknown', questions: [], steps: [], counts: [] }, 'warning'))
       } else if (!running && (pausedSteps.length > 0 || (work === 'paused' && waitingSteps.length === 0 && unfinishedQuestion))) {

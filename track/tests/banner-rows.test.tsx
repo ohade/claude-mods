@@ -201,7 +201,7 @@ test('a narrow waiting row shows a count instead of the step ids', async ($, on)
   expect(you.trim().length).toBeLessThanOrEqual(18)
 })
 
-test('banner glyphs stay the row text color across pulse phases', async ($, on) => {
+test('the you glyph stays still and the agents glyph pulses, never in its row background', async ($, on) => {
   let phase = 0
   atomStore(on, 'ledger', { ...EMPTY, steps: [step(1, 'waiting'), step(2, 'in_progress', { delegated: true })] })
   atomStore(on, 'activity', IDLE)
@@ -227,6 +227,7 @@ test('banner glyphs stay the row text color across pulse phases', async ($, on) 
   expect(agent0?.text).toBe('⧗')
   expect(agent3?.text).toBe('⧗')
   expect(agent0?.props.color).toBe('inverseText')
-  expect(agent3?.props.color).toBe('inverseText')
+  expect(agent3?.props.color).not.toBe(agent0?.props.color)
   expect(agent0?.props.color).not.toBe('#7a5410')
+  expect(agent3?.props.color).not.toBe('#7a5410')
 })
