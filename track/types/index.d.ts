@@ -74,6 +74,8 @@ export type Step = {
   note?: string
   // Explicit work ownership, independent of whether agents run through Agent or a shell.
   delegated?: true
+  // Background work finished while this row was still open. The status stays until the lead updates it.
+  followUp?: true
   // The main turn that last started this work. Kept for reload, removed on cross-session restore.
   activeTurnId?: string
   cleared?: true
@@ -108,6 +110,8 @@ export type Turn = {
   lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string; textHash?: string }
   composeSeen?: true
   composedRule?: string
+  // The step this turn last marked, so a later cancel belongs to it even after a model pause.
+  openStepId?: string
 }
 
 // The first shown row of each pane region, or null to follow the news.
@@ -116,7 +120,7 @@ export type ScrollAt = { questions: number | null; steps: number | null }
 // What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
 // calls in flight (tool_use ids), background agents still running, and other background work
 // still running, such as shell tasks (their ids). An activity saved before tasks existed has none.
-export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[] }
+export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[]; owners?: Record<string, string[]> }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.

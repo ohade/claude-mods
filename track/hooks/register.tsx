@@ -320,6 +320,45 @@ const hidden = (above: number, below: number): string =>
 
 // A background task's id in its notification text.
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
+// The transcript sentence for a tool the user cancelled by sending a message. A permission denial
+// is only the refusal the transcript actually shows, never a generic error.
+const USER_CANCEL = "The user doesn't want to take this action right now"
+const LIFECYCLE_NOTES = new Set(['cancelled by you', 'refused', 'interrupted'])
+const cancelReasonOf = (ran: { result?: unknown; deny?: unknown }): 'cancelled by you' | 'refused' | undefined => {
+  const text = `${typeof ran.deny === 'string' ? ran.deny : ''}\n${typeof ran.result === 'string' ? ran.result : ''}`
+  if (text.includes(USER_CANCEL)) return 'cancelled by you'
+  if (/permission to use\b[\s\S]{0,240}\bhas been denied/i.test(text) || /\buser denied permission\b/i.test(text)) return 'refused'
+  return undefined
+}
+const ownsCancelledCall = (s: Step, tool: string, currentId: string | null, touched: string | undefined): boolean => {
+  if (s.cleared === true || s.status === 'completed' || s.status === 'waiting') return false
+  if (s.status === 'in_progress' && (s.activeTurnId === undefined || s.activeTurnId === currentId)) return true
+  if (tool === 'Agent' && s.delegated === true) return true
+  return s.id === touched && (s.status === 'paused' || s.status === 'in_progress' || s.status === 'pending')
+}
+// The open step a background agent or shell task belongs to: delegated work when any is open, otherwise the main step in progress.
+const backgroundOwners = (steps: Step[]): string[] => {
+  const open = steps.filter(s => s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting')
+  const delegated = open.filter(s => s.delegated === true)
+  return (delegated.length > 0 ? delegated : open.filter(s => s.status === 'in_progress')).map(s => s.id)
+}
+const applyCancel = async ($: EngineInterface, owners: string[], ran: { result?: unknown; deny?: unknown }): Promise<void> => {
+  const reasonNote = cancelReasonOf(ran)
+  if (reasonNote === undefined || owners.length === 0) return
+  const now = await $.clock.now()
+  const owned = new Set(owners)
+  let changed = false
+  await update<Ledger>($, ledger, cur => {
+    changed = false
+    const steps = cur.steps.map(s => {
+      if (!owned.has(s.id) || s.cleared === true || s.status === 'completed' || s.status === 'waiting') return s
+      changed = true
+      return { ...withStatus(s, 'paused', now), note: reasonNote }
+    })
+    return changed ? { ...cur, steps } : cur
+  })
+  if (changed) await saveLedger($)
+}
 // A background task Stop lists that is an agent: a subagent or a workflow of them. The rest (a
 // shell, a monitor) is a task, so a hung shell never reads as an agent the person waits on.
 const AGENT_TASK = /agent|workflow/i
@@ -1094,6 +1133,7 @@ const savedStep = (row: unknown): Step | undefined => {
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
     ...textField('sourceId', r.sourceId),
     ...(typeof r.note === 'string' && { note: truncate(r.note, HEAD_CHARS) }),
+    ...(r.followUp === true ? { followUp: true as const } : {}),
   }
 }
 
@@ -1191,9 +1231,17 @@ export const register: Register = on => {
   // This hook never runs from a redraw; UI mutations save in their own handlers.
   const mutationTools = new Set([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER, 'TaskCreate', 'TaskUpdate', 'TodoWrite'])
   on('tool.call', async ($, e, next) => {
-    if (e.agentId !== undefined || !mutationTools.has(e.tool)) return next(e)
+    if (e.agentId !== undefined) return next(e)
+    const current = await read($, turn)
+    const owners = (await read($, ledger)).steps.filter(s => ownsCancelledCall(s, e.tool, current.currentId, current.openStepId)).map(s => s.id)
+    if (!mutationTools.has(e.tool)) {
+      const ran = await next(e)
+      await applyCancel($, owners, ran)
+      return ran
+    }
     const before = JSON.stringify(await read($, ledger))
     const ran = await next(e)
+    await applyCancel($, owners, ran)
     if (ran.deny !== undefined || ran.isError === true || before === JSON.stringify(await read($, ledger))) return ran
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
     await publishGate($)
@@ -1424,10 +1472,21 @@ export const register: Register = on => {
   // The per-turn reminder: a short row beside the prompt, only while something is open.
   on('prompt.submit', async ($, e, next) => {
     // A finished background task or agent says so in its notification: it leaves the banner.
+    // Its step stays as it is and gains a visible flag, plus one nudge to update it.
+    let followUpLine: string | undefined
     if (e.origin?.kind === 'task-notification') {
-      const done = [...e.text.matchAll(TASK_ID)].map(m => m[1])
+      const done = [...e.text.matchAll(new RegExp(TASK_ID.source, 'g'))].map(m => m[1] ?? '')
       if (done.length > 0) {
+        const owners = (await read($, activity)).owners ?? {}
+        const ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
         await update($, activity, a => ({ ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)) }))
+        const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting' && (s.delegated === true || s.status === 'paused' || s.status === 'in_progress'))
+        if (targets.length > 0) {
+          const wanted = new Set(targets.map(s => s.id))
+          await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }))
+          followUpLine = `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
+          await saveLedger($)
+        }
       }
     }
     if (!(await dropRewound($))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
@@ -1444,7 +1503,7 @@ export const register: Register = on => {
         return next(e)
       }
     }
-    const lines: string[] = needsSteps ? [STEPS_LINE] : []
+    const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
     const l = await read($, ledger)
     // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
     const withdrawn = l.withdrawn ?? []
@@ -1828,7 +1887,8 @@ export const register: Register = on => {
       const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
       if (launched?.status === 'async_launched' && typeof launched.agentId === 'string') {
         const agentId = launched.agentId
-        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId] }))
+        const ids = backgroundOwners((await read($, ledger)).steps)
+        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], owners: { ...(a.owners ?? {}), [agentId]: ids } }))
       }
 
       return ran
@@ -1854,7 +1914,8 @@ export const register: Register = on => {
     const ran = await next(e)
     const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
     if (e.agentId === undefined && typeof taskId === 'string') {
-      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId] }))
+      const ids = backgroundOwners((await read($, ledger)).steps)
+      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], owners: { ...(a.owners ?? {}), [taskId]: ids } }))
     }
 
     return ran
@@ -2052,9 +2113,10 @@ export const register: Register = on => {
       return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     }
     const now = await $.clock.now()
+    await update($, turn, cur => ({ ...cur, openStepId: id }))
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => {
       if (s.id !== id) return s
-      const { delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
+      const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
       return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: truncate(e.note, HEAD_CHARS) }) }
     }) }))
 
@@ -2599,10 +2661,14 @@ export const register: Register = on => {
         {steps.slice(sStart, sEnd).map((s, shownAt) => {
           const index = sStart + shownAt
           const color = s.status === 'completed' ? 'success' : undefined
+          const lifecycle = s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
           // hourglass for background agents or tasks, a still blue mark when it waits on the person.
+          // A user cancel or a shown refusal is its own mark, not the pause glyph.
           const look =
-            isDelegatedWork(s)
+            lifecycle === 'cancelled by you' || lifecycle === 'refused'
+              ? { glyph: '⊘', glyphColor: 'subtle', textColor: 'subtle' }
+              : isDelegatedWork(s)
               ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
               : s.status === 'paused'
               ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
@@ -2636,9 +2702,13 @@ export const register: Register = on => {
             </Box>
           )
 
+          const reason = lifecycle !== undefined && <Text key={`s-reason-${s.id}`} dimColor>{lifecycle}</Text>
+          const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
           return (
             <Box key={`row-s-${s.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
               {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : [dot, text]}
+              {reason}
+              {follow}
               {clock}
             </Box>
           )
