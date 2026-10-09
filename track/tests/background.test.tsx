@@ -29,7 +29,7 @@ test('a background shell task is counted as a task, not as an agent', async ($, 
 
   const banner = await bannerOf($)
   expect(banner).not.toContain('agents')
-  expect(banner).toContain('Waiting on tasks (1)')
+  expect(banner).toContain('Tasks 1')
 })
 
 test('a Stop sorts the work in flight into agents and tasks', async ($, on) => {
@@ -49,8 +49,8 @@ test('a Stop sorts the work in flight into agents and tasks', async ($, on) => {
   } as never)
 
   const banner = await bannerOf($)
-  expect(banner).toContain('Waiting on agents (1)')
-  expect(banner).toContain('tasks (2)')
+  expect(banner).toContain('agents 1')
+  expect(banner).toContain('tasks 2')
 })
 
 test('a running turn names its background agents and tasks apart', async ($, on) => {
@@ -60,8 +60,8 @@ test('a running turn names its background agents and tasks apart', async ($, on)
 
   const banner = await bannerOf($)
   expect(banner).toContain('Working')
-  expect(banner).toContain('agents (1)')
-  expect(banner).toContain('tasks (1)')
+  expect(banner).toContain('agents 1')
+  expect(banner).toContain('tasks 1')
 })
 
 test('a finished shell task leaves the banner on its notification', async ($, on) => {

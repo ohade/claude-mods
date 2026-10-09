@@ -12,7 +12,7 @@ test('an explicitly delegated step is brown with an hourglass and an agents bann
   atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] })
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
-  expect(texts.at(-1)?.text).toContain('Waiting on agents')
+  expect(texts.at(-1)?.text).toContain('Agents')
   const glyph = texts.find(text => text.text === '⧗')
   expect(glyph?.props.color).toBe('#7a5410')
   expect((await ui.find({ key: 'banner' }))?.props.backgroundColor).toBe('#7a5410')
@@ -69,16 +69,16 @@ test('delegated ownership never invents an agent count from step counts', async 
     await ui.unmount()
     return text
   }
-  expect(await banner()).toContain('Waiting on agents')
-  expect(await banner()).toContain('tasks (2)')
+  expect(await banner()).toContain('Agents')
+  expect(await banner()).toContain('tasks 2')
   expect(await banner()).not.toContain('agents (')
   ledger.value.steps.push({ ...STEP, id: 'plan:2', delegated: false })
   expect(await banner()).toContain('Working')
-  expect(await banner()).toContain('Waiting on agents')
+  expect(await banner()).toContain('Agents')
   expect(await banner()).not.toContain('agents (1)')
   activity.value = { ...MAIN, isWorking: false, tasks: [], background: ['native-a', 'native-b'] }
   ledger.value.steps = [{ ...STEP, status: 'pending' }]
-  expect(await banner()).toContain('Waiting on agents (2)')
+  expect(await banner()).toContain('Agents 2')
 })
 
 test('mark_step saves delegation and clears it when the main session resumes', async ($, on) => {

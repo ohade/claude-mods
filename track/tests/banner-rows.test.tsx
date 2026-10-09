@@ -76,9 +76,10 @@ test('you plus agents plus tasks keeps tasks on the amber row and off the waitin
   const all = await ui.findAll({})
   const agents = textOf(all, 'banner-agents')
   const you = textOf(all, 'banner-you')
-  expect(agents).toContain('Waiting on agents')
+  expect(agents).toContain('Agents')
   expect(agents).toContain('S2')
-  expect(agents).toContain('tasks (2)')
+  expect(agents).toContain('tasks 2')
+  expect(agents).not.toContain('agents (')
   expect(you).toContain('S1')
   expect(you).not.toContain('S2')
   expect(idsIn(`${agents} ${you}`).filter((id, i, allIds) => allIds.indexOf(id) !== i)).toEqual([])
@@ -111,7 +112,7 @@ test('unsaved stays the top row and does not erase you or agents', async ($, on)
   expect(textOf(all, 'banner-unsaved')).toContain('Unsaved')
   expect(textOf(all, 'banner-unsaved')).toContain('quota exhausted')
   expect(textOf(all, 'banner-you')).toContain('Waiting on you')
-  expect(textOf(all, 'banner-agents')).toContain('Waiting on agents')
+  expect(textOf(all, 'banner-agents')).toContain('Agents')
 })
 
 test('paused takes the work slot beside waiting on you', async ($, on) => {
@@ -158,13 +159,15 @@ test('an ask dialog with no waiting step names the question and invents no step'
     { ...IDLE, askCalls: ['ask-3'] },
     { questions: [{ id: 3, head: 'need you', at: 3, turnId: 't', status: 'open', askedRequestId: 'ask-3' }] },
   )
+  const rows = await rowsOf(ui)
+  expect(rows.map(row => row.key)).toEqual(['banner-you'])
   const all = await ui.findAll({})
   const you = textOf(all, 'banner-you')
   expect(you).toContain('Q3')
   expect(you).not.toMatch(/S\d+/)
 })
 
-test('a short pane collapses to the waiting row and drops step ids', async ($, on) => {
+test('a short pane collapses every active state onto one line', async ($, on) => {
   const ui = await draw(
     $, on,
     [step(1, 'waiting'), step(2, 'in_progress')],
@@ -173,12 +176,14 @@ test('a short pane collapses to the waiting row and drops step ids', async ($, o
   )
   const rows = await rowsOf(ui)
   expect(rows.map(row => row.key)).toEqual(['banner-line'])
+  expect(rows[0]?.props.backgroundColor).toBe(BLUE)
   const all = await ui.findAll({})
   const line = textOf(all, 'banner-line')
   expect(line).toContain('Waiting on you')
-  expect(line).not.toContain('Working')
-  expect(line).not.toMatch(/S\d+/)
-  expect(line).toContain('1')
+  expect(line).toContain('Working')
+  expect(line).toContain('S1')
+  expect(line).toContain('S2')
+  expect(line.length).toBeLessThanOrEqual(80)
 })
 
 test('a narrow waiting row shows a count instead of the step ids', async ($, on) => {
@@ -190,12 +195,13 @@ test('a narrow waiting row shows a count instead of the step ids', async ($, on)
   )
   const all = await ui.findAll({})
   const you = textOf(all, 'banner-you')
-  expect(you).toContain('Waiting on you')
+  expect(you).toContain('You')
   expect(you).not.toMatch(/S\d+/)
   expect(you).toContain('4')
+  expect(you.trim().length).toBeLessThanOrEqual(18)
 })
 
-test('only the amber glyph changes across pulse phases', async ($, on) => {
+test('banner glyphs stay the row text color across pulse phases', async ($, on) => {
   let phase = 0
   atomStore(on, 'ledger', { ...EMPTY, steps: [step(1, 'waiting'), step(2, 'in_progress', { delegated: true })] })
   atomStore(on, 'activity', IDLE)
@@ -216,11 +222,11 @@ test('only the amber glyph changes across pulse phases', async ($, on) => {
   const later = await $.ui.mount(pane('dock', 80, 30))
   const you3 = await glyph(later, 'banner-you')
   const agent3 = await glyph(later, 'banner-agents')
-  expect(you0?.props.color).toBe(BLUE)
-  expect(you3?.props.color).toBe(BLUE)
+  expect(you0?.props.color).toBe('inverseText')
+  expect(you3?.props.color).toBe('inverseText')
   expect(agent0?.text).toBe('⧗')
   expect(agent3?.text).toBe('⧗')
-  expect(AMBER).toContain(agent0?.props.color)
-  expect(AMBER).toContain(agent3?.props.color)
-  expect(agent0?.props.color).not.toBe(agent3?.props.color)
+  expect(agent0?.props.color).toBe('inverseText')
+  expect(agent3?.props.color).toBe('inverseText')
+  expect(agent0?.props.color).not.toBe('#7a5410')
 })

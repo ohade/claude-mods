@@ -15,7 +15,9 @@ for (const status of ['waiting', 'paused', 'pending'] as const) {
     atomStore(on, 'activity', IDLE)
     const phase = atomStore(on, 'pulse', 0)
     const ui = await $.ui.mount(pane('dock', 80))
-    const text = (await ui.findAll({ type: 'Text' })).at(-1)?.text?.trim() ?? ''
+    const boxes = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
+    const text = boxes.map(el => String(el.text ?? '')).join(' ')
+    expect(boxes.map(el => el.key)).toEqual(status === 'paused' ? ['banner-paused', 'banner-you'] : ['banner-you'])
     expect(text).toContain('Waiting on you')
     expect(text).not.toContain('agents')
     if (status !== 'waiting') expect(text).not.toContain('S2')

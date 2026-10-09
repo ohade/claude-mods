@@ -41,7 +41,7 @@ test('a running turn with background agents names them in the banner', async ($,
 
   const banner = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-')).map(el => String(el.text ?? '')).join(' ')
   expect(banner).toContain('Working')
-  expect(banner).toContain('agents (2)')
+  expect(banner).toContain('Agents 2')
 })
 
 // Stop lists the session's background work in flight. A task whose notification never came (killed,
