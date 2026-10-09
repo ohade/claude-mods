@@ -79,7 +79,14 @@ test('a narrow banner preserves each state without wrapping or clipping', async 
   const activity = atomStore(on, 'activity', IDLE)
   const durability = atomStore(on, 'durability', { isUnsaved: false, reason: '' })
   mock.clock(on)
-  for (const [status, wanted] of [['waiting', 'Waiting on you'], ['paused', 'Paused'], ['in_progress', 'Unknown']] as const) {
+  ledger.value.steps[0].status = 'waiting'
+  const waiting = await $.ui.mount(pane('dock', 17, 30))
+  const waitingBanner = (await waiting.findAll({ type: 'Text' })).at(-1)?.text ?? ''
+  expect(waitingBanner).toContain('You')
+  expect(waitingBanner).toContain('S1')
+  expect(waitingBanner.length).toBeLessThanOrEqual(17)
+  await waiting.unmount()
+  for (const [status, wanted] of [['paused', 'Paused'], ['in_progress', 'Unknown']] as const) {
     ledger.value.steps[0].status = status
     const ui = await $.ui.mount(pane('dock', 17, 30))
     const banner = (await ui.findAll({ type: 'Text' })).at(-1)?.text ?? ''

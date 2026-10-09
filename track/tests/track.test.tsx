@@ -1060,11 +1060,11 @@ test('the banner says Working while the main turn runs', async ($, on) => {
 })
 
 test('the banner says Waiting on agents while an Agent call runs', async ($, on) => {
-  expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true, agentCalls: ['toolu_ag'] })).toContain('Waiting on agents')
+  expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true, agentCalls: ['toolu_ag'] })).toContain('Agents')
 })
 
 test('the banner says Waiting on agents after the turn while background work runs', async ($, on) => {
-  expect(await banner($, on, ANSWERED, { ...IDLE, background: ['ag1', 'task7'] })).toContain('Waiting on agents')
+  expect(await banner($, on, ANSWERED, { ...IDLE, background: ['ag1', 'task7'] })).toContain('Agents 2')
 })
 
 test('the banner says Waiting on you while a question to the user is open', async ($, on) => {
@@ -1206,11 +1206,9 @@ test('while the main session works, the step in progress turns a spinner in grey
   expect(Math.max(r, g, b) - Math.min(r, g, b)).toBeLessThan(40)
 })
 
-test('while the session waits on agents, the step in progress pulses amber under an hourglass', async ($, on) => {
+test('an in-progress main step stays neutral while an agent call is not its row', async ($, on) => {
   const row = await stepRow($, on, { ...IDLE, isWorking: true, agentCalls: ['toolu_ag'] }, 0)
-  expect(row.glyph).toBe('⧗')
-  const [r, , b] = [1, 3, 5].map(i => parseInt(String(row.textColor).slice(i, i + 2), 16)) as [number, number, number]
-  expect(r - b).toBeGreaterThan(60)
+  expect(row).toMatchObject({ glyph: '◐', glyphColor: undefined })
 })
 
 test('with unknown activity, the step in progress holds a neutral glyph', async ($, on) => {

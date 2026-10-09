@@ -10,7 +10,7 @@ const setup = (on: any, steps: any[] = [], questions: any[] = [], unsaved = fals
   mock.clock(on)
 }
 
-for (const [status, wanted] of [['paused', 'Paused'], ['pending', 'Paused'], ['waiting', 'Waiting on you'], ['in_progress', 'Activity unknown']] as const) {
+for (const [status, wanted] of [['paused', 'Paused'], ['pending', 'Idle'], ['waiting', 'Waiting on you'], ['in_progress', 'Activity unknown']] as const) {
   test(`idle ${status} step shows ${wanted}`, async ($, on) => {
     setup(on, [{ id: 'plan:1', source: 'plan', subject: 'Work item', status, note: 'Peer result pending' }])
     const ui = await $.ui.mount(pane('dock'))
