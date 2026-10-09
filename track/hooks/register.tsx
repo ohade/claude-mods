@@ -2634,7 +2634,10 @@ export const register: Register = on => {
         }, WAITING_BLUE))
       }
       if (built.length === 0) {
-        built.push(piece('banner-idle', '', { label: 'Idle · Safe to close', brief: 'Idle', questions: [], steps: [], counts: [] }, 'success'))
+        // Nothing runs, so closing loses nothing; pending steps are still named as work left.
+        const pendingCount = steps.filter(s => s.status === 'pending').length
+        const label = pendingCount > 0 ? `Idle · ${pendingCount} pending` : 'Idle · Safe to close'
+        built.push(piece('banner-idle', '', { label, brief: 'Idle', questions: [], steps: [], counts: [] }, 'success'))
       }
 
       return built
@@ -2699,8 +2702,13 @@ export const register: Register = on => {
 
       return qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
     }
-    if (openRows.length > 1 && steps.length > 0 && layoutFor(openRows.length).sRows < Math.min(3, steps.length)) {
-      bannerRows = [collapseLine(openRows, width)]
+    // Collapse when the stacked rows would leave fewer than min(3, steps) whole steps in view; a
+    // wrapped step takes several lines, so lines are not the measure.
+    if (openRows.length > 1 && steps.length > 0) {
+      const stacked = layoutFor(openRows.length)
+      if (stacked.sEnd - stacked.sStart < Math.min(3, steps.length)) {
+        bannerRows = [collapseLine(openRows, width)]
+      }
     }
     const fitted = layoutFor(bannerRows.length)
     const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
