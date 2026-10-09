@@ -1897,6 +1897,10 @@ export const register: Register = on => {
             }
       }),
     }))
+    // [A] is now the native answer row. A pane reveal of the saved text would stay stuck beside it.
+    if (status === 'answered' && answerKey !== undefined) {
+      await update($, reveal, cur => (cur[String(id)] === 'a' ? { ...cur, [String(id)]: undefined } : cur))
+    }
 
     return { result: `Q${id} marked ${status}.` }
   })
@@ -2503,8 +2507,6 @@ export const register: Register = on => {
     // The tick is read so each one redraws the pane; the time itself is the clock's.
     await read($, tick)
     const opened = await read($, reveal)
-    const toggleReveal = (id: number, side: 'q' | 'a') =>
-      update($, reveal, cur => ({ ...cur, [String(id)]: cur[String(id)] === side ? undefined : side }))
     const clockRuns = runningClocks(l).length > 0
     if (ticking.timer === undefined && clockRuns) {
       startTick($)
@@ -2525,6 +2527,17 @@ export const register: Register = on => {
     // The rings count the rows shown: a cleared row leaves its ring too. A deferred answer still
     // waits, so it is not done, and clear completed keeps it.
     const questions = l.questions.filter(q => q.cleared !== true)
+    // Opening brings that row into view once. Later wheel, key, and track_question
+    // writes to scrollAt.questions win; the open row does not pin the window.
+    const toggleReveal = async (id: number, side: 'q' | 'a', index: number) => {
+      let opening = false
+      await update($, reveal, cur => {
+        const next = cur[String(id)] === side ? undefined : side
+        opening = next !== undefined
+        return { ...cur, [String(id)]: next }
+      })
+      if (opening) await update($, scrollAt, cur => ({ ...cur, questions: index }))
+    }
     const qDone = questions.filter(q => q.status === 'answered').length
     const steps = l.steps.filter(s => s.cleared !== true)
     const sDone = steps.filter(s => s.status === 'completed').length
@@ -2669,7 +2682,7 @@ export const register: Register = on => {
     const revealedText = (q: Question): string | undefined => {
       const side = opened[String(q.id)]
       if (side === 'q' && q.head.trim() !== '') return q.head
-      if (side === 'a' && (q.answerText?.trim().length ?? 0) > 0) return q.answerText
+      if (side === 'a' && q.answerKey === undefined && (q.answerText?.trim().length ?? 0) > 0) return q.answerText
       return undefined
     }
     const qLines = questions.map(q => {
@@ -2695,14 +2708,19 @@ export const register: Register = on => {
           qRows = Math.min(needQ, qRows + sRows - needS)
           sRows = needS
         }
+        // An open reveal needs one line of its own. Take it from the steps region,
+        // and never from the last step row.
+        const revealOpen = questions.some(q => revealedText(q) !== undefined)
+        const minSRows = steps.length > 0 ? 1 : 0
+        if (revealOpen && qRows < minQRows + 1 && sRows > minSRows) {
+          const give = Math.min(minQRows + 1 - qRows, sRows - minSRows)
+          qRows += give
+          sRows -= give
+        }
         // Where each region starts: the newest questions, the step at work with one done row above.
         const qLast = lastStart(qLines, qRows)
         const sLast = lastStart(sLines, sRows)
-        // An opened restore stays in view. The newest-question window would hide it
-        // above the fold once its saved text is taller than the region.
-        const revealedAt = questions.findIndex(q => revealedText(q) !== undefined)
-        const qPrefer = revealedAt >= 0 ? revealedAt : at.questions ?? qLast
-        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(Math.max(0, qPrefer), qLast))
+        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
         const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
 
         return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
@@ -2802,7 +2820,7 @@ export const register: Register = on => {
                 {restoredOnly && !savedQuestion
                   ? <Button key={`q-${q.id}`} dimColor label="Q" onPress={() => undefined} />
                   : restoredOnly
-                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q')} />
+                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q', index)} />
                     : askedAt === undefined
                       ? <Text dimColor>[ Q ]</Text>
                       : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
@@ -2814,21 +2832,22 @@ export const register: Register = on => {
                     : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />
                   : !savedAnswer
                     ? <Button key={`a-${q.id}`} dimColor label="A" onPress={() => undefined} />
-                    : <Button key={`a-${q.id}`} variant={answered ? 'primary' : undefined} hotkey={ready ? hotkey : undefined} label="A" onPress={() => toggleReveal(q.id, 'a')} />}
+                    : <Button key={`a-${q.id}`} variant={answered ? 'primary' : undefined} hotkey={ready ? hotkey : undefined} label="A" onPress={() => toggleReveal(q.id, 'a', index)} />}
               </Box>
             </Box>
           )
           const headBudget = Math.max(1, qRows - qControlsRows)
           const headShown = fitLines(`Q${q.id}. ${q.head}`, qWidth, headBudget)
-          const revealBudget = Math.max(0, qRows - qControlsRows - wrappedLines(headShown, qWidth))
-          const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer ? q.answerText : undefined
-          const revealShown = revealRaw !== undefined && revealBudget > 0 ? fitLines(revealRaw, qWidth, revealBudget) : undefined
+          const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
+          // A short region still draws one cut line. An empty press is not an answer.
+          const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - wrappedLines(headShown, qWidth))
+          const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
           const text = (
             <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={qWidth}>
               <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
                 {headShown}
               </Text>
-              {revealShown !== undefined && <Text key={`reveal-${opened[String(q.id)]}-${q.id}`}>{revealShown}</Text>}
+              {revealShown !== undefined && <Box key={`reveal-${opened[String(q.id)]}-${q.id}`}><Text>{revealShown}</Text></Box>}
             </Box>
           )
           const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
