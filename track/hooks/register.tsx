@@ -118,40 +118,91 @@ const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9
 // Ohad's waiting color, one value for the ◆ and the waiting row. Blue, not the permission token.
 const WAITING_BLUE = '#1a73e8'
 
-type BannerRow = { key: string; glyph: string; words: string; background: string; glyphColor: string }
+type BannerCount = { kind: 'agents' | 'tasks'; n: number }
+type BannerParts = { label: string; brief: string; questions: string[]; steps: string[]; counts: BannerCount[] }
+type BannerRow = { key: string; glyph: string; words: string; background: string; glyphColor: string; parts: BannerParts }
 
-// A row's visible line. Refs stay when the whole line fits. A count replaces them when the
-// label plus the count still fits; otherwise the label stands alone. Collapse forces the count.
-const bannerLine = (glyph: string, label: string, refs: string[], width: number, forceCount: boolean): { glyph: string; words: string } => {
-  const fullBody = refs.length === 0 ? label : `${label} · ${refs.join(' · ')}`
-  const countBody = refs.length === 0 ? label : `${label} · ${refs.length}`
-  const lineLength = (body: string) => (glyph === '' ? 0 : glyph.length + 1) + body.length
-  const chosen = refs.length === 0
-    ? label
-    : !forceCount && lineLength(fullBody) <= width
-      ? fullBody
-      : forceCount || countBody.length <= width
-        ? countBody
-        : label
-  const fitted = lineLength(chosen) > width && chosen.startsWith('Waiting on agents') && !chosen.includes(' · S') && lineLength('Waiting agents') <= width
-    ? 'Waiting agents'
-    : chosen
-  const agents = fitted.match(/agents \(\d+\)/)?.[0]
-  const tasks = fitted.match(/tasks \(\d+\)/)?.[0]
-  const compact = [agents, tasks].filter(part => part !== undefined).join(' · ')
-  const body = fitted.length <= width
-    ? fitted
-    : compact.length > 0 && compact.length <= width
-      ? compact
-      : agents !== undefined && agents.length <= width
-        ? agents
-        : tasks !== undefined && tasks.length <= width
-          ? tasks
-          : fitted.startsWith('Waiting on you') && 'Waiting on you'.length <= width
-            ? 'Waiting on you'
-            : fitted
+// A row is parts, not a sentence to parse. The glyph counts toward the width. A shorter label
+// keeps the step ids; a count replaces those ids only when the shorter label still overflows;
+// whatever remains is cut with fitLines.
+const composeBanner = (label: string, steps: string[], parts: BannerParts): string => {
+  const { questions, counts } = parts
+  if (questions.length === 0 && steps.length === 0 && counts.length === 1 && counts[0]?.kind === 'tasks' && label === 'Tasks') {
+    return `Tasks ${counts[0].n}`
+  }
+  if (questions.length === 0 && steps.length === 0 && counts.length === 1 && counts[0]?.kind === 'agents' && label === 'Agents') {
+    return `Agents ${counts[0].n}`
+  }
 
-  return { glyph, words: glyph === '' ? body : ` ${body}` }
+  return [label, ...questions, ...steps, ...counts.map(count => `${count.kind} ${count.n}`)].filter(part => part !== '').join(' · ')
+}
+const bannerFits = (glyph: string, body: string, width: number): boolean =>
+  (glyph === '' ? body : `${glyph} ${body}`).length <= width
+const bannerWords = (glyph: string, body: string): string => (glyph === '' ? body : ` ${body}`)
+const bannerLine = (glyph: string, parts: BannerParts, width: number): { glyph: string; words: string } => {
+  const full = composeBanner(parts.label, parts.steps, parts)
+  const brief = composeBanner(parts.brief, parts.steps, parts)
+  const counted = composeBanner(parts.brief, parts.steps.length > 0 ? [String(parts.steps.length)] : parts.steps, parts)
+  const candidates = [full]
+  if (brief !== full) candidates.push(brief)
+  if (counted !== brief && counted !== full) candidates.push(counted)
+  for (const body of candidates) {
+    if (bannerFits(glyph, body, width)) return { glyph, words: bannerWords(glyph, body) }
+  }
+  const glyphCols = glyph === '' ? 0 : glyph.length + 1
+
+  return { glyph, words: bannerWords(glyph, fitLines(full, Math.max(1, width - glyphCols), 1)) }
+}
+const collapseBrief = (row: BannerRow): string =>
+  row.key === 'banner-unsaved' ? 'Unsaved' : row.key === 'banner-unknown' ? 'Unknown' : row.parts.brief
+const collapseSegment = (row: BannerRow, mode: 'full' | 'brief' | 'count'): string => {
+  const label = mode === 'full' ? row.parts.label : collapseBrief(row)
+  const steps = mode === 'count' ? (row.parts.steps.length > 0 ? [String(row.parts.steps.length)] : []) : row.parts.steps
+  const body = composeBanner(label, steps, row.parts)
+
+  return row.glyph === '' ? body : `${row.glyph} ${body}`
+}
+// One line, priority unsaved, you, unknown, working, agents, paused. Shorten a label before
+// dropping its step ids, then drop the lowest-priority segment except you.
+const collapseLine = (rows: BannerRow[], width: number): BannerRow => {
+  const order = ['banner-unsaved', 'banner-you', 'banner-unknown', 'banner-working', 'banner-agents', 'banner-paused']
+  const ordered = [...rows].filter(row => row.key !== 'banner-idle').sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key))
+  const first = ordered[0]
+  const empty: BannerParts = { label: '', brief: '', questions: [], steps: [], counts: [] }
+  if (first === undefined) return { key: 'banner-line', glyph: '', words: '', background: 'success', glyphColor: 'inverseText', parts: empty }
+  const asLine = (text: string, row: BannerRow): BannerRow => ({ ...row, key: 'banner-line', glyph: '', words: text, glyphColor: 'inverseText' })
+  const modes: Array<'full' | 'brief' | 'count'> = ordered.map(() => 'full')
+  const joined = () => ordered.map((row, index) => collapseSegment(row, modes[index] ?? 'full')).join(' · ')
+  let text = joined()
+  while (text.length > width) {
+    const briefAt = modes.findIndex((mode, index) => mode === 'full' && collapseSegment(ordered[index]!, 'brief') !== collapseSegment(ordered[index]!, 'full'))
+    if (briefAt >= 0) {
+      modes[briefAt] = 'brief'
+      text = joined()
+      continue
+    }
+    const countAt = modes.findIndex((mode, index) => mode !== 'count' && (ordered[index]?.parts.steps.length ?? 0) > 0)
+    if (countAt >= 0) {
+      modes[countAt] = 'count'
+      text = joined()
+      continue
+    }
+    break
+  }
+  if (text.length <= width) return asLine(text, first)
+  let kept = [...ordered]
+  let dropped = 0
+  while (kept.length > 1) {
+    const victim = [...kept].reverse().find(row => row.key !== 'banner-you')
+    if (victim === undefined || kept[0] === undefined) break
+    kept = kept.filter(row => row !== victim)
+    dropped += 1
+    const shorter = [...kept.map(row => collapseSegment(row, 'count')), `+${dropped}`].join(' · ')
+    if (shorter.length <= width) return asLine(shorter, kept[0])
+  }
+  const only = collapseSegment(kept[0] ?? first, 'count')
+
+  return asLine(only.length <= width ? only : fitLines(only, width, 1), kept[0] ?? first)
 }
 const pulsing: { timer?: Timer } = {}
 // Each step row ends in its wall clock. It moves every second under an hour, then once a minute.
@@ -421,10 +472,6 @@ const workState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
   if (steps.some(s => s.status === 'in_progress')) return 'unknown'
   return unfinished ? 'paused' : 'done'
 }
-
-// Only an explicit waiting step or question dialog asks the person to act.
-const sessionState = (l: Ledger, now: Activity): keyof typeof BANNERS =>
-  now.askCalls.length > 0 || l.steps.some(s => s.cleared !== true && s.status === 'waiting') ? 'you' : workState(l, now)
 
 // Background work pulses even beside a user wait or a main turn. Main work alone pulses
 // only a step in progress; an open question dialog is not evidence of main work.
@@ -2371,59 +2418,76 @@ export const register: Register = on => {
     const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
 
     const work = workState(l, now)
-    const state = isUnsaved ? 'unsaved' : sessionState(l, now)
     const numbered = steps.map((s, i) => ({ step: s, n: i + 1 }))
     const waitingSteps = numbered.filter(row => row.step.status === 'waiting')
     const agentSteps = numbered.filter(row => isDelegatedWork(row.step))
     const mainSteps = numbered.filter(row => row.step.status === 'in_progress' && row.step.delegated !== true && work === 'working')
-    const parkedSteps = numbered.filter(row => row.step.status === 'paused' || row.step.status === 'pending')
+    const pausedSteps = numbered.filter(row => row.step.status === 'paused')
     const taskCount = (now.tasks ?? []).length
     const agentActivity = agentSteps.length > 0 || now.agentCalls.length > 0 || now.background.length > 0 || taskCount > 0
     const askIds = new Set(now.askCalls)
     const questionRefs = questions
       .filter(q => q.status !== 'answered' && q.status !== 'deferred' && (askIds.has(q.askedRequestId ?? '') || askIds.has(q.trackedBy ?? '')))
       .map(q => `Q${q.id}`)
-    const piece = (key: string, glyph: string, label: string, refs: string[], background: string, glyphColor: string, forceCount: boolean): BannerRow => {
-      const line = bannerLine(glyph, label, refs, width, forceCount)
+    const unfinishedQuestion = questions.some(q => q.status !== 'answered' && q.status !== 'deferred')
+    const askOpen = now.askCalls.length > 0
+    const running = agentActivity || work === 'working' || work === 'unknown' || askOpen
+    const piece = (key: string, glyph: string, parts: BannerParts, background: string): BannerRow => {
+      const line = bannerLine(glyph, parts, width)
 
-      return { key, glyph: line.glyph, words: line.words, background, glyphColor }
+      return { key, glyph: line.glyph, words: line.words, background, glyphColor: 'inverseText', parts }
     }
-    const stack = (forceCount: boolean): BannerRow[] => {
+    const stack = (): BannerRow[] => {
       const built: BannerRow[] = []
-      if (isUnsaved) built.push(piece('banner-unsaved', '', unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`, [], 'warning', 'warning', forceCount))
+      if (isUnsaved) {
+        const label = unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`
+        built.push(piece('banner-unsaved', '', { label, brief: label, questions: [], steps: [], counts: [] }, 'warning'))
+      }
       if (agentActivity) {
-        const stepRefs = agentSteps.map(row => `S${row.n}`)
-        const agentCount = now.background.length
-        const label = stepRefs.length === 0 && agentCount > 0
-          ? `Waiting on agents (${agentCount})`
-          : stepRefs.length === 0 && agentCount === 0 && taskCount > 0
-            ? `Waiting on tasks (${taskCount})`
-            : agentSteps.length > 0 || now.agentCalls.length > 0 || agentCount > 0
-              ? 'Waiting on agents'
-              : 'Waiting on tasks'
-        const refs = [
-          ...stepRefs,
-          ...(stepRefs.length > 0 && agentCount > 0 ? [`agents (${agentCount})`] : []),
-          ...(taskCount > 0 && !label.startsWith('Waiting on tasks (') ? [`tasks (${taskCount})`] : []),
-        ]
-        built.push(piece('banner-agents', '⧗', label, refs, AMBER_SHADES[0], AMBER_SHADES[phase % AMBER_SHADES.length], forceCount))
+        const counts: BannerCount[] = []
+        if (now.background.length > 0) counts.push({ kind: 'agents', n: now.background.length })
+        if (taskCount > 0) counts.push({ kind: 'tasks', n: taskCount })
+        const label = agentSteps.length > 0 || now.agentCalls.length > 0 || now.background.length > 0 ? 'Agents' : 'Tasks'
+        built.push(piece('banner-agents', '⧗', {
+          label,
+          brief: label,
+          questions: [],
+          steps: agentSteps.map(row => `S${row.n}`),
+          counts,
+        }, AMBER_SHADES[0]))
       }
-      if (work === 'working') built.push(piece('banner-working', '◐', 'Working', mainSteps.map(row => `S${row.n}`), GREY_SHADES[0], GREY_SHADES[0], forceCount))
-      if (work === 'unknown') built.push(piece('banner-unknown', '', width < 18 ? 'Unknown' : 'Activity unknown', [], 'warning', 'warning', forceCount))
-      else if (!agentActivity && work !== 'working' && (parkedSteps.length > 0 || (work === 'paused' && waitingSteps.length === 0))) {
-        built.push(piece('banner-paused', '', 'Paused', [], 'warning', 'warning', forceCount))
+      if (work === 'working') {
+        built.push(piece('banner-working', '◐', {
+          label: 'Working',
+          brief: 'Working',
+          questions: [],
+          steps: mainSteps.map(row => `S${row.n}`),
+          counts: [],
+        }, GREY_SHADES[0]))
       }
-      if (waitingSteps.length > 0 || now.askCalls.length > 0) {
-        built.push(piece('banner-you', '◆', 'Waiting on you', [...questionRefs, ...waitingSteps.map(row => `S${row.n}`)], WAITING_BLUE, WAITING_BLUE, forceCount))
+      if (work === 'unknown') {
+        const label = width < 18 ? 'Unknown' : 'Activity unknown'
+        built.push(piece('banner-unknown', '', { label, brief: 'Unknown', questions: [], steps: [], counts: [] }, 'warning'))
+      } else if (!running && (pausedSteps.length > 0 || (work === 'paused' && waitingSteps.length === 0 && unfinishedQuestion))) {
+        built.push(piece('banner-paused', '', { label: 'Paused', brief: 'Paused', questions: [], steps: [], counts: [] }, 'warning'))
       }
-      if (built.length === 0) built.push(piece('banner-idle', '', 'Idle · Safe to close', [], 'success', 'success', forceCount))
+      if (waitingSteps.length > 0 || askOpen) {
+        built.push(piece('banner-you', '◆', {
+          label: 'Waiting on you',
+          brief: 'You',
+          questions: questionRefs,
+          steps: waitingSteps.map(row => `S${row.n}`),
+          counts: [],
+        }, WAITING_BLUE))
+      }
+      if (built.length === 0) {
+        built.push(piece('banner-idle', '', { label: 'Idle · Safe to close', brief: 'Idle', questions: [], steps: [], counts: [] }, 'success'))
+      }
 
       return built
     }
-    const openRows = stack(false)
-    const collapseRank = ['banner-unsaved', 'banner-you', 'banner-unknown', 'banner-working', 'banner-agents', 'banner-paused', 'banner-idle']
-    const collapsed = [...stack(true)].sort((a, b) => collapseRank.indexOf(a.key) - collapseRank.indexOf(b.key))[0]
-    const bannerRows = bodyRows < 12 && openRows.length > 1 && collapsed !== undefined ? [{ ...collapsed, key: 'banner-line' }] : openRows
+    const openRows = stack()
+    let bannerRows = openRows
     const countLabel = (done: number, total: number) => {
       const full = ring(done, total)
 
@@ -2453,34 +2517,41 @@ export const register: Register = on => {
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
-    const fit = (qArrows: string, sArrows: string) => {
-      const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
-      const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
-      const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerRows.length))
-      // A compact question needs a text line plus its Q/A controls even in a short pane.
-      const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
-      let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
-      let sRows = Math.max(0, room - qRows)
-      if (needS < sRows) {
-        qRows = Math.min(needQ, qRows + sRows - needS)
-        sRows = needS
-      }
-      // Where each region starts: the newest questions, the step at work with one done row above.
-      const qLast = lastStart(qLines, qRows)
-      const sLast = lastStart(sLines, sRows)
-      const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
-      const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
+    const layoutFor = (bannerCount: number) => {
+      const fit = (qArrows: string, sArrows: string) => {
+        const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
+        const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
+        const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerCount))
+        // A compact question needs a text line plus its Q/A controls even in a short pane.
+        const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
+        let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
+        let sRows = Math.max(0, room - qRows)
+        if (needS < sRows) {
+          qRows = Math.min(needQ, qRows + sRows - needS)
+          sRows = needS
+        }
+        // Where each region starts: the newest questions, the step at work with one done row above.
+        const qLast = lastStart(qLines, qRows)
+        const sLast = lastStart(sLines, sRows)
+        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
+        const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
 
-      return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
+        return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
+      }
+      // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
+      // row, which takes a row from the regions, so the layout is fitted again with them.
+      const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
+      const first = fit('', '')
+      const [qFirst, sFirst] = arrowsOf(first)
+
+      return qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
     }
-    // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
-    // row, which takes a row from the regions, so the layout is fitted again with them.
-    const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
-    const first = fit('', '')
-    const [qFirst, sFirst] = arrowsOf(first)
-    const fitted = qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
+    if (openRows.length > 1 && steps.length > 0 && layoutFor(openRows.length).sRows < Math.min(3, steps.length)) {
+      bannerRows = [collapseLine(openRows, width)]
+    }
+    const fitted = layoutFor(bannerRows.length)
     const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
-    const [qHidden, sHidden] = arrowsOf(fitted)
+    const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
     Object.assign(regions, {
       qTop: titleRows,
       qBottom: titleRows + qHead + qRows,
@@ -2601,24 +2672,20 @@ export const register: Register = on => {
           const color = s.status === 'completed' ? 'success' : undefined
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
           // hourglass for background agents or tasks, a still blue mark when it waits on the person.
-          const look =
-            isDelegatedWork(s)
-              ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
-              : s.status === 'paused'
-              ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
-              : s.status === 'waiting'
-                ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
-              : s.status !== 'in_progress'
-              ? { glyph: s.status === 'completed' ? '●' : '○', glyphColor: color, textColor: color }
-              : now.askCalls.length > 0
-                ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
-                : work === 'working'
+          const onWorking = s.status === 'in_progress' && s.delegated !== true && work === 'working'
+          const look = isDelegatedWork(s)
+            ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
+            : s.status === 'waiting'
+              ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
+              : onWorking
                 ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
-                : work === 'agents' || work === 'tasks'
-                  ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
-                  : state === 'you'
-                    ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
-                    : { glyph: '◐', glyphColor: undefined, textColor: undefined }
+                : s.status === 'paused'
+                  ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
+                  : s.status === 'completed'
+                    ? { glyph: '●', glyphColor: color, textColor: color }
+                    : s.status === 'pending'
+                      ? { glyph: '○', glyphColor: color, textColor: color }
+                      : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
           const text = (
