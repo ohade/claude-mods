@@ -1,6 +1,6 @@
-// FIXTURE: 2026-10-08 the mechanical snapshot was a system notice, but
-// InfoNotice describes header hints, not system transcript rows. The supported
-// UserMessage path must own the restored Q/A without borrowing a composer row.
+// FIXTURE: a mechanical restore keeps a user row for the model and a system
+// notice for the person. The hidden user row is not a jump target. Restored
+// Q/A with no drawn row show the saved text in the pane.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
 

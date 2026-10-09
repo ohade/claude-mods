@@ -1,6 +1,5 @@
-// FIXTURE: legacy InfoNotice rendering remembers its host and shades each
-// restored subrow. A requestId reveals the whole host; native placement of a
-// later Q/A within that host remains unverified by these fixtures.
+// FIXTURE: InfoNotice is a header hint, not a restore host. Restored Q/A with
+// no drawn row show the saved text in the pane and do not toast.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
 
