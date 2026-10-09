@@ -110,8 +110,6 @@ export type Turn = {
   lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string; textHash?: string }
   composeSeen?: true
   composedRule?: string
-  // The step this turn last marked. Cleared when the next turn starts. A cancel does not use it after the step leaves in progress.
-  openStepId?: string
 }
 
 // The first shown row of each pane region, or null to follow the news.
