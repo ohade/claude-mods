@@ -2666,7 +2666,16 @@ export const register: Register = on => {
     // Status owns two cells, including the paused/hourglass glyphs, then a gap.
     const sWidth = Math.max(1, width - rowIndent - 3)
     const qControlsRows = compact ? 1 : 0
-    const qLines = questions.map(q => wrappedLines(`Q${q.id}. ${q.head}`, qWidth) + qControlsRows)
+    const revealedText = (q: Question): string | undefined => {
+      const side = opened[String(q.id)]
+      if (side === 'q' && q.head.trim() !== '') return q.head
+      if (side === 'a' && (q.answerText?.trim().length ?? 0) > 0) return q.answerText
+      return undefined
+    }
+    const qLines = questions.map(q => {
+      const extra = revealedText(q)
+      return wrappedLines(`Q${q.id}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
+    })
     const clockRows = (s: Step) => compact && hasClock(s) ? 1 : 0
     const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
     const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepWidth(s)) + clockRows(s))
@@ -2689,7 +2698,11 @@ export const register: Register = on => {
         // Where each region starts: the newest questions, the step at work with one done row above.
         const qLast = lastStart(qLines, qRows)
         const sLast = lastStart(sLines, sRows)
-        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
+        // An opened restore stays in view. The newest-question window would hide it
+        // above the fold once its saved text is taller than the region.
+        const revealedAt = questions.findIndex(q => revealedText(q) !== undefined)
+        const qPrefer = revealedAt >= 0 ? revealedAt : at.questions ?? qLast
+        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(Math.max(0, qPrefer), qLast))
         const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
 
         return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
@@ -2767,7 +2780,9 @@ export const register: Register = on => {
           const questionKey = linkedAt === undefined && q.restoredBy !== undefined && !restoredOnly ? restoreKey(q, 'q') : undefined
           const savedQuestion = q.head.trim() !== ''
           const savedAnswer = (q.answerText?.trim().length ?? 0) > 0
-          const answerKey = q.answerKey !== undefined ? `answer:${q.answerKey}` : !restoredOnly && q.restoredBy !== undefined && q.status !== 'open' ? restoreKey(q, 'a') : undefined
+          // An answer recorded in this session keeps its native row even when the question was restored.
+          const nativeAnswer = q.answerKey !== undefined
+          const answerKey = nativeAnswer ? `answer:${q.answerKey}` : !restoredOnly && q.restoredBy !== undefined && q.status !== 'open' ? restoreKey(q, 'a') : undefined
           const ready = answered && savedAnswer && (restoredOnly || answerKey !== undefined)
           const hasAnswerAnchor = answerKey !== undefined || q.answerRequestId !== undefined || (restoredOnly && savedAnswer)
           const answerIds = q.answerKey !== undefined ? [q.answerKey] : answerKey !== undefined ? [answerKey] : []
@@ -2793,23 +2808,27 @@ export const register: Register = on => {
                       : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
               </Box>
               <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
-                {restoredOnly && !savedAnswer
-                  ? <Button key={`a-${q.id}`} dimColor label="A" onPress={() => undefined} />
-                  : restoredOnly
-                    ? <Button key={`a-${q.id}`} variant="primary" hotkey={hotkey} label="A" onPress={() => toggleReveal(q.id, 'a')} />
-                    : !hasAnswerAnchor
-                      ? <Text color="subtle" dimColor>[ A ]</Text>
-                      : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />}
+                {nativeAnswer || !restoredOnly
+                  ? !hasAnswerAnchor
+                    ? <Text color="subtle" dimColor>[ A ]</Text>
+                    : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />
+                  : !savedAnswer
+                    ? <Button key={`a-${q.id}`} dimColor label="A" onPress={() => undefined} />
+                    : <Button key={`a-${q.id}`} variant={answered ? 'primary' : undefined} hotkey={ready ? hotkey : undefined} label="A" onPress={() => toggleReveal(q.id, 'a')} />}
               </Box>
             </Box>
           )
+          const headBudget = Math.max(1, qRows - qControlsRows)
+          const headShown = fitLines(`Q${q.id}. ${q.head}`, qWidth, headBudget)
+          const revealBudget = Math.max(0, qRows - qControlsRows - wrappedLines(headShown, qWidth))
+          const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer ? q.answerText : undefined
+          const revealShown = revealRaw !== undefined && revealBudget > 0 ? fitLines(revealRaw, qWidth, revealBudget) : undefined
           const text = (
-            <Box key={`q-text-${q.id}`} flexShrink={1} width={qWidth}>
+            <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={qWidth}>
               <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                {fitLines(`Q${q.id}. ${q.head}`, qWidth, qRows - qControlsRows)}
+                {headShown}
               </Text>
-              {opened[String(q.id)] === 'q' && savedQuestion && <Text key={`reveal-q-${q.id}`}>{q.head}</Text>}
-              {opened[String(q.id)] === 'a' && savedAnswer && <Text key={`reveal-a-${q.id}`}>{q.answerText}</Text>}
+              {revealShown !== undefined && <Text key={`reveal-${opened[String(q.id)]}-${q.id}`}>{revealShown}</Text>}
             </Box>
           )
           const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
