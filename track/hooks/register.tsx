@@ -393,6 +393,21 @@ const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // sentence; the stored result is checked when the text does not start with one. A deny can carry
 // a refusal with no error flag. Only a leading BOM or whitespace is ignored. A sentence after
 // other text is not a cancel.
+const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|was|were|can|could|do|does|did|should|would|will|u)$/i
+// Turns that called Track. Module memory: a turn-atom write here retries forever
+// against a test that pins the turn version, and skips the tool hook.
+const trackedTurns = new Set<string>()
+// A question-like main prompt, as its first 80 characters, or absent when the
+// turn should not be gated. Stored on the turn atom beside the declared fields.
+const questionExcerpt = (text: string, originKind: string | undefined): string | undefined => {
+  const trimmed = text.trim()
+  if (trimmed === '' || trimmed.startsWith('/') || trimmed.startsWith(': AMQ doorbell')) return undefined
+  if (trimmed.startsWith('<bash-') || trimmed.startsWith('<local-command') || trimmed.startsWith('<task-notification')) return undefined
+  if (originKind === 'task-notification') return undefined
+  const first = trimmed.split(/\s+/)[0] ?? ''
+  if (!trimmed.includes('?') && !QUESTION_FIRST.test(first)) return undefined
+  return trimmed.slice(0, 80)
+}
 const USER_CANCEL = "The user doesn't want to take this action right now"
 const USER_REJECT = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 const PERMISSION_DENIED = /^Permission to use \S+ has been denied\b/
@@ -1572,7 +1587,8 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    await update($, turn, t => ({ ...t, currentId: e.turnId }))
+    await update($, turn, t => ({ ...t, currentId: e.turnId, questionPrompt: undefined } as Turn))
+    if (typeof e.turnId === 'string') trackedTurns.delete(e.turnId)
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
@@ -1599,6 +1615,12 @@ export const register: Register = on => {
 
   // The per-turn reminder: a short row beside the prompt, only while something is open.
   on('prompt.submit', async ($, e, next) => {
+    if ((e as { agentId?: string }).agentId === undefined) {
+      const questionPrompt = questionExcerpt(String(e.text ?? ''), e.origin?.kind)
+      const id = (await read($, turn)).currentId
+      if (id !== null && questionPrompt !== undefined) trackedTurns.delete(id)
+      await update($, turn, t => ({ ...t, questionPrompt } as Turn))
+    }
     // A finished background task or agent says so in its notification: it leaves the banner.
     // Its step stays as it is and gains a visible flag, plus one nudge to update it.
     let followUpLine: string | undefined
@@ -1689,8 +1711,14 @@ export const register: Register = on => {
     }
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
+    const asked = (t as Turn & { questionPrompt?: string })
     if (open.length === 0) {
-      return below
+      if (asked.questionPrompt === undefined || (t.currentId !== null && trackedTurns.has(t.currentId))) return below
+      await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
+      return {
+        ...below,
+        block: `track: this turn's prompt looks like a question ("${asked.questionPrompt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.`,
+      }
     }
     await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
     const first = open[0] as Question
@@ -1781,6 +1809,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot track questions for the user.' }
     }
+    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     const summary = headOf(String(e.summary ?? ''))
     if (summary === '') {
       return { deny: 'track: summary is required.' }
@@ -1834,6 +1863,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the user\'s questions.' }
     }
+    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     const id = Number(e.id)
     const status = e.status === 'deferred' ? 'deferred' : 'answered'
     const note = typeof e.note === 'string' ? e.note.slice(0, HEAD_CHARS) : undefined
@@ -2057,6 +2087,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
     }
+    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     await update($, scrollAt, cur => ({ ...cur, steps: null }))
     const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
     if (titles.length === 0) {
@@ -2247,6 +2278,7 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
     }
+    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     const currentId = (await read($, turn)).currentId
     if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
     const id = String(e.id)
