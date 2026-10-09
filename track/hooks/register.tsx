@@ -115,6 +115,44 @@ const PULSE_PHASES = 12
 const SPINNER = ['◐', '◓', '◑', '◒'] as const
 const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a828c'] as const
 const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
+// Ohad's waiting color, one value for the ◆ and the waiting row. Blue, not the permission token.
+const WAITING_BLUE = '#1a73e8'
+
+type BannerRow = { key: string; glyph: string; words: string; background: string; glyphColor: string }
+
+// A row's visible line. Refs stay when the whole line fits. A count replaces them when the
+// label plus the count still fits; otherwise the label stands alone. Collapse forces the count.
+const bannerLine = (glyph: string, label: string, refs: string[], width: number, forceCount: boolean): { glyph: string; words: string } => {
+  const fullBody = refs.length === 0 ? label : `${label} · ${refs.join(' · ')}`
+  const countBody = refs.length === 0 ? label : `${label} · ${refs.length}`
+  const lineLength = (body: string) => (glyph === '' ? 0 : glyph.length + 1) + body.length
+  const chosen = refs.length === 0
+    ? label
+    : !forceCount && lineLength(fullBody) <= width
+      ? fullBody
+      : forceCount || countBody.length <= width
+        ? countBody
+        : label
+  const fitted = lineLength(chosen) > width && chosen.startsWith('Waiting on agents') && !chosen.includes(' · S') && lineLength('Waiting agents') <= width
+    ? 'Waiting agents'
+    : chosen
+  const agents = fitted.match(/agents \(\d+\)/)?.[0]
+  const tasks = fitted.match(/tasks \(\d+\)/)?.[0]
+  const compact = [agents, tasks].filter(part => part !== undefined).join(' · ')
+  const body = fitted.length <= width
+    ? fitted
+    : compact.length > 0 && compact.length <= width
+      ? compact
+      : agents !== undefined && agents.length <= width
+        ? agents
+        : tasks !== undefined && tasks.length <= width
+          ? tasks
+          : fitted.startsWith('Waiting on you') && 'Waiting on you'.length <= width
+            ? 'Waiting on you'
+            : fitted
+
+  return { glyph, words: glyph === '' ? body : ` ${body}` }
+}
 const pulsing: { timer?: Timer } = {}
 // Each step row ends in its wall clock. It moves every second under an hour, then once a minute.
 const TICK_MS = 1000
@@ -2263,7 +2301,9 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const now = await read($, activity)
-    const isUnsaved = (await read($, durability)).isUnsaved
+    const saved = await read($, durability)
+    const isUnsaved = saved.isUnsaved
+    const unsavedReason = saved.reason
     const phase = await read($, pulse)
     if (pulsing.timer === undefined && isPulsing(l, now)) {
       startPulse($)
@@ -2332,7 +2372,58 @@ export const register: Register = on => {
 
     const work = workState(l, now)
     const state = isUnsaved ? 'unsaved' : sessionState(l, now)
-    const shown = BANNERS[state]
+    const numbered = steps.map((s, i) => ({ step: s, n: i + 1 }))
+    const waitingSteps = numbered.filter(row => row.step.status === 'waiting')
+    const agentSteps = numbered.filter(row => isDelegatedWork(row.step))
+    const mainSteps = numbered.filter(row => row.step.status === 'in_progress' && row.step.delegated !== true && work === 'working')
+    const parkedSteps = numbered.filter(row => row.step.status === 'paused' || row.step.status === 'pending')
+    const taskCount = (now.tasks ?? []).length
+    const agentActivity = agentSteps.length > 0 || now.agentCalls.length > 0 || now.background.length > 0 || taskCount > 0
+    const askIds = new Set(now.askCalls)
+    const questionRefs = questions
+      .filter(q => q.status !== 'answered' && q.status !== 'deferred' && (askIds.has(q.askedRequestId ?? '') || askIds.has(q.trackedBy ?? '')))
+      .map(q => `Q${q.id}`)
+    const piece = (key: string, glyph: string, label: string, refs: string[], background: string, glyphColor: string, forceCount: boolean): BannerRow => {
+      const line = bannerLine(glyph, label, refs, width, forceCount)
+
+      return { key, glyph: line.glyph, words: line.words, background, glyphColor }
+    }
+    const stack = (forceCount: boolean): BannerRow[] => {
+      const built: BannerRow[] = []
+      if (isUnsaved) built.push(piece('banner-unsaved', '', unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`, [], 'warning', 'warning', forceCount))
+      if (agentActivity) {
+        const stepRefs = agentSteps.map(row => `S${row.n}`)
+        const agentCount = now.background.length
+        const label = stepRefs.length === 0 && agentCount > 0
+          ? `Waiting on agents (${agentCount})`
+          : stepRefs.length === 0 && agentCount === 0 && taskCount > 0
+            ? `Waiting on tasks (${taskCount})`
+            : agentSteps.length > 0 || now.agentCalls.length > 0 || agentCount > 0
+              ? 'Waiting on agents'
+              : 'Waiting on tasks'
+        const refs = [
+          ...stepRefs,
+          ...(stepRefs.length > 0 && agentCount > 0 ? [`agents (${agentCount})`] : []),
+          ...(taskCount > 0 && !label.startsWith('Waiting on tasks (') ? [`tasks (${taskCount})`] : []),
+        ]
+        built.push(piece('banner-agents', '⧗', label, refs, AMBER_SHADES[0], AMBER_SHADES[phase % AMBER_SHADES.length], forceCount))
+      }
+      if (work === 'working') built.push(piece('banner-working', '◐', 'Working', mainSteps.map(row => `S${row.n}`), GREY_SHADES[0], GREY_SHADES[0], forceCount))
+      if (work === 'unknown') built.push(piece('banner-unknown', '', width < 18 ? 'Unknown' : 'Activity unknown', [], 'warning', 'warning', forceCount))
+      else if (!agentActivity && work !== 'working' && (parkedSteps.length > 0 || (work === 'paused' && waitingSteps.length === 0))) {
+        built.push(piece('banner-paused', '', 'Paused', [], 'warning', 'warning', forceCount))
+      }
+      if (waitingSteps.length > 0 || now.askCalls.length > 0) {
+        built.push(piece('banner-you', '◆', 'Waiting on you', [...questionRefs, ...waitingSteps.map(row => `S${row.n}`)], WAITING_BLUE, WAITING_BLUE, forceCount))
+      }
+      if (built.length === 0) built.push(piece('banner-idle', '', 'Idle · Safe to close', [], 'success', 'success', forceCount))
+
+      return built
+    }
+    const openRows = stack(false)
+    const collapseRank = ['banner-unsaved', 'banner-you', 'banner-unknown', 'banner-working', 'banner-agents', 'banner-paused', 'banner-idle']
+    const collapsed = [...stack(true)].sort((a, b) => collapseRank.indexOf(a.key) - collapseRank.indexOf(b.key))[0]
+    const bannerRows = bodyRows < 12 && openRows.length > 1 && collapsed !== undefined ? [{ ...collapsed, key: 'banner-line' }] : openRows
     const countLabel = (done: number, total: number) => {
       const full = ring(done, total)
 
@@ -2365,7 +2456,7 @@ export const register: Register = on => {
     const fit = (qArrows: string, sArrows: string) => {
       const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
       const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
-      const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + 1))
+      const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerRows.length))
       // A compact question needs a text line plus its Q/A controls even in a short pane.
       const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
       let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
@@ -2400,34 +2491,6 @@ export const register: Register = on => {
       qLast,
       sLast,
     })
-    // Background agents and tasks show in the banner while the main turn runs too: the session
-    // works and waits on them at once, and names each kind apart. Waiting on either blinks amber.
-    const delegatedCount = steps.filter(isDelegatedWork).length
-    // Ownership identifies agents without telling how many. Count only native
-    // activity when no explicit ownership with an unknown count is present.
-    const agentCount = now.background.length
-    const agents = delegatedCount > 0 ? 'agents' : agentCount > 0 ? `agents (${agentCount})` : undefined
-    const taskCount = (now.tasks ?? []).length
-    const title = shown.text.trimEnd()
-    const parts =
-      state === 'you'
-        ? [title, work === 'working' && 'Working', agents !== undefined ? `${agents} working` : work === 'agents' && 'agents working', taskCount > 0 && `tasks (${taskCount}) working`]
-        : state === 'working'
-        ? [title, agents, taskCount > 0 && `tasks (${taskCount})`]
-        : state === 'agents'
-          ? [delegatedCount === 0 && agentCount > 0 ? `${title} (${agentCount})` : title, delegatedCount === 0 && taskCount > 0 && `tasks (${taskCount})`]
-          : state === 'tasks'
-            ? [`${title} (${taskCount})`]
-            : [title]
-    const fullBanner = `${parts.filter(Boolean).join(' · ')} `
-    // Keep the state visible on one row. Optional background counts yield to it at narrow widths.
-    const mixedCompact = state === 'you'
-      ? agents !== undefined || work === 'agents' ? 'You · agents work' : work === 'tasks' ? 'You · tasks work' : work === 'working' ? 'You · Working' : shown.compact
-      : shown.compact
-    const bannerText = fullBanner.length <= width ? fullBanner : state === 'you' ? fitLines(mixedCompact, width, 1) : shown.compact
-    const backgroundRuns = work === 'agents' || work === 'tasks' || agents !== undefined || taskCount > 0
-    const bannerColor = state === 'agents' || state === 'tasks' || (state === 'you' && backgroundRuns) ? AMBER_SHADES[phase % AMBER_SHADES.length] : shown.color
-
     return (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
         {/* The title as a centered header bar, rules filling the width. */}
@@ -2537,24 +2600,24 @@ export const register: Register = on => {
           const index = sStart + shownAt
           const color = s.status === 'completed' ? 'success' : undefined
           // The step in progress shows who is on it: a grey spinner for the main session, an amber
-          // hourglass for background agents or tasks, a still purple mark when it waits on the person.
+          // hourglass for background agents or tasks, a still blue mark when it waits on the person.
           const look =
             isDelegatedWork(s)
               ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
               : s.status === 'paused'
               ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
               : s.status === 'waiting'
-                ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
+                ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
               : s.status !== 'in_progress'
               ? { glyph: s.status === 'completed' ? '●' : '○', glyphColor: color, textColor: color }
               : now.askCalls.length > 0
-                ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
+                ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
                 : work === 'working'
                 ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
                 : work === 'agents' || work === 'tasks'
                   ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
                   : state === 'you'
-                    ? { glyph: '◆', glyphColor: 'permission', textColor: undefined }
+                    ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
                     : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
@@ -2586,11 +2649,14 @@ export const register: Register = on => {
           {clearButtons('-bottom')}
           {hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
         </Box>
-        {/* The banner, pinned at the bottom: its color across the whole width, its words centered. */}
-        <Box key="banner" width={width} justifyContent="center" backgroundColor={bannerColor}>
-          <Text color="inverseText" bold>
-            {bannerText}
-          </Text>
+        {/* One row per active state. The wrapper keeps the old banner seat; only the amber glyph pulses. */}
+        <Box key="banner" width={width} flexDirection="column" justifyContent="center" backgroundColor={bannerRows.at(-1)?.background ?? 'success'}>
+          {bannerRows.map(row => (
+            <Box key={row.key} width={width} justifyContent="center" backgroundColor={row.background}>
+              {row.glyph !== '' && <Text key={`${row.key}-glyph`} color={row.glyphColor} bold>{row.glyph}</Text>}
+              <Text key={`${row.key}-words`} color="inverseText" bold>{row.words}</Text>
+            </Box>
+          ))}
         </Box>
       </Box>
     )

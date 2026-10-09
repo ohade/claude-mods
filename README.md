@@ -69,7 +69,7 @@ running turn. Doorbells and informational notifications alone need no row. Track
   hover mouse-cursor control for that divider; Track cannot set a horizontal resize cursor there.
   For plugin authors: native JSX `Fragment` is a column Box. Horizontal row children must
   stay flat; wrapping them in a fragment stacks their labels and clips the measured region.
-- **Banner.** A full-width colored line at the bottom says where the session stands: Working, Waiting on agents
+- **Banner.** Full-width colored rows at the bottom say where the session stands: Working, Waiting on agents
   (an Agent call or background agents), Waiting on tasks (background shell tasks), Waiting on you
   (a question dialog or an explicit waiting step), Paused, Activity unknown, Unsaved, or Idle.
   Use `waiting` only when the user must act; peer waits use `paused` or `pending` with an optional note.
@@ -78,8 +78,9 @@ running turn. Doorbells and informational notifications alone need no row. Track
   when the main session resumes that step. This is explicit ownership, not a peer-liveness probe.
   Completed steps clear it. Concurrent main work stays grey on its own row.
   Explicit ownership leaves agent counts unknown; only native-only activity supplies a count.
-  User waiting does not hide concurrent work: the banner also names active agents, tasks or
-  main work, and their pulse continues. A 17-column pane uses `You · agents work` when needed.
+  User waiting does not hide concurrent work: unsaved, agents, main work, and waiting on you
+  are separate rows, top to bottom, and only the amber glyph pulses. A short pane collapses to
+  the highest-priority row and a count.
   Paused, pending and user-waiting rows retain ownership metadata but do not count as active
   delegated work or show a running hourglass. An open question dialog alone does not imply
   that the main session is working. Actual native background activity still shows and pulses.
@@ -87,7 +88,7 @@ running turn. Doorbells and informational notifications alone need no row. Track
   `track_steps` calls. Successful plan approval adds one reminder to reuse open steps and register
   missing work. It leaves the entire register unchanged. A Task named like a plan step links to it.
   The step in progress shows who is on it: a spinner breathing in grey while the main session
-  works, an amber hourglass while it waits on agents, a still purple `◆` while it waits on you.
+  works, an amber hourglass while it waits on agents, a still blue `◆` while it waits on you.
   A duration runs only for an in-progress step with a known start and no end. Pending, paused
   and waiting rows hide their clocks and reserve no clock space, even if an earlier start is
   retained. Completed rows show a fixed duration only when both times are known. These are

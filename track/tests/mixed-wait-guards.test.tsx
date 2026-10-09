@@ -21,9 +21,10 @@ test('native background work pulses during a main turn with a user-waiting row',
   atomStore(on, 'activity', { ...IDLE, isWorking: true, background: ['native-a', 'native-b'] })
   const phase = atomStore(on, 'pulse', 0)
   const ui = await $.ui.mount(pane('dock', 80))
-  const text = (await ui.findAll({ type: 'Text' })).at(-1)?.text ?? ''
+  const text = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-')).map(el => String(el.text ?? '')).join(' ')
   expect(text).toContain('Waiting on you')
-  expect(text).toContain('agents (2) working')
+  expect(text).toContain('agents (2)')
+  expect(text).toContain('Working')
   await clock.advance(1300)
   expect(phase.writes.length).toBeGreaterThanOrEqual(2)
 })

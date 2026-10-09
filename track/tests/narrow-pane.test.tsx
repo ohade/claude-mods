@@ -91,9 +91,10 @@ test('a narrow banner preserves each state without wrapping or clipping', async 
   for (const unsaved of [false, true]) {
     durability.value.isUnsaved = unsaved
     const ui = await $.ui.mount(pane('dock', 17, 30))
-    const banner = (await ui.findAll({ type: 'Text' })).at(-1)?.text ?? ''
+    const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
+    const banner = rows.map(el => String(el.text ?? '')).join(' ')
     expect(banner).toContain(unsaved ? 'Unsaved' : 'Working')
-    expect(banner.length).toBeLessThanOrEqual(17)
+    for (const row of rows) expect(String(row.text ?? '').trim().length).toBeLessThanOrEqual(17)
     await ui.unmount()
   }
 })

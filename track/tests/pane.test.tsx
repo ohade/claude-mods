@@ -39,7 +39,7 @@ test('waiting on agents pulses the banner amber with no step in progress', async
 test('a running turn with background agents names them in the banner', async ($, on) => {
   const ui = await draw($, on, EMPTY, { ...IDLE, isWorking: true, background: ['agent-1', 'agent-2'] })
 
-  const banner = (await textsOf(ui)).at(-1) ?? ''
+  const banner = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-')).map(el => String(el.text ?? '')).join(' ')
   expect(banner).toContain('Working')
   expect(banner).toContain('agents (2)')
 })

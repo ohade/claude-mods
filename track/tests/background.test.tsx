@@ -9,13 +9,14 @@ import type { Engine } from './kit'
 
 const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[], tasks: [] as string[] }
 
-type Drawn = { findAll: (q: { type: string }) => Promise<Array<{ text?: string }>> }
+type Drawn = { findAll: (q: { type: string }) => Promise<Array<{ key?: string; text?: string }>> }
 
 // mock.clock goes first in each test: the hooks beneath the plugins register before any $ call.
 const bannerOf = async ($: Engine) => {
   const ui = (await $.ui.mount(pane('dock'))) as unknown as Drawn
+  const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
 
-  return (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? '')).at(-1) ?? ''
+  return rows.map(el => String(el.text ?? '')).join(' ')
 }
 
 test('a background shell task is counted as a task, not as an agent', async ($, on) => {
@@ -57,7 +58,10 @@ test('a running turn names its background agents and tasks apart', async ($, on)
   atomStore(on, 'activity', { ...IDLE, isWorking: true, background: ['ag1'], tasks: ['b1'] })
   atomStore(on, 'ledger', EMPTY)
 
-  expect(await bannerOf($)).toContain('Working · agents (1) · tasks (1)')
+  const banner = await bannerOf($)
+  expect(banner).toContain('Working')
+  expect(banner).toContain('agents (1)')
+  expect(banner).toContain('tasks (1)')
 })
 
 test('a finished shell task leaves the banner on its notification', async ($, on) => {

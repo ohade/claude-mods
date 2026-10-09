@@ -54,7 +54,7 @@ test('main work remains grey while unrelated shell tasks run', async ($, on) => 
   const texts = await ui.findAll({ type: 'Text' })
   expect(texts.at(-1)?.text).toContain('Working')
   expect(texts.find(text => text.text === '◐')?.props.color).toBe('#5f6670')
-  expect(texts.some(text => text.text === '⧗')).toBe(false)
+  expect(texts.filter(text => text.text === '⧗')).toHaveLength(1)
 })
 
 test('delegated ownership never invents an agent count from step counts', async ($, on) => {
@@ -63,13 +63,16 @@ test('delegated ownership never invents an agent count from step counts', async 
   const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] } as any)
   const banner = async () => {
     const ui = await $.ui.mount(pane('dock'))
-    const text = (await ui.findAll({ type: 'Text' })).at(-1)?.text ?? ''
+    const text = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-')).map(el => String(el.text ?? '')).join(' ')
     await ui.unmount()
     return text
   }
-  expect((await banner()).trim()).toBe('Waiting on agents')
+  expect(await banner()).toContain('Waiting on agents')
+  expect(await banner()).toContain('tasks (2)')
+  expect(await banner()).not.toContain('agents (')
   ledger.value.steps.push({ ...STEP, id: 'plan:2', delegated: false })
-  expect(await banner()).toContain('Working · agents')
+  expect(await banner()).toContain('Working')
+  expect(await banner()).toContain('Waiting on agents')
   expect(await banner()).not.toContain('agents (1)')
   activity.value = { ...MAIN, isWorking: false, tasks: [], background: ['native-a', 'native-b'] }
   ledger.value.steps = [{ ...STEP, status: 'pending' }]

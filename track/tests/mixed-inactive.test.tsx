@@ -15,7 +15,10 @@ for (const status of ['waiting', 'paused', 'pending'] as const) {
     atomStore(on, 'activity', IDLE)
     const phase = atomStore(on, 'pulse', 0)
     const ui = await $.ui.mount(pane('dock', 80))
-    expect((await ui.findAll({ type: 'Text' })).at(-1)?.text?.trim()).toBe('Waiting on you')
+    const text = (await ui.findAll({ type: 'Text' })).at(-1)?.text?.trim() ?? ''
+    expect(text).toContain('Waiting on you')
+    expect(text).not.toContain('agents')
+    if (status !== 'waiting') expect(text).not.toContain('S2')
     await clock.advance(1300)
     expect(phase.writes).toHaveLength(0)
   })
