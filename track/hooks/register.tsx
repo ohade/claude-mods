@@ -390,28 +390,25 @@ const hidden = (above: number, below: number): string =>
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // The transcript sentence for a tool the user cancelled by sending a message, and the two
 // refusal sentences a permission prompt writes. On an error, the model-read text carries the
-// sentence; the stored result is the fallback. A deny can carry a refusal with no error flag.
-// Only a leading BOM or whitespace is ignored. A sentence after other text is not a cancel.
+// sentence; the stored result is checked when the text does not start with one. A deny can carry
+// a refusal with no error flag. Only a leading BOM or whitespace is ignored. A sentence after
+// other text is not a cancel.
 const USER_CANCEL = "The user doesn't want to take this action right now"
 const USER_REJECT = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 const PERMISSION_DENIED = /^Permission to use \S+ has been denied\b/
 const OWNER_CAP = 64
-const opened = (text: string): string => text.replace(/^(?:\uFEFF|\s)+/, '')
-const reasonAtStart = (text: string): 'cancelled by you' | 'refused' | undefined => {
+const withoutLeadingSpace = (text: string): string => text.replace(/^(?:\uFEFF|\s)+/, '')
+const reasonAtStart = (raw: unknown): 'cancelled by you' | 'refused' | undefined => {
+  if (typeof raw !== 'string') return undefined
+  const text = withoutLeadingSpace(raw)
   if (text.startsWith(USER_CANCEL)) return 'cancelled by you'
   if (text.startsWith(USER_REJECT) || PERMISSION_DENIED.test(text)) return 'refused'
   return undefined
 }
-const refuseAtStart = (text: string): 'refused' | undefined =>
-  text.startsWith(USER_REJECT) || PERMISSION_DENIED.test(text) ? 'refused' : undefined
 const cancelReasonOf = (ran: { result?: unknown; deny?: unknown; text?: unknown; isError?: boolean }): 'cancelled by you' | 'refused' | undefined => {
-  if (typeof ran.deny === 'string') {
-    const denied = refuseAtStart(opened(ran.deny))
-    if (denied !== undefined) return denied
-  }
+  if (reasonAtStart(ran.deny) === 'refused') return 'refused'
   if (ran.isError !== true) return undefined
-  const raw = typeof ran.text === 'string' ? ran.text : typeof ran.result === 'string' ? ran.result : undefined
-  return raw === undefined ? undefined : reasonAtStart(opened(raw))
+  return reasonAtStart(ran.text) ?? reasonAtStart(ran.result)
 }
 // The one in-progress step of this turn that can own a cancel. Two or none means no change.
 // A restored step has no turn id, so it never owns a cancel. An Agent launch may belong to the
@@ -436,9 +433,12 @@ const agentLaunchOwner = (steps: Step[], currentId: string | null): string[] => 
   if (delegated.length === 1 && delegated[0] !== undefined) return [delegated[0].id]
   return inTurn.length === 1 && inTurn[0] !== undefined ? [inTurn[0].id] : []
 }
-const ownsLiveWork = (s: Step): boolean => s.cleared !== true && (s.status === 'in_progress' || s.delegated === true)
+// A step a finished background task still flags: delegated, paused or in progress, and not
+// completed, waiting or cleared. Its owner entries live exactly as long as this holds.
+const canFollowUp = (s: Step): boolean =>
+  s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting' && (s.delegated === true || s.status === 'paused' || s.status === 'in_progress')
 const ownersForLiveSteps = (owners: Record<string, string[]> | undefined, steps: Step[]): Record<string, string[]> => {
-  const live = new Set(steps.filter(ownsLiveWork).map(s => s.id))
+  const live = new Set(steps.filter(canFollowUp).map(s => s.id))
   const next: Record<string, string[]> = {}
   for (const [id, stepIds] of Object.entries(owners ?? {})) {
     const kept = stepIds.filter(stepId => live.has(stepId))
@@ -446,17 +446,19 @@ const ownersForLiveSteps = (owners: Record<string, string[]> | undefined, steps:
   }
   return next
 }
-// Newest id last. A relaunch moves its id to the end. Lost notifications cannot grow the map past the cap.
-const rememberOwner = (owners: Record<string, string[]> | undefined, id: string, stepIds: string[]): Record<string, string[]> => {
-  const next = { ...(owners ?? {}) }
-  delete next[id]
-  if (stepIds.length > 0) next[id] = stepIds
-  const keys = Object.keys(next)
-  while (keys.length > OWNER_CAP) {
-    const oldest = keys.shift()
-    if (oldest !== undefined) delete next[oldest]
+// Launch order, newest last, kept apart from the map because an object lists integer-like keys
+// first. A relaunch moves its id to the end. Lost notifications cannot grow the map past the cap.
+const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activity, 'owners' | 'ownerOrder'> => {
+  const owners = { ...(a.owners ?? {}) }
+  delete owners[id]
+  if (stepIds.length > 0) owners[id] = stepIds
+  const known = (a.ownerOrder ?? []).filter(k => k !== id && owners[k] !== undefined)
+  const order = [...Object.keys(owners).filter(k => k !== id && !known.includes(k)), ...known, ...(stepIds.length > 0 ? [id] : [])]
+  while (order.length > OWNER_CAP) {
+    const oldest = order.shift()
+    if (oldest !== undefined) delete owners[oldest]
   }
-  return next
+  return { owners, ownerOrder: order }
 }
 const dropFinishedOwners = async ($: EngineInterface): Promise<void> => {
   const steps = (await read($, ledger)).steps
@@ -1608,7 +1610,7 @@ export const register: Register = on => {
           for (const id of done) delete nextOwners[id]
           return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
         })
-        const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting' && (s.delegated === true || s.status === 'paused' || s.status === 'in_progress'))
+        const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
         if (targets.length > 0) {
           const wanted = new Set(targets.map(s => s.id))
           await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }))
@@ -2019,7 +2021,7 @@ export const register: Register = on => {
       if (launched?.status === 'async_launched' && typeof launched.agentId === 'string') {
         const agentId = launched.agentId
         const ids = agentLaunchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
-        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], owners: rememberOwner(a.owners, agentId, ids) }))
+        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids) }))
       }
 
       return ran
@@ -2046,7 +2048,7 @@ export const register: Register = on => {
     const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
     if (e.agentId === undefined && typeof taskId === 'string') {
       const ids = launchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
-      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], owners: rememberOwner(a.owners, taskId, ids) }))
+      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids) }))
     }
 
     return ran
