@@ -48,6 +48,13 @@ test('a long revealed answer stays inside the questions region or the region sho
   await ui.press({ key: 'a-1' })
   const reveal = String((await ui.find({ key: 'reveal-a-1' }))?.text ?? '')
   const hidden = String((await ui.find({ key: 'questions-hidden' }))?.text ?? '')
-  const cut = reveal.endsWith('…') && reveal.length < answer.length
-  expect(cut || hidden.includes('↓')).toBe(true)
+  const rows: number[] = []
+  for (const id of [1, 2]) if ((await ui.find({ key: `row-q-${id}` })) != null) rows.push(id)
+  const above = rows.length === 0 ? 0 : (rows[0] ?? 1) - 1
+  const below = rows.length === 0 ? 0 : 2 - (rows[rows.length - 1] ?? 2)
+  const want = [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
+  expect(reveal.endsWith('…')).toBe(true)
+  expect(reveal.length).toBeLessThan(answer.length)
+  expect(rows).toContain(1)
+  expect(hidden).toBe(want)
 })
