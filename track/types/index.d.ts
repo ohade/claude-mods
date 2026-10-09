@@ -42,8 +42,8 @@ export type Question = {
   answerText?: string
   // SHA-256 of the full completed words, for source matching beyond the saved cap.
   answerTextHash?: string
-  // Brought back after a handoff: the session it came from, and the restore_tracker call whose
-  // row shows it here (that row is where [ Q ] and [ A ] jump).
+  // Brought back after a handoff: the session it came from, and the user-row receipt
+  // that confirmed it. [ Q ] and [ A ] show the saved text in the pane.
   restoredFrom?: string
   restoredBy?: string
   // Stable identity across restores and handoffs, independent of the display id.

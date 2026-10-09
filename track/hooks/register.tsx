@@ -503,6 +503,8 @@ const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
 const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
+// Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
+const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | undefined>)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
@@ -1750,16 +1752,8 @@ export const register: Register = on => {
     if (e.surface !== 'terminal') {
       return drawn
     }
-    // System transcript notices have no documented render component (2026-10-08).
-    // A plugin user note has UserMessage. Bind only an acknowledged snapshot's
-    // exact body, stamped sender and native UUID family, never the latest prompt.
-    if (e.props.origin.kind === 'plugin' && e.props.origin.name === 'track') {
-      const restore = (await read($, ledger)).restores?.find(r => r.display === 'user' && SESSION_ID.test(r.by) && SESSION_ID.test(e.requestId) && rowKey(r.by) === rowKey(e.requestId) && restoreNotice(r) === e.props.text)
-      if (restore !== undefined) {
-        rememberRender(`restore:${restore.by}`, e.requestId)
-        return renderRestore($, $.ui.resolve(e), restore)
-      }
-    }
+    // The mechanical restore's user row is for the model. It is not a jump target,
+    // and a system notice has no documented render component (2026-10-08).
     if (e.props.origin.kind !== 'composer') return drawn
     // A jump to this prompt lights it, fading back over FLASH_HOLD_MS and the steps after it.
     const level = await read($, memberOf(flash, e))
@@ -2150,6 +2144,7 @@ export const register: Register = on => {
     const before = await read($, ledger)
     let refusal: string | undefined
     let restored: Question[] = []
+    let personNotice: string | undefined
     // Build a proposal without changing the atom. A refused or altered notice
     // cannot leave restored rows behind in memory or trigger a durable save.
     const propose = (cur: Ledger): Ledger => {
@@ -2210,6 +2205,7 @@ export const register: Register = on => {
           questions: proposed.questions.map(q => displayed.find(one => one.id === q.id) ?? q),
           restores: keepRestores([...(proposed.restores ?? []).filter(r => r.by !== e.tool_use_id), { by: notice.uuid, from, steps: steps.length, questions: displayed, display: 'user' }], proposed.questions.map(q => displayed.find(one => one.id === q.id) ?? q)),
         }
+        personNotice = restoreNotice({ by: notice.uuid, from, steps: steps.length, questions: displayed })
       }
     }
     await update<Ledger>($, ledger, cur => {
@@ -2220,6 +2216,16 @@ export const register: Register = on => {
       return mechanical ? proposed : propose(cur)
     })
     if (refusal !== undefined) return failed(refusal)
+    // The person-facing notice is not a receipt. A refusal leaves the restore in place;
+    // the pane still has the saved questions and answers.
+    if (personNotice !== undefined) {
+      try {
+        const shownNotice = await $.session.append({ message: { type: 'system', content: [{ type: 'text', text: personNotice }] } })
+        if (shownNotice.deny !== undefined) $.ui.log(`track: person restore notice refused: ${shownNotice.deny}`, { to: 'debug' })
+      } catch (error) {
+        $.ui.log(`track: person restore notice failed: ${reason(error)}`, { to: 'debug' })
+      }
+    }
     await update($, scrollAt, cur => ({ steps: steps.length > 0 ? null : cur.steps, questions: restored.length > 0 ? null : cur.questions }))
     const shown = steps.filter(s => s.cleared !== true)
     const at = shown.findIndex(s => s.status === 'in_progress')
@@ -2429,15 +2435,6 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Legacy fixture compatibility only: InfoNotice is a header hint, not a
-  // documented system-transcript route. New mechanical snapshots use UserMessage.
-  on('ui.render', { component: 'InfoNotice' }, async ($, e, next) => {
-    const restore = (await read($, ledger)).restores?.find(r => r.display !== 'user' && restoreNotice(r) === e.props.text)
-    if (restore === undefined) return next(e)
-    rememberRender(`restore:${restore.by}`, e.requestId)
-    return renderRestore($, $.ui.resolve(e), restore)
-  })
-
   // The answer's text row alone. Each row reads only the
   // level kept under its own row key, so a jump redraws the lit row alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
@@ -2505,6 +2502,9 @@ export const register: Register = on => {
     }
     // The tick is read so each one redraws the pane; the time itself is the clock's.
     await read($, tick)
+    const opened = await read($, reveal)
+    const toggleReveal = (id: number, side: 'q' | 'a') =>
+      update($, reveal, cur => ({ ...cur, [String(id)]: cur[String(id)] === side ? undefined : side }))
     const clockRuns = runningClocks(l).length > 0
     if (ticking.timer === undefined && clockRuns) {
       startTick($)
@@ -2757,16 +2757,20 @@ export const register: Register = on => {
           const answered = q.status === 'answered'
           const color = answered ? 'success' : undefined
           // A link to another prompt's row (stored by an older version) offers no jump.
-          // A restored question's rows are in the old transcript, so [ Q ] and, once it was
-          // answered or deferred there, [ A ] go to the restore row that shows it.
+          // A drawn restore_tracker row is a real scroll target. A mechanical restore's
+          // user row is hidden and its system notice has no render component, so [ Q ]
+          // and [ A ] show the saved text in the pane. Nothing saved stays dim, with no toast.
           const linkedAt = q.askedRequestId !== undefined && (q.rowKey === undefined || rowKey(q.askedRequestId) === q.rowKey) ? q.askedRequestId : undefined
-          const askedAt = linkedAt ?? q.restoredBy
-          const questionKey = linkedAt === undefined && q.restoredBy !== undefined ? restoreKey(q, 'q') : undefined
-          const answerKey = q.answerKey !== undefined ? `answer:${q.answerKey}` : q.restoredBy !== undefined && q.status !== 'open' ? restoreKey(q, 'a') : undefined
-          const ready = answered && (q.answerText?.trim().length ?? 0) > 0 && answerKey !== undefined
-          const hasAnswerAnchor = answerKey !== undefined || q.answerRequestId !== undefined
-          const answerIds = q.answerKey !== undefined ? [q.answerKey] : answerKey !== undefined ? [answerKey] : []
           const restoreInstance = q.restoredBy === undefined ? undefined : renderInstances.get(`restore:${q.restoredBy}`)
+          const restoredOnly = linkedAt === undefined && restoreInstance === undefined && (q.restoredFrom !== undefined || q.restoredBy !== undefined)
+          const askedAt = linkedAt ?? (restoredOnly ? undefined : q.restoredBy)
+          const questionKey = linkedAt === undefined && q.restoredBy !== undefined && !restoredOnly ? restoreKey(q, 'q') : undefined
+          const savedQuestion = q.head.trim() !== ''
+          const savedAnswer = (q.answerText?.trim().length ?? 0) > 0
+          const answerKey = q.answerKey !== undefined ? `answer:${q.answerKey}` : !restoredOnly && q.restoredBy !== undefined && q.status !== 'open' ? restoreKey(q, 'a') : undefined
+          const ready = answered && savedAnswer && (restoredOnly || answerKey !== undefined)
+          const hasAnswerAnchor = answerKey !== undefined || q.answerRequestId !== undefined || (restoredOnly && savedAnswer)
+          const answerIds = q.answerKey !== undefined ? [q.answerKey] : answerKey !== undefined ? [answerKey] : []
           // A completed answer displayed by mark_answered owns its ToolUse row: the native
           // contract makes that call id the requestId, even before its first draw after reload.
           const answerInstance = q.answerKey === undefined ? restoreInstance
@@ -2780,14 +2784,22 @@ export const register: Register = on => {
           const markers = (
             <Box key={`q-markers-${q.id}`} width={13} flexShrink={0} flexDirection="row" columnGap={1}>
               <Box key={`q-question-slot-${q.id}`} width={6} flexShrink={0}>
-                {askedAt === undefined
-                  ? <Text dimColor>[ Q ]</Text>
-                  : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
+                {restoredOnly && !savedQuestion
+                  ? <Button key={`q-${q.id}`} dimColor label="Q" onPress={() => undefined} />
+                  : restoredOnly
+                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q')} />
+                    : askedAt === undefined
+                      ? <Text dimColor>[ Q ]</Text>
+                      : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
               </Box>
               <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
-                {!hasAnswerAnchor
-                  ? <Text color="subtle" dimColor>[ A ]</Text>
-                  : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />}
+                {restoredOnly && !savedAnswer
+                  ? <Button key={`a-${q.id}`} dimColor label="A" onPress={() => undefined} />
+                  : restoredOnly
+                    ? <Button key={`a-${q.id}`} variant="primary" hotkey={hotkey} label="A" onPress={() => toggleReveal(q.id, 'a')} />
+                    : !hasAnswerAnchor
+                      ? <Text color="subtle" dimColor>[ A ]</Text>
+                      : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />}
               </Box>
             </Box>
           )
@@ -2796,6 +2808,8 @@ export const register: Register = on => {
               <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
                 {fitLines(`Q${q.id}. ${q.head}`, qWidth, qRows - qControlsRows)}
               </Text>
+              {opened[String(q.id)] === 'q' && savedQuestion && <Text key={`reveal-q-${q.id}`}>{q.head}</Text>}
+              {opened[String(q.id)] === 'a' && savedAnswer && <Text key={`reveal-a-${q.id}`}>{q.answerText}</Text>}
             </Box>
           )
           const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
