@@ -26,32 +26,32 @@ const textsOf = async ($: Engine) => {
 
 test('a tool the user cancelled marks its in-progress step cancelled by you', async ($, on) => {
   const { ledger } = setup(on, [step('plan:1', { subject: 'Launch the agent', status: 'in_progress', activeTurnId: 't1' })])
-  on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED }))
+  on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED, isError: true }))
   await call($, { tool: 'Agent', tool_use_id: 'toolu_ag', description: 'review', prompt: 'go' })
   expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'cancelled by you' })
   expect(await textsOf($)).toEqual(expect.arrayContaining(['S1. Launch the agent', 'cancelled by you', '⊘']))
 })
 
-test('a model pause does not survive the user cancelling the tool that step owns', async ($, on) => {
+test('a model pause keeps its note when a later cancel arrives after the step is already paused', async ($, on) => {
   const { ledger } = setup(on, [step('plan:1', { subject: 'Launch the agent', status: 'in_progress', activeTurnId: 't1' })])
-  on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED }))
+  on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED, isError: true }))
   await call($, { tool: 'mcp__track__mark_step', id: 'plan:1', status: 'paused', note: 'paused by Ohad' })
   await call($, { tool: 'Agent', tool_use_id: 'toolu_ag', description: 'review', prompt: 'go' })
-  expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'cancelled by you' })
+  expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'paused by Ohad' })
 })
 
 test('a permission denial the transcript shows marks the owning step refused', async ($, on) => {
   const { ledger } = setup(on, [step('plan:1', { status: 'in_progress', activeTurnId: 't1' })])
-  on('tool.call', { tool: 'Agent' }, () => ({ result: REFUSED }))
+  on('tool.call', { tool: 'Agent' }, () => ({ result: REFUSED, isError: true }))
   await call($, { tool: 'Agent', tool_use_id: 'toolu_ag', description: 'review', prompt: 'go' })
   expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'refused' })
 })
 
-test('a delegated step owns a cancelled Agent launch', async ($, on) => {
+test('a paused delegated step is not rewritten by a cancelled Agent launch', async ($, on) => {
   const { ledger } = setup(on, [step('plan:1', { status: 'paused', delegated: true, note: 'paused by Ohad' })])
-  on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED }))
+  on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED, isError: true }))
   await call($, { tool: 'Agent', tool_use_id: 'toolu_ag', description: 'review', prompt: 'go' })
-  expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'cancelled by you', delegated: true })
+  expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'paused by Ohad', delegated: true })
 })
 
 test('an ordinary tool error, a waiting step, and a subagent call stay as they were', async ($, on) => {
@@ -89,7 +89,7 @@ test('a finished background agent flags its still-open step and nudges once, wit
   expect(await textsOf($)).toEqual(expect.arrayContaining(['S1. Consult peers', 'update status']))
 })
 
-test('a finished task flags a paused delegated step and leaves a completed step alone', async ($, on) => {
+test('a finished task does not flag an older paused delegated step', async ($, on) => {
   const { ledger } = setup(on, [
     step('plan:1', { status: 'paused', delegated: true }),
     step('plan:2', { status: 'completed', delegated: true }),
@@ -103,9 +103,9 @@ test('a finished task flags a paused delegated step and leaves a completed step 
   await call($, { tool: 'Agent', tool_use_id: 'toolu_ag', description: 'review', prompt: 'go', run_in_background: true })
   await $.prompt.submit({ text: '<task-notification><task-id>ag1</task-id><status>completed</status></task-notification>', origin: { kind: 'task-notification' } } as never)
   expect(ledger.value.steps.map(s => s.status)).toEqual(['paused', 'completed'])
-  expect((ledger.value.steps[0] as Step & { followUp?: true }).followUp).toBe(true)
+  expect((ledger.value.steps[0] as Step & { followUp?: true }).followUp).toBeUndefined()
   expect((ledger.value.steps[1] as Step & { followUp?: true }).followUp).toBeUndefined()
-  expect((submitted?.context ?? []).filter(line => line.includes('background work finished'))).toHaveLength(1)
+  expect((submitted?.context ?? []).filter(line => line.includes('background work finished'))).toHaveLength(0)
 })
 
 test('a finished shell task flags the in-progress step that launched it', async ($, on) => {
