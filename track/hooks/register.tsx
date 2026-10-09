@@ -198,13 +198,13 @@ const withStatus = (s: Step, status: Step['status'], now: number, turnId?: strin
   return { ...rest, status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
 }
 
-// A stretch of wall-clock time: m:ss under an hour, then 1h 05m.
+// Whole minutes below an hour, <1m below a minute; retain the hour/minute form.
 const clockText = (ms: number): string => {
   const total = Math.max(0, Math.floor(ms / 1000))
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor((total % 3600) / 60)
 
-  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}:${String(total % 60).padStart(2, '0')}`
+  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : total < 60 ? '<1m' : `${minutes}m`
 }
 
 // A retained start time is not current activity (pending-step clock defect, 2026-10-08).
