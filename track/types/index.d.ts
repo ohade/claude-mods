@@ -143,6 +143,8 @@ declare module 'claude-code' {
       // The time the step clocks were last moved on, by a timer while a step is under way.
       tick: number
       durability: { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean }
+      // A restored row's saved text drawn in the pane, by question id: its question or answer side.
+      reveal: Record<string, 'q' | 'a' | undefined>
     }
   }
 }
