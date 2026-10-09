@@ -396,6 +396,7 @@ const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|was|were|can|could|do|does|did|should|would|will|u)$/i
 // Turns that called Track. Module memory: a turn-atom write here retries forever
 // against a test that pins the turn version, and skips the tool hook.
+// A mod reload mid-turn forgets an earlier Track call and can cause one false block.
 const trackedTurns = new Set<string>()
 // A question-like main prompt, as its first 80 characters, or absent when the
 // turn should not be gated. Stored on the turn atom beside the declared fields.
@@ -1587,7 +1588,8 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    await update($, turn, t => ({ ...t, currentId: e.turnId, questionPrompt: undefined } as Turn))
+    // prompt.submit may already have stored questionPrompt. Stop clears it after this turn is decided.
+    await update($, turn, t => ({ ...t, currentId: e.turnId } as Turn))
     if (typeof e.turnId === 'string') trackedTurns.delete(e.turnId)
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
@@ -1706,21 +1708,29 @@ export const register: Register = on => {
       return below
     }
     const t = await read($, turn)
+    const asked = (t as Turn & { questionPrompt?: string })
+    const forgetExcerpt = async () => {
+      if (asked.questionPrompt === undefined) return
+      await update($, turn, cur => ({ ...cur, questionPrompt: undefined } as Turn))
+    }
     if (t.currentId === null || t.gatedTurnId === t.currentId) {
+      if (t.gatedTurnId === t.currentId) await forgetExcerpt()
       return below
     }
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
-    const asked = (t as Turn & { questionPrompt?: string })
     if (open.length === 0) {
-      if (asked.questionPrompt === undefined || (t.currentId !== null && trackedTurns.has(t.currentId))) return below
-      await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
+      if (asked.questionPrompt === undefined || (t.currentId !== null && trackedTurns.has(t.currentId))) {
+        await forgetExcerpt()
+        return below
+      }
+      await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined } as Turn))
       return {
         ...below,
         block: `track: this turn's prompt looks like a question ("${asked.questionPrompt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.`,
       }
     }
-    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
+    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined } as Turn))
     const first = open[0] as Question
     const rest = open.length > 1 ? ` (${open.length - 1} more open: ${open.slice(1).map(q => `Q${q.id}`).join(', ')})` : ''
 
