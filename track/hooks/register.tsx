@@ -277,14 +277,19 @@ const capRows = <T extends { cleared?: true }>(rows: T[], max: number, isDone: (
 
 const capSteps = (steps: Step[]): Step[] => capRows(steps, MAX_STEPS, s => s.status === 'completed')
 
+// Reasons the pane shows only while a step stays paused. Leaving paused drops them.
+const LIFECYCLE_NOTES = new Set(['cancelled by you', 'refused', 'interrupted'])
+
 // A step at a new status. Its clock starts the first time it goes in progress and stops when it
-// is done; a done step that is opened again runs on from its first start.
+// is done; a done step that is opened again runs on from its first start. Any status write drops
+// a finished-work flag. A cancel, refusal, or interruption note stays only while the step is paused.
 const withStatus = (s: Step, status: Step['status'], now: number, turnId?: string | null): Step => {
-  const { endedAt: _ended, delegated, activeTurnId: _turn, ...rest } = s
+  const { endedAt: _ended, delegated, activeTurnId: _turn, followUp: _follow, note, ...rest } = s
   const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
+  const keepNote = !(s.status === 'paused' && status !== 'paused' && note !== undefined && LIFECYCLE_NOTES.has(note))
 
-  return { ...rest, status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
+  return { ...rest, ...(keepNote && note !== undefined && { note }), status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
 }
 
 // Whole minutes below an hour, <1m below a minute; retain the hour/minute form.
@@ -371,27 +376,33 @@ const hidden = (above: number, below: number): string =>
 
 // A background task's id in its notification text.
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
-// The transcript sentence for a tool the user cancelled by sending a message. A permission denial
-// is only the refusal the transcript actually shows, never a generic error.
+// The transcript sentence for a tool the user cancelled by sending a message, and the two
+// refusal sentences a permission prompt writes. Each must be the start of an error result.
+// A sentence quoted inside a file or a diff is not a cancel.
 const USER_CANCEL = "The user doesn't want to take this action right now"
-const LIFECYCLE_NOTES = new Set(['cancelled by you', 'refused', 'interrupted'])
-const cancelReasonOf = (ran: { result?: unknown; deny?: unknown }): 'cancelled by you' | 'refused' | undefined => {
-  const text = `${typeof ran.deny === 'string' ? ran.deny : ''}\n${typeof ran.result === 'string' ? ran.result : ''}`
-  if (text.includes(USER_CANCEL)) return 'cancelled by you'
-  if (/permission to use\b[\s\S]{0,240}\bhas been denied/i.test(text) || /\buser denied permission\b/i.test(text)) return 'refused'
+const USER_REJECT = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+const PERMISSION_DENIED = /^Permission to use \S+ has been denied\b/
+const cancelReasonOf = (ran: { result?: unknown; deny?: unknown; isError?: boolean }): 'cancelled by you' | 'refused' | undefined => {
+  if (ran.isError !== true) return undefined
+  const text = typeof ran.result === 'string' ? ran.result : typeof ran.deny === 'string' ? ran.deny : undefined
+  if (text === undefined) return undefined
+  if (text.startsWith(USER_CANCEL)) return 'cancelled by you'
+  if (text.startsWith(USER_REJECT) || PERMISSION_DENIED.test(text)) return 'refused'
   return undefined
 }
-const ownsCancelledCall = (s: Step, tool: string, currentId: string | null, touched: string | undefined): boolean => {
-  if (s.cleared === true || s.status === 'completed' || s.status === 'waiting') return false
-  if (s.status === 'in_progress' && (s.activeTurnId === undefined || s.activeTurnId === currentId)) return true
-  if (tool === 'Agent' && s.delegated === true) return true
-  return s.id === touched && (s.status === 'paused' || s.status === 'in_progress' || s.status === 'pending')
+// The one in-progress step of this turn that can own a cancel. Two or none means no change.
+// A restored step has no turn id, so it never owns a cancel. An Agent launch may belong to the
+// delegated step that started it this turn; every other tool belongs only to non-delegated work.
+const cancelOwner = (steps: Step[], tool: string, currentId: string | null): string | undefined => {
+  if (currentId === null) return undefined
+  const candidates = steps.filter(s => s.cleared !== true && s.status === 'in_progress' && s.activeTurnId === currentId && (tool === 'Agent' || s.delegated !== true))
+  return candidates.length === 1 ? candidates[0]?.id : undefined
 }
-// The open step a background agent or shell task belongs to: delegated work when any is open, otherwise the main step in progress.
-const backgroundOwners = (steps: Step[]): string[] => {
-  const open = steps.filter(s => s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting')
-  const delegated = open.filter(s => s.delegated === true)
-  return (delegated.length > 0 ? delegated : open.filter(s => s.status === 'in_progress')).map(s => s.id)
+// The one in-progress step of the turn that started a background agent or shell task.
+const launchOwner = (steps: Step[], currentId: string | null): string[] => {
+  if (currentId === null) return []
+  const candidates = steps.filter(s => s.cleared !== true && s.status === 'in_progress' && s.activeTurnId === currentId)
+  return candidates.length === 1 && candidates[0] !== undefined ? [candidates[0].id] : []
 }
 const applyCancel = async ($: EngineInterface, owners: string[], ran: { result?: unknown; deny?: unknown }): Promise<void> => {
   const reasonNote = cancelReasonOf(ran)
@@ -1280,7 +1291,8 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     const current = await read($, turn)
-    const owners = (await read($, ledger)).steps.filter(s => ownsCancelledCall(s, e.tool, current.currentId, current.openStepId)).map(s => s.id)
+    const owner = cancelOwner((await read($, ledger)).steps, e.tool, current.currentId)
+    const owners = owner === undefined ? [] : [owner]
     if (!mutationTools.has(e.tool)) {
       const ran = await next(e)
       await applyCancel($, owners, ran)
@@ -1491,7 +1503,7 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    await update($, turn, t => ({ ...t, currentId: e.turnId }))
+    await update($, turn, t => ({ ...t, currentId: e.turnId, openStepId: undefined }))
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
@@ -1526,8 +1538,12 @@ export const register: Register = on => {
       if (done.length > 0) {
         const owners = (await read($, activity)).owners ?? {}
         const ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
-        await update($, activity, a => ({ ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)) }))
-        const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting' && (s.delegated === true || s.status === 'paused' || s.status === 'in_progress'))
+        await update($, activity, a => {
+          const nextOwners = { ...(a.owners ?? {}) }
+          for (const id of done) delete nextOwners[id]
+          return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
+        })
+        const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && s.cleared !== true && s.status !== 'completed' && s.status !== 'waiting' && (s.delegated === true || s.status === 'paused' || s.status === 'in_progress'))
         if (targets.length > 0) {
           const wanted = new Set(targets.map(s => s.id))
           await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }))
@@ -1593,7 +1609,13 @@ export const register: Register = on => {
       const inFlight = e.background_tasks
       const background = inFlight.filter(task => AGENT_TASK.test(task.type)).map(task => task.id)
       const tasks = inFlight.filter(task => !AGENT_TASK.test(task.type)).map(task => task.id)
-      await update($, activity, a => ({ ...a, background, tasks }))
+      await update($, activity, a => {
+        const keep = new Set([...background, ...tasks])
+        const prev = a.owners ?? {}
+        const owners = Object.fromEntries(Object.entries(prev).filter(([id]) => keep.has(id)))
+        const dropped = Object.keys(prev).length !== Object.keys(owners).length
+        return dropped ? { ...a, background, tasks, owners } : { ...a, background, tasks }
+      })
     }
     if (below.block !== undefined || e.stop_hook_active || e.agent_id !== undefined) {
       return below
@@ -1639,7 +1661,12 @@ export const register: Register = on => {
     } else {
       // A background agent's loop ended.
       const agentId = e.agentId
-      await update($, activity, a => ({ ...a, background: a.background.filter(id => id !== agentId) }))
+      await update($, activity, a => {
+        if (a.owners?.[agentId] === undefined) return { ...a, background: a.background.filter(id => id !== agentId) }
+        const owners = { ...a.owners }
+        delete owners[agentId]
+        return { ...a, background: a.background.filter(id => id !== agentId), owners }
+      })
     }
     const done = await next(e)
     if (e.agentId === undefined) {
@@ -1934,7 +1961,7 @@ export const register: Register = on => {
       const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
       if (launched?.status === 'async_launched' && typeof launched.agentId === 'string') {
         const agentId = launched.agentId
-        const ids = backgroundOwners((await read($, ledger)).steps)
+        const ids = launchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
         await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], owners: { ...(a.owners ?? {}), [agentId]: ids } }))
       }
 
@@ -1961,7 +1988,7 @@ export const register: Register = on => {
     const ran = await next(e)
     const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
     if (e.agentId === undefined && typeof taskId === 'string') {
-      const ids = backgroundOwners((await read($, ledger)).steps)
+      const ids = launchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
       await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], owners: { ...(a.owners ?? {}), [taskId]: ids } }))
     }
 
@@ -2732,7 +2759,7 @@ export const register: Register = on => {
         {steps.slice(sStart, sEnd).map((s, shownAt) => {
           const index = sStart + shownAt
           const color = s.status === 'completed' ? 'success' : undefined
-          const lifecycle = s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
+          const lifecycle = s.status === 'paused' && s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
           // The step's mark is the row it sits on. A cancel or a shown refusal is ⊘, not the pause glyph.
           const onWorking = s.status === 'in_progress' && s.delegated !== true && work === 'working'
           const look =
