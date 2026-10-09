@@ -12,10 +12,15 @@ test('an explicitly delegated step is brown with an hourglass and an agents bann
   atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] })
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
-  expect(texts.at(-1)?.text).toContain('Agents')
   const glyph = texts.find(text => text.text === '⧗')
   expect(glyph?.props.color).toBe('#7a5410')
-  expect((await ui.find({ key: 'banner' }))?.props.backgroundColor).toBe('#7a5410')
+  // The main turn runs too (isWorking), so it has its own grey row below the brown agents row.
+  const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
+  expect(rows.map(row => row.key)).toEqual(['banner-agents', 'banner-working'])
+  expect(String(rows[0]?.text ?? '')).toContain('Agents')
+  expect(String(rows[0]?.text ?? '')).toContain('S1')
+  expect(rows[0]?.props.backgroundColor).toBe('#7a5410')
+  expect(String(rows[1]?.text ?? '')).not.toContain('S1')
 })
 
 test('delegated state participates in checkpoint validation and survives restoration', async ($, on) => {
