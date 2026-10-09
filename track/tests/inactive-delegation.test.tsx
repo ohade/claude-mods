@@ -10,7 +10,7 @@ for (const status of ['paused', 'pending'] as const) {
     const phase = atomStore(on, 'pulse', 0)
     const ui = await $.ui.mount(pane('dock', 80))
     const texts = await ui.findAll({ type: 'Text' })
-    expect(texts.at(-1)?.text?.trim()).toBe(status === 'paused' ? 'Paused' : 'Idle · Safe to close')
+    expect(texts.at(-1)?.text?.trim()).toBe(status === 'paused' ? 'Paused' : 'Idle · 1 pending')
     expect(texts.some(t => t.text === '⧗')).toBe(false)
     expect(texts.some(t => t.text === (status === 'paused' ? '⏸' : '○'))).toBe(true)
     await clock.advance(1300)
