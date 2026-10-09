@@ -2,7 +2,7 @@
 // restored subrow. A requestId reveals the whole host; native placement of a
 // later Q/A within that host remains unverified by these fixtures.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
 
 const FROM = '11111111-2222-4333-8444-555555555555'
 const BY = '66666666-7777-4888-8999-aaaaaaaaaaaa'
@@ -12,37 +12,34 @@ const NOTICE = {
   props: { text: `Track source snapshot from session ${FROM}: 0 steps, 2 questions\nRestore status is confirmed by the tool receipt.\nQ1 answered: Question 1\nAnswer 1 😀\nQ2 answered: Question 2\nAnswer 2 😀`, command: null },
 }
 
-test('restored A reveals the observed notice host and shades only its answer', async ($, on) => {
+test('restored A shows the saved answer in the pane and does not toast', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 3, questions: QUESTIONS, restores: [{ by: BY, from: FROM, steps: 0, questions: QUESTIONS }] })
-  const flashes = new Map<string, number>()
-  on('state.get', { plugin: 'track', key: 'flash' }, (_, e) => ({ value: { value: flashes.get(String(e.id)) ?? 0, version: 1 } }))
-  on('state.set', { plugin: 'track', key: 'flash' }, (_, e) => { flashes.set(String(e.id), Number(e.value)); return { value: { isSet: true as const, version: 2 } } })
-  const logs: string[] = []
-  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  const debug = logs(on)
   on('ui.render', { component: 'InfoNotice' }, () => ({ type: 'Text', props: {}, children: ['default notice'] }))
   const before = await $.ui.mount(NOTICE as never)
-  expect((await before.find({ key: `restored-a:${BY}:2` }))?.text).toBe('Answer 2 😀')
+  expect(await before.find({ key: `restored-a:${BY}:2` })).toBeUndefined()
+  expect((await before.find({ type: 'Text' }))?.text).toBe('default notice')
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-2' })
-  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual(['track: jump {"to":{"requestId":"engine-notice-instance"},"block":"start"}'])
-  await before.unmount()
-  const after = await $.ui.mount(NOTICE as never)
-  expect((await after.find({ key: `restored-a:${BY}:2` }))?.props.backgroundColor).toBeDefined()
-  expect((await after.find({ key: `restored-a:${BY}:1` }))?.props.backgroundColor).toBeUndefined()
-  expect((await after.find({ key: `restored-q:${BY}:2` }))?.props.backgroundColor).toBeUndefined()
+  const texts = (await ui.findAll({ type: 'Text' })).map(el => String(el.text ?? ''))
+  expect(texts).toEqual(expect.arrayContaining(['Answer 2 😀']))
+  expect(debug.filter(line => line.startsWith('track: jump'))).toEqual([])
+  expect(debug.some(line => line.includes('cannot jump'))).toBe(false)
 })
 
-test('restored Q reveals its observed host rather than guessing from the notice UUID', async ($, on) => {
+test('restored Q shows the saved question in the pane and does not toast', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, questions: QUESTIONS, restores: [{ by: BY, from: FROM, steps: 0, questions: QUESTIONS }] })
-  const logs: string[] = []
-  on('ui.log', (_, e) => { logs.push(e.text); return { value: undefined } })
+  const debug = logs(on)
   on('ui.render', { component: 'InfoNotice' }, () => ({ type: 'Text', props: {}, children: ['default notice'] }))
   await $.ui.mount(NOTICE as never)
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'q-2' })
-  expect(logs.filter(line => line.startsWith('track: jump'))).toEqual(['track: jump {"to":{"requestId":"engine-notice-instance"},"block":"start"}'])
+  const texts = (await ui.findAll({ type: 'Text' })).map(el => String(el.text ?? ''))
+  expect(texts).toEqual(expect.arrayContaining(['Question 2']))
+  expect(debug.filter(line => line.startsWith('track: jump'))).toEqual([])
+  expect(debug.some(line => line.includes('cannot jump'))).toBe(false)
 })
 
 test('resume retains a restore record still needed by an uncleared question', async ($, on) => {
