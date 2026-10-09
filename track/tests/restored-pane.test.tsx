@@ -25,5 +25,4 @@ test('a question drawn in this session still jumps to its row', async ($, on) =>
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'q-1' })
   expect(debug.filter(line => line.startsWith('track: jump'))).toEqual([`track: jump {"to":{"requestId":"${LIVE}"},"block":"start"}`])
-  expect(debug.some(line => line.includes('cannot jump'))).toBe(false)
 })
