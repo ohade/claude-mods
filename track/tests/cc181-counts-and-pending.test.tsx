@@ -1,6 +1,6 @@
 // FIXTURE: CC-181, 2026-10-10. Cleared history counted as current work, and
 // the public checkpoint lacked the inventory needed to check declared pending items.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Step } from '../types'
@@ -12,6 +12,7 @@ const rows = (): Step[] => Array.from({ length: 75 }, (_, i) => ({
   status: i === 74 ? 'paused' : 'completed', ...(i < 50 && { cleared: true as const }),
 }))
 const prepare = (on: On, steps: Step[]) => {
+  mock.clock(on)
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
   atomStore(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, eventOrder: 0 })
   atomStore(on, 'scroll', { questions: null, steps: null })
