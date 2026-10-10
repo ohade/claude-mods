@@ -402,7 +402,8 @@ const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|wa
 // the turn version. $.state survives a mod reload; module memory did not.
 // Round 2 (Codex's review of 12e11c8): an unresolved input stays until a row covers it, across
 // turns; it is held once, then named on each later prompt. At the cap a covered input leaves
-// first; with none, the new prompt is not recorded, with a debug line. Never an unresolved one.
+// first, then one Haiku called not_question; with none, the new prompt is not recorded, with a
+// toast. Never an unresolved one.
 const MAX_INPUTS = 50
 // How long Stop waits for a Haiku label already in flight.
 const STOP_JOIN_MS = 2000
@@ -1403,26 +1404,29 @@ const ofTurn = (inputs: PendingInput[], currentId: string): PendingInput[] =>
 const classifying = new Map<number, Promise<void>>()
 
 // An accepted Track row covers one uncovered input: the one its source names. source_request_id
-// must be that input's own row; source_text matches its first line, the oldest first. With no
-// source, a question covers the current turn's input only when exactly one there needs a row,
-// and steps cover nothing: an unrelated row must not cover a waiting question. New steps never
-// cover a prompt Haiku called a question.
-const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown } = {}): Promise<void> => {
+// wins when both are given, as it does for the row's own link: it must be that input's own row.
+// source_text matches its first line, the oldest first. With no source, a question covers the
+// current turn's input only when its summary is that input's first line and no other waiting
+// input shares it: one candidate alone is no evidence. Steps need a source. One question row
+// covers one input: reusing an open row that already covers one covers no second.
+// New steps never cover a prompt Haiku called a question.
+const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown; summary?: string; questionId?: number } = {}): Promise<void> => {
   const currentId = (await read($, turn)).currentId
   if (currentId === null) return
-  const text = typeof source.source_text === 'string' ? headOf(source.source_text) : undefined
-  const row = text === undefined && typeof source.source_request_id === 'string' ? rowKey(source.source_request_id) : undefined
+  const row = typeof source.source_request_id === 'string' ? rowKey(source.source_request_id) : undefined
+  const text = row === undefined && typeof source.source_text === 'string' ? headOf(source.source_text) : undefined
   if (text === undefined && row === undefined && kind === 'steps') return
   await update($, pending, p => {
+    if (source.questionId !== undefined && p.inputs.some(i => i.questionId === source.questionId)) return p
     const fits = (i: PendingInput) => i.covered === undefined && (kind === 'question' || i.label !== 'question')
     let target: PendingInput | undefined
-    if (text !== undefined) target = p.inputs.find(i => fits(i) && norm(i.head) === norm(text))
-    else if (row !== undefined) target = p.inputs.find(i => fits(i) && i.rowKey === row)
-    else {
-      const waiting = ofTurn(p.inputs, currentId).filter(i => fits(i) && needsQuestion(i))
-      target = waiting.length === 1 ? waiting[0] : undefined
+    if (row !== undefined) target = p.inputs.find(i => fits(i) && i.rowKey === row)
+    else if (text !== undefined) target = p.inputs.find(i => fits(i) && norm(i.head) === norm(text))
+    else if (source.summary !== undefined) {
+      const named = ofTurn(p.inputs, currentId).filter(i => fits(i) && needsQuestion(i) && norm(i.head) === norm(source.summary!))
+      target = named.length === 1 ? named[0] : undefined
     }
-    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target!.id ? { ...i, covered: kind } : i)) }
+    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target!.id ? { ...i, covered: kind, ...(source.questionId !== undefined && { questionId: source.questionId }) } : i)) }
   })
 }
 
@@ -1735,12 +1739,14 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     // prompt.submit may already have stored this turn's inputs, unbound: they are this turn's.
-    // A covered input of an earlier turn is done and leaves; an unresolved one stays.
+    // A covered input of an earlier turn is done and leaves, and so is one Haiku called
+    // not_question; an unresolved one stays. Steps coverage waits for a label still to come: a late
+    // question label undoes it.
     await update($, turn, t => ({ ...t, currentId: e.turnId } as Turn))
     if (typeof e.turnId === 'string') {
       await update($, pending, p => (p.inputs.length === 0 ? p : {
         ...p,
-        inputs: p.inputs.filter(i => i.covered === undefined || i.turnId === null || i.turnId === e.turnId).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
+        inputs: p.inputs.filter(i => i.turnId === null || i.turnId === e.turnId || (i.covered === undefined ? i.label !== 'not_question' : i.covered === 'steps' && i.label === undefined)).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
       }))
     }
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
@@ -1793,7 +1799,8 @@ export const register: Register = on => {
         if (p.inputs.some(i => i.textHash === textHash && (i.turnId === turnId || (i.turnId === null && turnId !== null)))) return p
         let inputs = p.inputs
         if (inputs.length >= MAX_INPUTS) {
-          const done = inputs.find(i => i.covered !== undefined)
+          // A covered input leaves first, then one Haiku called not_question.
+          const done = inputs.find(i => i.covered !== undefined) ?? inputs.find(i => i.label === 'not_question')
           if (done === undefined) {
             full = true
             return p
@@ -1805,7 +1812,7 @@ export const register: Register = on => {
         added = p.nextId
         return { inputs: [...inputs, { id: p.nextId, head, excerpt, textHash, turnId, ...(row !== undefined && { rowKey: row }), ...(!wording && { wording: false as const }) }], nextId: p.nextId + 1 }
       })
-      if (full) $.ui.log(`track: ${MAX_INPUTS} unresolved prompts; this one was not recorded.`, { to: 'debug' })
+      if (full) $.ui.toast(`track: ${MAX_INPUTS} prompts still wait for a Track row; this one was not recorded.`)
       // Started, not awaited: the label is read at Stop. A managed timer stops on a reload.
       if (added !== undefined && classify) {
         const id = added
@@ -2041,7 +2048,7 @@ export const register: Register = on => {
     const before = await read($, ledger)
     const existing = before.questions.find(q => q.cleared !== true && q.status !== 'answered' && norm(q.head) === norm(summary))
     if (existing !== undefined) {
-      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id })
+      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: existing.id })
       return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
     }
     if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
@@ -2081,7 +2088,7 @@ export const register: Register = on => {
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
-    await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id })
+    if (minted !== undefined) await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: minted.id })
 
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered with id ${minted?.id}, status "answered", and answer_text containing the completed answer.` }

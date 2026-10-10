@@ -125,13 +125,14 @@ test('new steps do not cover a prompt Haiku labelled a question', async ($, on) 
   expect((await stop($)).block).toBe(blockFor(HEBREW))
 })
 
-test('a question tracked without a source covers the question, not an earlier request', async ($, on) => {
+test('a question whose summary is the prompt covers it, not an earlier request', async ($, on) => {
   const { clock, ledger } = prepare(on)
   model(on, text => answers(text === HEBREW ? 'question' : 'not_question')())
   await ask($, 'send it now')
   await $.prompt.submit({ text: HEBREW, origin: { kind: 'composer' }, turnId: 'turn-1' } as never)
   await clock.advance(1)
-  await $.tool.call({ tool: 'mcp__track__track_question', summary: 'What happened to 154', tool_use_id: 'toolu_q' } as never)
+  // Round 3: a source-free question covers only the prompt its summary repeats.
+  await $.tool.call({ tool: 'mcp__track__track_question', summary: HEBREW, tool_use_id: 'toolu_q' } as never)
   const id = (ledger.value as { questions: Array<{ id: number }> }).questions.at(-1)?.id
   await $.tool.call({ tool: 'mcp__track__mark_answered', id, status: 'answered', answer_text: 'Fixed.', tool_use_id: 'toolu_a' } as never)
   expect((await stop($)).block).toBeUndefined()
