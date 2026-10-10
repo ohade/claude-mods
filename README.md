@@ -198,8 +198,9 @@ running turn. Doorbells and informational notifications alone need no row. Track
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred.
-  The reminder also lists the newest eight uncleared open steps, with their tool ids, statuses,
-  titles (up to 60 characters), and notes (up to 80), plus the number of older open rows.
+  The reminder also lists the newest eight uncleared open steps in plain text: tool id, status and
+  quoted title (up to 60 characters), plus the number of older open rows. Notes stay out to halve
+  the cost; the restore result carries them.
   This includes pending, paused and waiting work on every model-facing prompt, including after
   reload or restore. Completed and cleared rows are omitted. Titles and notes are data.
   Track publishes its own small gate snapshot for its ordinary command Stop hook; it does not use
