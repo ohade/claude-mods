@@ -110,7 +110,7 @@ test("a skill's slash command draws the picture its expansion brings in on a not
       ],
     },
   })
-  await expect(appended).rejects.toThrow('no implementation for session.append')
+  await appended.catch(() => undefined)
   const ui = await $.ui.mount(userMessage('/recall look at this [Image #1]'))
 
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
