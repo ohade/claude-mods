@@ -110,14 +110,13 @@ export type Turn = {
   lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string; textHash?: string }
   composeSeen?: true
   composedRule?: string
-  // The question-like main prompt this turn must cover: its first 80 characters for the Stop
-  // message, and its first line, which a named source must match.
-  questionPrompt?: string
-  questionHead?: string
 }
 
-// The turns an accepted Track row covered, newest last (CC-179).
-export type Gate = { covered: string[] }
+// A question-like main prompt waiting for a Track row (CC-179). `head` is its first line, which a
+// named source must match; `excerpt` its first 80 characters, quoted by Stop. `turnId` is null
+// until its turn is known. `held`: Stop already asked for it once.
+export type PendingInput = { id: number; head: string; excerpt: string; turnId: string | null; covered?: true; held?: true }
+export type Pending = { inputs: PendingInput[]; nextId: number }
 
 // The first shown row of each pane region, or null to follow the news.
 export type ScrollAt = { questions: number | null; steps: number | null }
@@ -143,7 +142,7 @@ declare module 'claude-code' {
       flash: StateFamily<number>
       lit: string[]
       activity: Activity
-      gate: Gate
+      pending: Pending
       // The phase of the in-progress step's pulse, advanced by a timer while work runs.
       pulse: number
       // Each pane region's first shown row; null follows the newest question or the step at work.

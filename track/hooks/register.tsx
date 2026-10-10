@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Activity, Gate, Ledger, Pane, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
+import type { Activity, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
@@ -395,13 +395,16 @@ const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // a refusal with no error flag. Only a leading BOM or whitespace is ignored. A sentence after
 // other text is not a cancel.
 const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|was|were|can|could|do|does|did|should|would|will|u)$/i
-// CC-179, 2026-10-10: a rejected or unrelated Track call counted as tracking a question.
-// Only an accepted row covers a turn: a question created or reused for this prompt, or new steps.
-// The gate atom, not the turn atom: a turn-atom write retries forever against a test that pins
+// CC-179, 2026-10-10: a rejected or unrelated Track call counted as tracking a question, one
+// excerpt was kept and every later prompt overwrote it. Each question-like main prompt is now a
+// pending input until an accepted row covers it: a question created or reused for it, or new steps.
+// The pending atom, not the turn atom: a turn-atom write retries forever against a test that pins
 // the turn version. $.state survives a mod reload; module memory did not.
-const COVERED_TURNS = 8
+// A turn holds more inputs only when the person types that many while it runs; past the cap the
+// oldest leave, with a debug line.
+const MAX_INPUTS = 50
 // A question-like main prompt, as its first 80 characters, or absent when the
-// turn should not be gated. Stored on the turn atom beside the declared fields.
+// turn should not be gated.
 const questionExcerpt = (text: string, originKind: string | undefined): string | undefined => {
   const trimmed = text.trim()
   if (trimmed === '' || trimmed.startsWith('/') || trimmed.startsWith(': AMQ doorbell')) return undefined
@@ -515,7 +518,7 @@ const EMPTY_LEDGER: Ledger = { v: 1, nextQuestionId: 1, prompts: [], questions: 
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
 const turn = atom({ plugin: 'track', key: 'turn' } as const, { currentId: null, gatedTurnId: null } as Turn)
 const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hidden: false, closedByPerson: false } as Pane)
-const gate = atom({ plugin: 'track', key: 'gate' } as const, { covered: [] } as Gate)
+const pending = atom({ plugin: 'track', key: 'pending' } as const, { inputs: [], nextId: 1 } as Pending)
 // One level per transcript row (by its requestId, or `text:` and a key for an answer's text):
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
@@ -1362,25 +1365,34 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
 }
 
-// An accepted Track row covers the current turn's question-like prompt. A source the model names
-// must be that prompt: a question tracked for an earlier prompt covers nothing here.
-const coverTurn = async ($: EngineInterface, source: { source_text?: unknown; source_request_id?: unknown } = {}): Promise<void> => {
-  const t = await read($, turn)
-  const id = t.currentId
-  if (id === null) return
-  const head = t.questionHead
-  if (head !== undefined) {
-    if (typeof source.source_text === 'string' && norm(headOf(source.source_text)) !== norm(head)) return
-    if (typeof source.source_request_id === 'string') {
-      const requestId = source.source_request_id
-      const named = (await read($, ledger)).prompts.find(p => p.requestId === requestId || p.rowKey === rowKey(requestId))
-      if (named === undefined || norm(named.head) !== norm(head)) return
-    }
+// The inputs Stop judges for the turn: bound to it, or not yet bound to any turn.
+const ofTurn = (inputs: PendingInput[], currentId: string): PendingInput[] =>
+  inputs.filter(i => i.turnId === currentId || i.turnId === null)
+
+// An accepted Track row covers one uncovered input of the current turn: the one its named source
+// is, else the oldest. A named source that is no input of this turn covers nothing.
+const coverInput = async ($: EngineInterface, source: { source_text?: unknown; source_request_id?: unknown } = {}): Promise<void> => {
+  const currentId = (await read($, turn)).currentId
+  if (currentId === null) return
+  let head: string | undefined
+  if (typeof source.source_text === 'string') head = headOf(source.source_text)
+  else if (typeof source.source_request_id === 'string') {
+    const requestId = source.source_request_id
+    const named = (await read($, ledger)).prompts.find(p => p.requestId === requestId || p.rowKey === rowKey(requestId))
+    if (named === undefined) return
+    head = named.head
   }
-  await update($, gate, g => (g.covered.includes(id) ? g : { ...g, covered: [...g.covered, id].slice(-COVERED_TURNS) }))
+  await update($, pending, p => {
+    const target = ofTurn(p.inputs, currentId).find(i => i.covered !== true && (head === undefined || norm(i.head) === norm(head)))
+    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target.id ? { ...i, covered: true as const } : i)) }
+  })
 }
-const uncoverTurn = async ($: EngineInterface, id: string): Promise<void> => {
-  await update($, gate, g => (g.covered.includes(id) ? { ...g, covered: g.covered.filter(c => c !== id) } : g))
+
+// The Stop message for the inputs no row covered, quoting each one's first 80 characters.
+const uncoveredBlock = (inputs: PendingInput[]): string => {
+  const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.'
+  if (inputs.length === 1) return `track: this turn's prompt looks like a question ("${inputs[0]!.excerpt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), ${tail}`
+  return `track: this turn's prompts look like questions (${inputs.map(i => `"${i.excerpt}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question once for each (source_text = its first line), ${tail}`
 }
 
 // CC-159, 2026-10-10: tested main changes repeatedly remained absent from live.
@@ -1646,9 +1658,15 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    // prompt.submit may already have stored questionPrompt. Stop clears it after this turn is decided.
+    // prompt.submit may already have stored this turn's inputs, unbound: they are this turn's.
+    // Inputs of an earlier turn were judged by its Stop, or it was interrupted; they leave.
     await update($, turn, t => ({ ...t, currentId: e.turnId } as Turn))
-    if (typeof e.turnId === 'string') await uncoverTurn($, e.turnId)
+    if (typeof e.turnId === 'string') {
+      await update($, pending, p => (p.inputs.length === 0 ? p : {
+        ...p,
+        inputs: p.inputs.filter(i => i.turnId === null || i.turnId === e.turnId).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
+      }))
+    }
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
@@ -1673,81 +1691,101 @@ export const register: Register = on => {
     return { sections: [...composed.sections, { id: 'track:rule', text: RULE, scope: 'session' as const }] }
   })
 
-  // The per-turn reminder: a short row beside the prompt, only while something is open.
+  // A question-like main prompt becomes a pending input. One typed while a turn runs carries that
+  // turn's id; an idle one is bound by its turn.start or its Stop. A notification, a doorbell or
+  // a request neither adds nor erases one. A prompt a hook dropped never reached the model.
+  // Then the per-turn reminder: a short row beside the prompt, only while something is open.
+  // One handler: the loader takes one prompt.submit hook without a matcher.
   on('prompt.submit', async ($, e, next) => {
-    if ((e as { agentId?: string }).agentId === undefined) {
-      const questionPrompt = questionExcerpt(String(e.text ?? ''), e.origin?.kind)
-      const id = (await read($, turn)).currentId
-      if (id !== null && questionPrompt !== undefined) await uncoverTurn($, id)
-      const questionHead = questionPrompt === undefined ? undefined : headOf(String(e.text ?? ''))
-      await update($, turn, t => ({ ...t, questionPrompt, questionHead }))
+    const excerpt = (e as { agentId?: string }).agentId === undefined ? questionExcerpt(String(e.text ?? ''), e.origin?.kind) : undefined
+    let added: number | undefined
+    if (excerpt !== undefined) {
+      const turnId = typeof e.turnId === 'string' ? e.turnId : null
+      await update($, pending, p => {
+        added = undefined
+        // The same words again in the same turn are the same question. An unbound input is the
+        // running turn's when this one arrives inside a turn.
+        if (p.inputs.some(i => i.excerpt === excerpt && (i.turnId === turnId || (i.turnId === null && turnId !== null)))) return p
+        added = p.nextId
+        const inputs = [...p.inputs, { id: p.nextId, head: headOf(String(e.text)), excerpt, turnId }]
+        return { inputs: inputs.slice(-MAX_INPUTS), nextId: p.nextId + 1 }
+      })
+      if (added !== undefined && (await read($, pending)).inputs.length >= MAX_INPUTS) $.ui.log(`track: ${MAX_INPUTS} pending inputs; the oldest left.`, { to: 'debug' })
     }
-    // A finished background task or agent says so in its notification: it leaves the banner.
-    // Its step stays as it is and gains a visible flag, plus one nudge to update it.
-    let followUpLine: string | undefined
-    if (e.origin?.kind === 'task-notification') {
-      const done = [...e.text.matchAll(new RegExp(TASK_ID.source, 'g'))].map(m => m[1] ?? '')
-      if (done.length > 0) {
-        const owners = (await read($, activity)).owners ?? {}
-        const ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
-        await update($, activity, a => {
-          const nextOwners = { ...(a.owners ?? {}) }
-          for (const id of done) delete nextOwners[id]
-          return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
-        })
-        const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
-        if (targets.length > 0) {
-          const wanted = new Set(targets.map(s => s.id))
-          await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }))
-          followUpLine = `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
-          await saveLedger($)
+    const entered = await (async () => {
+      // A finished background task or agent says so in its notification: it leaves the banner.
+      // Its step stays as it is and gains a visible flag, plus one nudge to update it.
+      let followUpLine: string | undefined
+      if (e.origin?.kind === 'task-notification') {
+        const done = [...e.text.matchAll(new RegExp(TASK_ID.source, 'g'))].map(m => m[1] ?? '')
+        if (done.length > 0) {
+          const owners = (await read($, activity)).owners ?? {}
+          const ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
+          await update($, activity, a => {
+            const nextOwners = { ...(a.owners ?? {}) }
+            for (const id of done) delete nextOwners[id]
+            return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
+          })
+          const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
+          if (targets.length > 0) {
+            const wanted = new Set(targets.map(s => s.id))
+            await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }))
+            followUpLine = `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
+            await saveLedger($)
+          }
         }
       }
-    }
-    if (!(await dropRewound($))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
-    const typed = e.origin?.kind === 'composer'
-    // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
-    const fromPlugin = e.origin?.kind === 'plugin'
-    const needsSteps = (await read($, turn)).composedRule !== RULE
-    if (e.text.trim().startsWith('/')) {
-      // /track and the built-in commands reach no main-loop work: nothing rides on them, and a
-      // withdrawn question waits for a prompt the model reads. A skill's slash command reaches the
-      // model and starts work, so it carries what a typed prompt carries.
-      const name = /^\/([^\s]+)/.exec(e.text.trim())?.[1] ?? ''
-      if (name === 'track' || (await $.command.list()).some(c => c.name === name && c.source === 'builtin')) {
-        return next(e)
+      if (!(await dropRewound($))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
+      const typed = e.origin?.kind === 'composer'
+      // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
+      const fromPlugin = e.origin?.kind === 'plugin'
+      const needsSteps = (await read($, turn)).composedRule !== RULE
+      if (e.text.trim().startsWith('/')) {
+        // /track and the built-in commands reach no main-loop work: nothing rides on them, and a
+        // withdrawn question waits for a prompt the model reads. A skill's slash command reaches the
+        // model and starts work, so it carries what a typed prompt carries.
+        const name = /^\/([^\s]+)/.exec(e.text.trim())?.[1] ?? ''
+        if (name === 'track' || (await $.command.list()).some(c => c.name === name && c.source === 'builtin')) {
+          return next(e)
+        }
       }
-    }
-    const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
-    const l = await read($, ledger)
-    // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
-    const withdrawn = l.withdrawn ?? []
-    if (withdrawn.length > 0) {
-      const named = withdrawn.map(w => `Q${w.id} "${truncate(w.head, 60)}"`).join(', ')
-      lines.push(`track: the user withdrew ${named}; do not answer ${withdrawn.length > 1 ? 'them' : 'it'}.`)
-      await update<Ledger>($, ledger, cur => ({ ...cur, withdrawn: [] }))
-    }
-    const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
-    const stepsLeft = l.steps.filter(s => s.status !== 'completed').length
-    if (open.length === 0 && stepsLeft === 0) {
-      return lines.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...lines] })
-    }
-    const listed = open
-      .slice(-OPEN_LISTED)
-      .map(q => `Q${q.id} "${truncate(q.head, 60)}"${q.status === 'deferred' ? ' (deferred)' : ''}`)
-      .join(', ')
-    const done = l.steps.length - stepsLeft
-    // The step still marked in progress, named: an approval and a new request once left a step
-    // pulsing, because nothing told the model it was open.
-    const busy = l.steps.filter(s => s.status === 'in_progress' && s.cleared !== true)
-    const them = busy.length > 1 ? 'them' : 'it'
-    const inProgress =
-      busy.length === 0
-        ? ''
-        : ` In progress: ${busy.map(s => `${s.id} "${truncate(s.subject, 60)}"`).join(', ')}; if this prompt finishes, replaces or drops ${them}, mark ${them} with mcp__track__mark_step first.`
-    const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done.${inProgress} Mark a question with mcp__track__mark_answered and its completed answer_text when you answer it.`
+      const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
+      const l = await read($, ledger)
+      // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
+      const withdrawn = l.withdrawn ?? []
+      if (withdrawn.length > 0) {
+        const named = withdrawn.map(w => `Q${w.id} "${truncate(w.head, 60)}"`).join(', ')
+        lines.push(`track: the user withdrew ${named}; do not answer ${withdrawn.length > 1 ? 'them' : 'it'}.`)
+        await update<Ledger>($, ledger, cur => ({ ...cur, withdrawn: [] }))
+      }
+      const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
+      const stepsLeft = l.steps.filter(s => s.status !== 'completed').length
+      if (open.length === 0 && stepsLeft === 0) {
+        return lines.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...lines] })
+      }
+      const listed = open
+        .slice(-OPEN_LISTED)
+        .map(q => `Q${q.id} "${truncate(q.head, 60)}"${q.status === 'deferred' ? ' (deferred)' : ''}`)
+        .join(', ')
+      const done = l.steps.length - stepsLeft
+      // The step still marked in progress, named: an approval and a new request once left a step
+      // pulsing, because nothing told the model it was open.
+      const busy = l.steps.filter(s => s.status === 'in_progress' && s.cleared !== true)
+      const them = busy.length > 1 ? 'them' : 'it'
+      const inProgress =
+        busy.length === 0
+          ? ''
+          : ` In progress: ${busy.map(s => `${s.id} "${truncate(s.subject, 60)}"`).join(', ')}; if this prompt finishes, replaces or drops ${them}, mark ${them} with mcp__track__mark_step first.`
+      const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${l.steps.length} done.${inProgress} Mark a question with mcp__track__mark_answered and its completed answer_text when you answer it.`
 
-    return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
+      return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
+    })()
+    if (added !== undefined && 'drop' in entered) {
+      const dropped = added
+      await update($, pending, p => ({ ...p, inputs: p.inputs.filter(i => i.id !== dropped) }))
+    }
+
+    return entered
   })
 
   // The gate: after the settings Stop hooks have run (and only when none of them blocked),
@@ -1763,33 +1801,36 @@ export const register: Register = on => {
       const tasks = inFlight.filter(task => !AGENT_TASK.test(task.type)).map(task => task.id)
       await update($, activity, a => ({ ...a, background, tasks }))
     }
-    if (below.block !== undefined || e.stop_hook_active || e.agent_id !== undefined) {
+    if (below.block !== undefined || e.agent_id !== undefined) {
       return below
     }
     const t = await read($, turn)
-    const asked = t
-    const forgetExcerpt = async () => {
-      if (asked.questionPrompt === undefined) return
-      await update($, turn, cur => ({ ...cur, questionPrompt: undefined, questionHead: undefined }))
+    // Each uncovered input is held once, even after another Stop hook continued the turn: its
+    // own mark bounds the repair, so no loop. Unbound inputs are this turn's and are bound now.
+    if (t.currentId !== null) {
+      const currentId = t.currentId
+      let uncovered: PendingInput[] = []
+      await update($, pending, p => {
+        uncovered = ofTurn(p.inputs, currentId).filter(i => i.covered !== true && i.held !== true)
+        const held = new Set(uncovered.map(i => i.id))
+        const bound = p.inputs.some(i => i.turnId === null)
+        if (held.size === 0 && !bound) return p
+        return { ...p, inputs: p.inputs.map(i => ({ ...i, turnId: i.turnId ?? currentId, ...(held.has(i.id) && { held: true as const }) })) }
+      })
+      if (uncovered.length > 0) {
+        await update($, turn, cur => ({ ...cur, gatedTurnId: currentId }))
+        return { ...below, block: uncoveredBlock(uncovered) }
+      }
     }
-    if (t.currentId === null || t.gatedTurnId === t.currentId) {
-      if (t.gatedTurnId === t.currentId) await forgetExcerpt()
+    if (e.stop_hook_active || t.currentId === null || t.gatedTurnId === t.currentId) {
       return below
     }
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
     if (open.length === 0) {
-      if (asked.questionPrompt === undefined || (t.currentId !== null && (await read($, gate)).covered.includes(t.currentId))) {
-        await forgetExcerpt()
-        return below
-      }
-      await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined, questionHead: undefined }))
-      return {
-        ...below,
-        block: `track: this turn's prompt looks like a question ("${asked.questionPrompt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.`,
-      }
+      return below
     }
-    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined, questionHead: undefined }))
+    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
     const first = open[0] as Question
     const rest = open.length > 1 ? ` (${open.length - 1} more open: ${open.slice(1).map(q => `Q${q.id}`).join(', ')})` : ''
 
@@ -1885,7 +1926,7 @@ export const register: Register = on => {
     const before = await read($, ledger)
     const existing = before.questions.find(q => q.cleared !== true && q.status !== 'answered' && norm(q.head) === norm(summary))
     if (existing !== undefined) {
-      await coverTurn($, e)
+      await coverInput($, { source_text: e.source_text, source_request_id: e.source_request_id })
       return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
     }
     if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
@@ -1925,7 +1966,7 @@ export const register: Register = on => {
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
-    await coverTurn($, e)
+    await coverInput($, { source_text: e.source_text, source_request_id: e.source_request_id })
 
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered with id ${minted?.id}, status "answered", and answer_text containing the completed answer.` }
@@ -2180,13 +2221,13 @@ export const register: Register = on => {
 
         return { ...cur, steps: capSteps(steps) }
       })
-      await coverTurn($)
+      await coverInput($)
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
-    await coverTurn($)
+    await coverInput($)
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
   })
