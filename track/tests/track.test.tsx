@@ -600,7 +600,7 @@ test('a long question is shown whole, its dot in a column of its own', async ($,
   const ui = await $.ui.mount(pane('dock'))
 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts).toContain(`Q4. ${head}`)
+  expect(texts).toContain(`Q1. ${head}`)
   expect(texts).toContain('●')
 })
 
