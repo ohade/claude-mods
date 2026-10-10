@@ -1454,11 +1454,26 @@ const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source
 }
 
 // The Stop message for the inputs no row covered, quoting each one's first 80 characters. It names
-// only repairs that cover: mark_step on an existing step never does.
+// only repairs that cover: mark_step on an existing step never does, and new steps never cover an
+// input Haiku labelled a question (CC-185, 2026-10-11: the message offered track_steps for those).
 const uncoveredBlock = (inputs: PendingInput[]): string => {
-  const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
-  if (inputs.length === 1) return `track: a prompt looks like a question ("${inputs[0]!.excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${tail}`
-  return `track: these prompts look like questions (${inputs.map(i => `"${i.excerpt}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${tail}`
+  const quoted = (some: PendingInput[]) => some.map(i => `"${i.excerpt}"`).join('; ')
+  const labelled = inputs.filter(i => i.label === 'question')
+  const worded = inputs.filter(i => i.label !== 'question')
+  const parts: string[] = []
+  if (worded.length > 0) {
+    const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
+    parts.push(worded.length === 1
+      ? `track: a prompt looks like a question (${quoted(worded)}) but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${tail}`
+      : `track: these prompts look like questions (${quoted(worded)}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
+  }
+  if (labelled.length > 0) {
+    const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text. If it is a request already tracked as steps, mark that question deferred with a note naming the step. Then finish.'
+    parts.push(labelled.length === 1
+      ? `track: the classifier labelled a prompt a question (${quoted(labelled)}) and no question row covers it; steps never cover a labelled question. Call mcp__track__track_question with source_text = its first line, ${tail}`
+      : `track: the classifier labelled these prompts questions (${quoted(labelled)}) and no question row covers them; steps never cover a labelled question. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
+  }
+  return parts.join(' ')
 }
 
 const classifierOn = async ($: EngineInterface): Promise<boolean> => {
