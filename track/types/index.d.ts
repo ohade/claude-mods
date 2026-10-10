@@ -114,8 +114,9 @@ export type Turn = {
 
 // A question-like main prompt waiting for a Track row (CC-179). `head` is its first line, which a
 // named source must match; `excerpt` its first 80 characters, quoted by Stop. `turnId` is null
-// until its turn is known. `held`: Stop already asked for it once.
-export type PendingInput = { id: number; head: string; excerpt: string; turnId: string | null; covered?: true; held?: true }
+// until its turn is known. `held`: Stop already asked for it once. `wording: false`: the wording
+// check saw no question, kept only for Haiku to judge. `label`: Haiku's, once it answered.
+export type PendingInput = { id: number; head: string; excerpt: string; turnId: string | null; covered?: true; held?: true; wording?: false; label?: 'question' | 'not_question' | 'unknown' }
 export type Pending = { inputs: PendingInput[]; nextId: number }
 
 // The first shown row of each pane region, or null to follow the news.
