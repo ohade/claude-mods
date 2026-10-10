@@ -124,11 +124,8 @@ type BannerRow = { key: string; glyph: string; words: string; background: string
 // (the glyph and color still name the row) with ids, then with the count. The shortest form is cut.
 const composeBanner = (label: string, steps: string[], parts: BannerParts): string => {
   const { questions, counts } = parts
-  if (questions.length === 0 && steps.length === 0 && counts.length === 1 && counts[0]?.kind === 'tasks' && label === 'Tasks') {
-    return `Tasks ${counts[0].n}`
-  }
-  if (questions.length === 0 && steps.length === 0 && counts.length === 1 && counts[0]?.kind === 'agents' && label === 'Agents') {
-    return `Agents ${counts[0].n}`
+  if (questions.length === 0 && steps.length === 0 && counts.length === 1 && ((counts[0]?.kind === 'tasks' && label === 'Tasks') || (counts[0]?.kind === 'agents' && label === 'Agents'))) {
+    return `${label} ${counts[0]!.n}`
   }
 
   return [label, ...questions, ...steps, ...counts.map(count => `${count.kind} ${count.n}`)].filter(part => part !== '').join(' · ')
