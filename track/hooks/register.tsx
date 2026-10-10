@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Activity, Ledger, Pane, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
+import type { Activity, Gate, Ledger, Pane, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
@@ -395,10 +395,11 @@ const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // a refusal with no error flag. Only a leading BOM or whitespace is ignored. A sentence after
 // other text is not a cancel.
 const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|was|were|can|could|do|does|did|should|would|will|u)$/i
-// Turns that called Track. Module memory: a turn-atom write here retries forever
-// against a test that pins the turn version, and skips the tool hook.
-// A mod reload mid-turn forgets an earlier Track call and can cause one false block.
-const trackedTurns = new Set<string>()
+// CC-179, 2026-10-10: a rejected or unrelated Track call counted as tracking a question.
+// Only an accepted row covers a turn: a question created or reused for this prompt, or new steps.
+// The gate atom, not the turn atom: a turn-atom write retries forever against a test that pins
+// the turn version. $.state survives a mod reload; module memory did not.
+const COVERED_TURNS = 8
 // A question-like main prompt, as its first 80 characters, or absent when the
 // turn should not be gated. Stored on the turn atom beside the declared fields.
 const questionExcerpt = (text: string, originKind: string | undefined): string | undefined => {
@@ -514,6 +515,7 @@ const EMPTY_LEDGER: Ledger = { v: 1, nextQuestionId: 1, prompts: [], questions: 
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
 const turn = atom({ plugin: 'track', key: 'turn' } as const, { currentId: null, gatedTurnId: null } as Turn)
 const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hidden: false, closedByPerson: false } as Pane)
+const gate = atom({ plugin: 'track', key: 'gate' } as const, { covered: [] } as Gate)
 // One level per transcript row (by its requestId, or `text:` and a key for an answer's text):
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
@@ -1360,6 +1362,27 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
 }
 
+// An accepted Track row covers the current turn's question-like prompt. A source the model names
+// must be that prompt: a question tracked for an earlier prompt covers nothing here.
+const coverTurn = async ($: EngineInterface, source: { source_text?: unknown; source_request_id?: unknown } = {}): Promise<void> => {
+  const t = await read($, turn)
+  const id = t.currentId
+  if (id === null) return
+  const head = t.questionHead
+  if (head !== undefined) {
+    if (typeof source.source_text === 'string' && norm(headOf(source.source_text)) !== norm(head)) return
+    if (typeof source.source_request_id === 'string') {
+      const requestId = source.source_request_id
+      const named = (await read($, ledger)).prompts.find(p => p.requestId === requestId || p.rowKey === rowKey(requestId))
+      if (named === undefined || norm(named.head) !== norm(head)) return
+    }
+  }
+  await update($, gate, g => (g.covered.includes(id) ? g : { ...g, covered: [...g.covered, id].slice(-COVERED_TURNS) }))
+}
+const uncoverTurn = async ($: EngineInterface, id: string): Promise<void> => {
+  await update($, gate, g => (g.covered.includes(id) ? { ...g, covered: g.covered.filter(c => c !== id) } : g))
+}
+
 // CC-159, 2026-10-10: tested main changes repeatedly remained absent from live.
 // Engine calls must stay in this file for the native capability scanner.
 const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
@@ -1625,7 +1648,7 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     // prompt.submit may already have stored questionPrompt. Stop clears it after this turn is decided.
     await update($, turn, t => ({ ...t, currentId: e.turnId } as Turn))
-    if (typeof e.turnId === 'string') trackedTurns.delete(e.turnId)
+    if (typeof e.turnId === 'string') await uncoverTurn($, e.turnId)
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
@@ -1655,8 +1678,9 @@ export const register: Register = on => {
     if ((e as { agentId?: string }).agentId === undefined) {
       const questionPrompt = questionExcerpt(String(e.text ?? ''), e.origin?.kind)
       const id = (await read($, turn)).currentId
-      if (id !== null && questionPrompt !== undefined) trackedTurns.delete(id)
-      await update($, turn, t => ({ ...t, questionPrompt } as Turn))
+      if (id !== null && questionPrompt !== undefined) await uncoverTurn($, id)
+      const questionHead = questionPrompt === undefined ? undefined : headOf(String(e.text ?? ''))
+      await update($, turn, t => ({ ...t, questionPrompt, questionHead }))
     }
     // A finished background task or agent says so in its notification: it leaves the banner.
     // Its step stays as it is and gains a visible flag, plus one nudge to update it.
@@ -1743,10 +1767,10 @@ export const register: Register = on => {
       return below
     }
     const t = await read($, turn)
-    const asked = (t as Turn & { questionPrompt?: string })
+    const asked = t
     const forgetExcerpt = async () => {
       if (asked.questionPrompt === undefined) return
-      await update($, turn, cur => ({ ...cur, questionPrompt: undefined } as Turn))
+      await update($, turn, cur => ({ ...cur, questionPrompt: undefined, questionHead: undefined }))
     }
     if (t.currentId === null || t.gatedTurnId === t.currentId) {
       if (t.gatedTurnId === t.currentId) await forgetExcerpt()
@@ -1755,17 +1779,17 @@ export const register: Register = on => {
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
     if (open.length === 0) {
-      if (asked.questionPrompt === undefined || (t.currentId !== null && trackedTurns.has(t.currentId))) {
+      if (asked.questionPrompt === undefined || (t.currentId !== null && (await read($, gate)).covered.includes(t.currentId))) {
         await forgetExcerpt()
         return below
       }
-      await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined } as Turn))
+      await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined, questionHead: undefined }))
       return {
         ...below,
         block: `track: this turn's prompt looks like a question ("${asked.questionPrompt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.`,
       }
     }
-    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined } as Turn))
+    await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId, questionPrompt: undefined, questionHead: undefined }))
     const first = open[0] as Question
     const rest = open.length > 1 ? ` (${open.length - 1} more open: ${open.slice(1).map(q => `Q${q.id}`).join(', ')})` : ''
 
@@ -1854,14 +1878,16 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot track questions for the user.' }
     }
-    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     const summary = headOf(String(e.summary ?? ''))
     if (summary === '') {
       return { deny: 'track: summary is required.' }
     }
     const before = await read($, ledger)
     const existing = before.questions.find(q => q.cleared !== true && q.status !== 'answered' && norm(q.head) === norm(summary))
-    if (existing !== undefined) return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
+    if (existing !== undefined) {
+      await coverTurn($, e)
+      return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
+    }
     if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     let trackedOrder = 0
     let trackedTurnId: string | null = null
@@ -1899,6 +1925,7 @@ export const register: Register = on => {
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
+    await coverTurn($, e)
 
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered with id ${minted?.id}, status "answered", and answer_text containing the completed answer.` }
@@ -1908,7 +1935,6 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the user\'s questions.' }
     }
-    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     const id = Number(e.id)
     const status = e.status === 'deferred' ? 'deferred' : 'answered'
     const note = typeof e.note === 'string' ? e.note.slice(0, HEAD_CHARS) : undefined
@@ -2132,7 +2158,6 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
     }
-    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     await update($, scrollAt, cur => ({ ...cur, steps: null }))
     const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
     if (titles.length === 0) {
@@ -2155,11 +2180,13 @@ export const register: Register = on => {
 
         return { ...cur, steps: capSteps(steps) }
       })
+      await coverTurn($)
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
+    await coverTurn($)
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
   })
@@ -2323,7 +2350,6 @@ export const register: Register = on => {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
     }
-    { const id = (await read($, turn)).currentId; if (id !== null) trackedTurns.add(id) }
     const currentId = (await read($, turn)).currentId
     if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
     const id = String(e.id)
