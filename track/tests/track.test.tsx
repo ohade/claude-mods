@@ -1304,15 +1304,15 @@ const contextFor = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
 
 test('a typed prompt names the step still in progress and asks for it to be marked', async ($, on) => {
   const context = await contextFor($, on, { kind: 'composer' })
-  // CC-180 deliberately replaces the in-progress prose with one open-step JSON inventory.
-  expect(context).toContain('Open steps: [{"id":"plan:2","status":"in_progress","subject":"Fold the design into the retro report"}]')
+  // CC-180 deliberately replaces the in-progress prose with one open-step inventory (plain since b).
+  expect(context).toContain('Open steps: plan:2 in_progress "Fold the design into the retro report".')
   expect(context).toContain('if this prompt finishes, replaces or drops a step, reconcile its status')
   expect(context).toContain('mcp__track__mark_step')
 })
 
 test('a plugin prompt (an approval from Plannotator) names the step in progress too', async ($, on) => {
   const context = await contextFor($, on, { kind: 'plugin', name: 'plannotator' })
-  expect(context).toContain('Open steps: [{"id":"plan:2","status":"in_progress","subject":"Fold the design into the retro report"}]')
+  expect(context).toContain('Open steps: plan:2 in_progress "Fold the design into the retro report".')
   expect(context).toContain('if this prompt finishes, replaces or drops a step, reconcile its status')
   expect(context).toContain('mcp__track__mark_step')
 })
