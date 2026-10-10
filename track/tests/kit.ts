@@ -54,9 +54,10 @@ export const atomStore = <T>(on: On, key: string, initial: T, options: { holdRea
 
 // The plugin's $.store, in a Map. A set that would take the JSON text of the whole store past
 // `capBytes` rejects, as the engine's store does past 4 MiB.
-export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void } = {}) => {
+export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void; beforeLockSpawn?: (request: { argv: readonly string[]; cwd?: string }) => void } = {}) => {
   // FIXTURE: helper lock receipt. The real flock/exclusion is exercised by helper tests.
   on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
+    options.beforeLockSpawn?.(e)
     const text = JSON.stringify(e.argv[2] === 'lease' && options.leaseFailure !== undefined ? { ok: false, reason: options.leaseFailure } : { ok: true, mode: e.argv[2], token: e.argv[4] })
     if (e.argv[2] === 'lease' && options.leaseEnding !== undefined) options.leaseEnding.count++
     if (options.splitLockReceipt) {
