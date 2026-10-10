@@ -9,6 +9,9 @@ import type { Engine, On } from './kit'
 const TAIL = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
 const blockFor = (excerpt: string) =>
   `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${TAIL}`
+// CC-185: steps never cover a labelled question, so its message offers no track_steps repair.
+const labelledFor = (excerpt: string) =>
+  `track: the classifier labelled a prompt a question ("${excerpt}") and no question row covers it; steps never cover a labelled question. Call mcp__track__track_question with source_text = its first line, answer it, then mcp__track__mark_answered with the completed answer_text. If it is a request already tracked as steps, mark that question deferred with a note naming the step. Then finish.`
 const blockForAll = (excerpts: string[]) =>
   `track: these prompts look like questions (${excerpts.map(x => `"${x}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${TAIL}`
 
@@ -103,7 +106,7 @@ test('a late question label undoes coverage by new steps', async ($, on) => {
   await call($, { tool: 'mcp__track__track_steps', steps: ['Look at 154'], source_text: HEBREW, tool_use_id: 'toolu_t' })
   release({ value: answers('question') })
   await clock.advance(1)
-  expect((await stop($)).block).toBe(blockFor(HEBREW))
+  expect((await stop($)).block).toBe(labelledFor(HEBREW))
 })
 
 test('Stop waits briefly for a label already in flight', async ($, on) => {
@@ -113,7 +116,7 @@ test('Stop waits briefly for a label already in flight', async ($, on) => {
   on('model.complete', () => new Promise(resolve => { later(() => resolve({ value: answers('question') }), 50) }) as never)
   await ask($, HEBREW)
   await clock.advance(1)
-  expect((await stop($)).block).toBe(blockFor(HEBREW))
+  expect((await stop($)).block).toBe(labelledFor(HEBREW))
 })
 
 test('the Stop message offers only repairs that cover, and following it covers the prompt', async ($, on) => {
