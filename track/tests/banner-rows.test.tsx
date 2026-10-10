@@ -146,9 +146,9 @@ test('an ask dialog names its question and a waiting step, question first', asyn
   )
   const all = await ui.findAll({})
   const you = textOf(all, 'banner-you')
-  expect(you).toContain('Q3')
+  expect(you).toContain('Q2')
   expect(you).toContain('S1')
-  expect(you.indexOf('Q3')).toBeLessThan(you.indexOf('S1'))
+  expect(you.indexOf('Q2')).toBeLessThan(you.indexOf('S1'))
   expect(you).not.toContain('Q1')
 })
 
@@ -163,7 +163,7 @@ test('an ask dialog with no waiting step names the question and invents no step'
   expect(rows.map(row => row.key)).toEqual(['banner-you'])
   const all = await ui.findAll({})
   const you = textOf(all, 'banner-you')
-  expect(you).toContain('Q3')
+  expect(you).toContain('Q1')
   expect(you).not.toMatch(/S\d+/)
 })
 
