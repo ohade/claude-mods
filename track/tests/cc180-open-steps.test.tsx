@@ -13,7 +13,7 @@ const openRows = (count: number): Step[] => Array.from({ length: count }, (_, in
 }))
 
 const prepare = (on: On, steps: Step[] = []) => {
-  const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, steps })
+  const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
   atomStore(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, eventOrder: 0 })
   atomStore(on, 'scroll', { questions: null, steps: null })
   pluginStore(on)
@@ -21,7 +21,7 @@ const prepare = (on: On, steps: Step[] = []) => {
   on('session.id', () => ({ value: session }))
   let context = ''
   on('prompt.submit', (_, e) => { context = (e.context ?? []).join('\n'); return { text: e.text } })
-  return { ledger, setDestination: () => { session = SESSION; ledger.value = { ...EMPTY } }, context: () => context }
+  return { ledger, setDestination: () => { session = SESSION; ledger.value = { ...EMPTY, v: 1 } }, context: () => context }
 }
 
 const submit = ($: Engine) => $.prompt.submit({ text: 'Continue the agreed work', origin: { kind: 'composer' } } as never)
