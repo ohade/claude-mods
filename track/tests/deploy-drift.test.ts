@@ -11,7 +11,7 @@ const setup = (on: On, main: string, gitError = false, receipt = LIVE, ancestor 
   on('fs.read', { path: '/fixture/.claude/state/claude-mods-live.json' }, () => ({ value: JSON.stringify({ commit: receipt }) }))
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'git') return { deny: 'unexpected process' }
-    expect(e.timeoutMs).toBeLessThanOrEqual(2000)
+    expect(e.init?.timeoutMs).toBeLessThanOrEqual(2000)
     if (gitError) return { value: { exitCode: 128, stdout: '', stderr: 'fixture git error' } }
     if (e.argv.includes('merge-base')) return { value: { exitCode: ancestor ? 0 : 1, stdout: '', stderr: '' } }
     const sha = e.argv.includes('/fixture/git/claude-mods') ? main : LIVE
