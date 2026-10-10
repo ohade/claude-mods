@@ -15,6 +15,11 @@ const prepare = (on: On, questions: Question[]) => {
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
+  // These questions' tracking calls still exist; an empty transcript would
+  // correctly look like a rewind and remove them before the reminder is built.
+  on('session.messages', () => ({ value: [{ role: 'assistant' as const, text: '', toolUses: questions.map(q => ({
+    tool_use_id: q.trackedBy!, tool: 'mcp__track__track_question', input: { summary: q.head },
+  })) }] }))
   on('env.set', () => ({ value: undefined }))
   let context = ''
   on('prompt.submit', (_, e) => { context = (e.context ?? []).join('\n'); return { text: e.text } })
