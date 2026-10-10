@@ -100,17 +100,8 @@ const RULE = 'track: For meaningful work or substantive questions, regardless of
 // instruction beside it.
 const STEPS_LINE = RULE
 
-// The banner pinned at the bottom of the pane: what the session is doing, in one colored line.
-const BANNERS = {
-  working: { text: ' Working ', compact: 'Working', color: 'suggestion' },
-  agents: { text: ' Waiting on agents ', compact: 'Waiting agents', color: 'warning' },
-  tasks: { text: ' Waiting on tasks ', compact: 'Waiting tasks', color: 'warning' },
-  you: { text: ' Waiting on you ', compact: 'Waiting on you', color: 'permission' },
-  paused: { text: ' Paused ', compact: 'Paused', color: 'warning' },
-  unknown: { text: ' Activity unknown ', compact: 'Unknown', color: 'warning' },
-  unsaved: { text: ' Unsaved ', compact: 'Unsaved', color: 'warning' },
-  done: { text: ' Idle · Safe to close ', compact: 'Idle', color: 'success' },
-} as const
+// Banner state names; presentation is built by the pane's stack function.
+type WorkState = 'working' | 'agents' | 'tasks' | 'you' | 'paused' | 'unknown' | 'unsaved' | 'done'
 // The step in progress breathes while work runs: one phase every PULSE_MS, a
 // spinner and grey shades while the main session works, an hourglass and amber shades while it
 // waits on agents. The phase is $.state, so each tick redraws the pane alone.
@@ -643,7 +634,7 @@ const isDelegatedWork = (step: Step): boolean => step.cleared !== true && step.d
 
 // Work activity is independent of whether another item needs the person's action.
 // Incomplete work without current runtime activity is paused or unknown.
-const workState = (l: Ledger, now: Activity): keyof typeof BANNERS => {
+const workState = (l: Ledger, now: Activity): WorkState => {
   const steps = visibleSteps(l.steps)
   const unfinished = l.questions.some(q => q.cleared !== true && q.status !== 'answered') || steps.some(s => s.status !== 'completed')
   if (now.agentCalls.length > 0) return 'agents'
