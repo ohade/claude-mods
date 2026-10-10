@@ -56,6 +56,9 @@ export type Restore = {
   by: string
   from: string
   steps: number
+  // CC-181: current rows at restoration. Absent on legacy records whose total
+  // included cleared history; those notices retain their original bytes.
+  visibleSteps?: number
   questions: Question[]
   // Acknowledged plugin user note; absent for older system notices or model tool rows.
   display?: 'user'

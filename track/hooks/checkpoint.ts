@@ -1,4 +1,5 @@
 import type { Ledger } from '../types'
+import { visibleSteps } from './steps'
 
 // v1 local checkpoint/restore contract. The handoff reliability release requires
 // receipts for actual Q/A and step values; display-row ids are not authority.
@@ -19,7 +20,7 @@ export const checkpointValues = (l: Ledger, session: string) => ({
     sourceId: q.sourceId ?? `${session}:Q${q.id}`, head: q.head, status: q.status,
     note: q.note ?? null, answerText: q.answerText ?? null, answeredAt: q.answeredAt ?? null,
   })),
-  steps: l.steps.filter(s => s.cleared !== true).map(s => ({
+  steps: visibleSteps(l.steps).map(s => ({
     sourceId: s.sourceId ?? `${session}:${s.id}`, subject: s.subject, status: s.status,
     note: s.note ?? null, startedAt: s.startedAt ?? null, endedAt: s.endedAt ?? null,
     ...(s.delegated === true && { delegated: true }),
