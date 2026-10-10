@@ -3,3 +3,5 @@
 **/.claude-plugin/types/
 __pycache__/
 *.pyc
+# Local test repositories and private verification logs.
+.local/

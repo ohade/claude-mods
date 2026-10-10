@@ -4,6 +4,56 @@ Personal customizations for Claude Code: function-hook plugins ("mods") and the 
 
 Get them with `git clone https://github.com/ohade/claude-mods.git`; each section says how to load its mod.
 
+## Landing a change
+
+Use `scripts/land.sh <commit-ish>` as the only route for putting a change on main. It resolves
+one commit, tests every top-level mod with a `tests/` directory in a temporary detached
+worktree, and requires successful exit codes and nonzero passing test counts. It then
+fast-forwards main, updates the detached live worktree, atomically writes a local deployment
+receipt, and pushes the tested SHA to `origin/main` last. A concurrent local main change can
+never substitute an untested commit in the push. No rebase, reset, rollback, force push or automatic retry.
+
+The default layout is `~/git/claude-mods`, `~/git/worktrees/claude-mods/live` and
+`~/.claude/state/claude-mods-live.json`. Keep the mod-loading symlinks pointed at the live
+worktree; the script does not install or change them. `CLAUDE_MODS_HOME` replaces the home
+prefix for an alternate layout or isolated tests; unset means the current user's home.
+
+```sh
+scripts/land.sh <reviewed-commit>
+scripts/land.sh --status
+```
+
+Both worktrees must be clean, the canonical checkout on main, and live detached in the same
+repository. A directory lock serializes landings. Only a lock older than 30 minutes whose
+same-host owner PID is provably dead can be reclaimed. An alive, reused or unknown PID stays
+locked; inspect the printed lock and owner before manually clearing it.
+
+Test/preflight failures leave main, live and the receipt untouched. Publication cannot be atomic
+across Git worktrees and a remote: a checkout failure can leave main advanced, and a receipt
+failure can leave both checkouts advanced. Errors print the exact phase and all three SHAs.
+Rerun the same commit after resolving the cause: it is tested again, already-completed merge
+and checkout steps are skipped, and the receipt and push are retried. A push failure retains
+the local deployment and its receipt; the remote may be behind (or have accepted a push before
+the connection failed). Repeating a non-forced push is safe. Existing successful receipts keep
+their original `previous_commit` when that same deployment is retried.
+
+Each mod has a private log under `~/.claude/state/claude-mods-land-logs.*`. Tests time out after
+10 minutes per mod; push after 2 minutes. Interrupted children are stopped before the temporary
+worktree is removed. Receipts record `commit`, `previous_commit`, UTC `deployed_at`, per-mod
+`pass`/`fail` counts and `log_dir`. An unfamiliar test footer fails closed. Keep failure logs for
+diagnosis; they are not committed. No arguments/invalid usage exit 2, help/status exit 0 on
+success, runtime failures exit 1, and Ctrl-C exits 130.
+
+Track checks main, live, receipt agreement and ancestry after startup. A verified main-ahead
+state shows one status line with the landing command. Missing/invalid state, unrelated histories
+and Git errors stay silent. It makes no model call and does not await Git during session start.
+This is a startup snapshot; it does not poll or claim that running sessions loaded the new code.
+
+Run `bash scripts/tests/land.test.sh` for local Git fixtures with fake Claude, and
+`claude plugin test track` for the drift integration fixture and the whole Track suite.
+Real landing and hot-reload acceptance are separate checks. `land.sh` is an explicit landing
+command, not a watcher: running a test command alone does not deploy anything.
+
 ## image-thumbs
 
 Shows each image you paste into a prompt as a small framed thumbnail under your message.

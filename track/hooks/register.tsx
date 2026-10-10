@@ -4,6 +4,7 @@ import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult
 import type { Activity, Ledger, Pane, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
+import { deploymentDriftMessage } from './deploy-drift'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -1359,6 +1360,39 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
 }
 
+// CC-159, 2026-10-10: tested main changes repeatedly remained absent from live.
+// Engine calls must stay in this file for the native capability scanner.
+const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
+  const deadline = Date.now() + 2000
+  try {
+    const home = await $.env.get('HOME')
+    if (!home?.startsWith('/')) return
+    const repo = `${home}/git/claude-mods`
+    const live = `${home}/git/worktrees/claude-mods/live`
+    const git = (path: string, args: string[]) => {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) throw new Error('drift check deadline reached')
+      return $.process.run(['git', '-C', path, ...args], { timeoutMs: remaining })
+    }
+    const [main, deployed, receiptText] = await Promise.all([
+      git(repo, ['rev-parse', '--verify', 'refs/heads/main']),
+      git(live, ['rev-parse', '--verify', 'HEAD']),
+      $.fs.read(`${home}/.claude/state/claude-mods-live.json`),
+    ])
+    if (main.exitCode !== 0 || deployed.exitCode !== 0) return
+    const mainHead = main.stdout.trim()
+    const liveHead = deployed.stdout.trim()
+    const message = deploymentDriftMessage(mainHead, liveHead, receiptText)
+    if (message === undefined) return
+    const ancestry = await git(repo, ['merge-base', '--is-ancestor', liveHead, mainHead])
+    if (ancestry.exitCode !== 0 || Date.now() > deadline) return
+    $.ui.status(message)
+  } catch {
+    // Advisory only: missing receipts, refused I/O and Git errors stay silent.
+    // Never turn an unknown deployment state into a false drift warning.
+  }
+}
+
 export const register: Register = on => {
   // One restore owns its visible receipt and save through acknowledgement.
   // Other ledger writers still use atom compare-and-set; a changed ledger
@@ -1399,6 +1433,7 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    $.clock.after(0, () => checkDeployDrift($))
     renderInstances.clear()
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
     // end, and the toggle answers with no text, so the session gets no row.
