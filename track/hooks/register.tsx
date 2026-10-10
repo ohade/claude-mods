@@ -1280,7 +1280,14 @@ const restoreNotice = (r: Restore): string => [
 
 const restoreKey = (q: Question, kind: 'q' | 'a'): string => `restored-${kind}:${q.restoredBy}:${q.id}`
 
-const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface['ui']['resolve']>, r: Restore): Promise<RenderElement> => {
+// Human labels follow the full uncleared list, not the scroll window. Stored and
+// model-facing ids stay permanent; an old transcript row falls back to that id.
+const questionLabels = (questions: readonly Question[]): ((id: number | string) => string) => {
+  const labels = new Map(questions.filter(q => q.cleared !== true).map((q, index) => [q.id, `Q${index + 1}`]))
+  return id => labels.get(Number(id)) ?? `Q${id}`
+}
+
+const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface['ui']['resolve']>, r: Restore, label: (id: number) => string): Promise<RenderElement> => {
   const { Box, Text } = ui
   const rows = await Promise.all(r.questions.map(async q => {
     const questionKey = restoreKey({ ...q, restoredBy: q.restoredBy ?? r.by }, 'q')
@@ -1292,7 +1299,7 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
       <Box key={`restored-${q.id}`} flexDirection="column" marginLeft={ROW_INDENT}>
         <Box key={questionKey} backgroundColor={shade(questionLevel)} flexDirection="row" columnGap={1}>
           <Box flexShrink={1}>
-            <Text color={q.status === 'answered' ? 'success' : undefined} dimColor={q.status === 'deferred'} wrap="wrap">{`Q${q.id}. ${q.head}`}</Text>
+            <Text color={q.status === 'answered' ? 'success' : undefined} dimColor={q.status === 'deferred'} wrap="wrap">{`${label(q.id)}. ${q.head}`}</Text>
           </Box>
           <Text dimColor>{q.status}</Text>
         </Box>
@@ -2693,7 +2700,7 @@ export const register: Register = on => {
       if (q !== undefined) {
         const { Text } = $.ui.resolve(e)
         const level = await read($, memberOf(flash, e))
-        return <Text dimColor backgroundColor={shade(level)}>{`Q${q.id}. ${q.head}`}</Text>
+        return <Text dimColor backgroundColor={shade(level)}>{`${questionLabels(l.questions)(q.id)}. ${q.head}`}</Text>
       }
     }
     if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
@@ -2703,14 +2710,15 @@ export const register: Register = on => {
     }
     if (e.props.tool === RESTORE_TRACKER) {
       const { Box } = $.ui.resolve(e)
-      // Drawn from the copy the call kept, never from the pane's questions; a refused call kept
-      // none and draws nothing.
-      const restore = (await read($, ledger)).restores?.find(r => r.by === e.props.tool_use_id)
+      // Words come from the copy the call kept; labels follow the current pane.
+      // A refused call kept none and draws nothing.
+      const l = await read($, ledger)
+      const restore = l.restores?.find(r => r.by === e.props.tool_use_id)
       if (restore === undefined) {
         return <Box />
       }
       rememberRender(`restore:${restore.by}`, e.requestId)
-      return renderRestore($, $.ui.resolve(e), restore)
+      return renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))
     }
     if (e.props.tool === MARK_STEP) {
       const { Text } = $.ui.resolve(e)
@@ -2732,12 +2740,14 @@ export const register: Register = on => {
       const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
       const status = input.status === 'deferred' ? 'deferred' : 'answered'
       const level = await read($, memberOf(flash, e))
-      const label = `✓ Q${String(input.id ?? '?')}. ${status}`
-      const q = (await read($, ledger)).questions.find(one => one.id === Number(input.id))
+      const l = await read($, ledger)
+      const questionLabel = questionLabels(l.questions)
+      const label = `✓ ${questionLabel(String(input.id ?? '?'))}. ${status}`
+      const q = l.questions.find(one => one.id === Number(input.id))
       if (q?.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
         return <Box flexDirection="column"><Text dimColor>{label}</Text><Box key={`answer:${q.answerKey}`} backgroundColor={shade(level)}><Text wrap="wrap">{q.answerText}</Text></Box></Box>
       }
-      if (q !== undefined && q.status !== status) return <Text dimColor>{`Q${q.id}. ${q.status}`}</Text>
+      if (q !== undefined && q.status !== status) return <Text dimColor>{`${questionLabel(q.id)}. ${q.status}`}</Text>
 
       return level > 0 ? <Text backgroundColor={shade(level)}>{` ${label} `}</Text> : <Text dimColor>{label}</Text>
     }
@@ -2833,6 +2843,7 @@ export const register: Register = on => {
     // The rings count the rows shown: a cleared row leaves its ring too. A deferred answer still
     // waits, so it is not done, and clear completed keeps it.
     const questions = l.questions.filter(q => q.cleared !== true)
+    const questionLabel = questionLabels(l.questions)
     // Opening brings that row into view once. Later wheel, key, and track_question
     // writes to scrollAt.questions win; the open row does not pin the window.
     const toggleReveal = async (id: number, side: 'q' | 'a', index: number) => {
@@ -2895,7 +2906,7 @@ export const register: Register = on => {
     const askIds = new Set(now.askCalls)
     const questionRefs = questions
       .filter(q => q.status !== 'answered' && q.status !== 'deferred' && (askIds.has(q.askedRequestId ?? '') || askIds.has(q.trackedBy ?? '')))
-      .map(q => `Q${q.id}`)
+      .map(q => questionLabel(q.id))
     const unfinishedQuestion = questions.some(q => q.status !== 'answered' && q.status !== 'deferred')
     const askOpen = now.askCalls.length > 0
     // The main turn runs with no main step of its own (only delegated steps): still a Working row.
@@ -2993,7 +3004,7 @@ export const register: Register = on => {
     }
     const qLines = questions.map(q => {
       const extra = revealedText(q)
-      return wrappedLines(`Q${q.id}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
+      return wrappedLines(`${questionLabel(q.id)}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
     })
     const clockRows = (s: Step) => compact && hasClock(s) ? 1 : 0
     const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
@@ -3143,7 +3154,7 @@ export const register: Register = on => {
             </Box>
           )
           const headBudget = Math.max(1, qRows - qControlsRows)
-          const headShown = fitLines(`Q${q.id}. ${q.head}`, qWidth, headBudget)
+          const headShown = fitLines(`${questionLabel(q.id)}. ${q.head}`, qWidth, headBudget)
           const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
           // A short region still draws one cut line. An empty press is not an answer.
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - wrappedLines(headShown, qWidth))
