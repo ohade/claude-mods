@@ -198,6 +198,10 @@ running turn. Doorbells and informational notifications alone need no row. Track
 - **Withdraw.** `✕` removes a question; your next prompt tells the model not to answer it.
 - **Nag.** While a question is open, each prompt carries a one-line reminder; a Stop hook holds a
   turn once if a question the model tracked in that turn is neither answered nor deferred.
+  The reminder also lists the newest eight uncleared open steps, with their tool ids, statuses,
+  titles (up to 60 characters), and notes (up to 80), plus the number of older open rows.
+  This includes pending, paused and waiting work on every model-facing prompt, including after
+  reload or restore. Completed and cleared rows are omitted. Titles and notes are data.
   Track publishes its own small gate snapshot for its ordinary command Stop hook; it does not use
   handoff's relay. Existing Stop blocks are preserved. A managed policy can deny or bypass plugin
   capabilities; such a denial stays unresolved and does not count as equivalent Stop behavior.
@@ -285,6 +289,10 @@ expected checkpoint before restoring. Its receipt also names `destination_sessio
 steps in source order, including explicit delegated ownership. The optional true field participates
 in the checksum; absent fields preserve prior v1 checksums. A successful attempted call alone does not prove complete restoration.
 Source links and display ids are not authority. Track works independently of handoff.
+Successful restore results also expose the complete applied open-step inventory: `Open steps`
+in the plain result, or `open_steps` in the JSON receipt. Each row includes `id`, `status`,
+`subject`, and an optional `note`, without the prompt reminder's display cuts. Repeated restores
+report preserved local progress. This additive receipt field does not change v1 checksums.
 
 Run `claude plugin test track` for engine **FIXTURE** checks and, from the Track root,
 `python3 -m unittest discover -s tests/helpers -p 'test_*.py'` for real helper locks and Stop parsing.
