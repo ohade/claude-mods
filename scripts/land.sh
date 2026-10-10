@@ -92,7 +92,8 @@ phase=tests
 mod_count=0
 has_failed=false
 for mod in "$temporary_tree"/*; do
-  [ -d "$mod/tests" ] || continue
+  # A mod has a plugin manifest; scripts/tests is land.sh's own suite, not a mod.
+  [ -f "$mod/.claude-plugin/plugin.json" ] && [ -d "$mod/tests" ] || continue
   name=${mod##*/}
   mod_count=$((mod_count + 1))
   log="$log_dir/$name.log"

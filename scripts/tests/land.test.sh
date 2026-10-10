@@ -53,9 +53,14 @@ prepare_repo() {
   git init -q -b main "$repo"
   git -C "$repo" config user.name Fixture
   git -C "$repo" config user.email fixture@example.invalid
-  mkdir -p "$repo/track/tests" "$repo/image-thumbs/tests"
+  mkdir -p "$repo/track/tests" "$repo/image-thumbs/tests" "$repo/scripts/tests"
+  mkdir -p "$repo/track/.claude-plugin" "$repo/image-thumbs/.claude-plugin"
   printf 'fixture\n' > "$repo/track/tests/input"
   printf 'fixture\n' > "$repo/image-thumbs/tests/input"
+  printf '{}\n' > "$repo/track/.claude-plugin/plugin.json"
+  printf '{}\n' > "$repo/image-thumbs/.claude-plugin/plugin.json"
+  # Has tests/ but is not a mod (no .claude-plugin/plugin.json): land.sh must skip it.
+  printf 'fixture\n' > "$repo/scripts/tests/input"
   git -C "$repo" add .
   git -C "$repo" commit -qm base
   base=$(git -C "$repo" rev-parse HEAD)
