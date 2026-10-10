@@ -2,9 +2,10 @@
 // Codex's review (2026-10-10) found that a rejected or unrelated Track call counted as tracked.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore } from './kit'
+import type { Engine } from './kit'
 
 const blockFor = (excerpt: string) =>
-  `track: this turn's prompt looks like a question ("${excerpt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.`
+  `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.`
 
 const ASKED = 'how was 154 fixed?'
 
@@ -20,7 +21,6 @@ const prepare = (on: Parameters<typeof atomStore>[0], seed: Record<string, unkno
   return { ledger, turn }
 }
 
-type Engine = Parameters<Parameters<typeof test>[1]>[0]
 type Ran = { deny?: string; result?: unknown }
 
 const ask = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
@@ -94,9 +94,9 @@ test('a question tracked with this prompt as its source covers it', async ($, on
   expect((await stop($)).block).toBeUndefined()
 })
 
-test('new steps cover a question-like request', async ($, on) => {
+test('new steps naming the prompt cover a question-like request', async ($, on) => {
   prepare(on)
   await ask($, 'can you fix the image-thumbs test?')
-  await call($, { tool: 'mcp__track__track_steps', steps: ['Fix the image-thumbs test'], tool_use_id: 'toolu_t' })
+  await call($, { tool: 'mcp__track__track_steps', steps: ['Fix the image-thumbs test'], source_text: 'can you fix the image-thumbs test?', tool_use_id: 'toolu_t' })
   expect((await stop($)).block).toBeUndefined()
 })

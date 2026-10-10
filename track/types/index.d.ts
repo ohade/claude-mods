@@ -116,7 +116,9 @@ export type Turn = {
 // named source must match; `excerpt` its first 80 characters, quoted by Stop. `turnId` is null
 // until its turn is known. `held`: Stop already asked for it once. `wording: false`: the wording
 // check saw no question, kept only for Haiku to judge. `label`: Haiku's, once it answered.
-export type PendingInput = { id: number; head: string; excerpt: string; turnId: string | null; covered?: true; held?: true; wording?: false; label?: 'question' | 'not_question' | 'unknown' }
+// `textHash`: SHA-256 of the full text, its identity for redelivery. `rowKey`: its transcript row,
+// what a source_request_id must name. `covered`: the kind of accepted row that covered it.
+export type PendingInput = { id: number; head: string; excerpt: string; textHash: string; rowKey?: string; turnId: string | null; covered?: 'question' | 'steps'; held?: true; wording?: false; label?: 'question' | 'not_question' | 'unknown' }
 export type Pending = { inputs: PendingInput[]; nextId: number }
 
 // The first shown row of each pane region, or null to follow the news.

@@ -3,12 +3,13 @@
 // notification too) overwrote it, and Track stepped aside after another Stop hook continued.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore } from './kit'
+import type { Engine } from './kit'
 
-const TAIL = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.'
+const TAIL = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
 const blockFor = (excerpt: string) =>
-  `track: this turn's prompt looks like a question ("${excerpt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), ${TAIL}`
+  `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${TAIL}`
 const blockForAll = (excerpts: string[]) =>
-  `track: this turn's prompts look like questions (${excerpts.map(x => `"${x}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question once for each (source_text = its first line), ${TAIL}`
+  `track: these prompts look like questions (${excerpts.map(x => `"${x}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${TAIL}`
 
 const FIRST = 'how was 154 fixed?'
 const SECOND = 'and what about cc-172?'
@@ -26,7 +27,6 @@ const prepare = (on: Parameters<typeof atomStore>[0]) => {
   return { ledger, turn }
 }
 
-type Engine = Parameters<Parameters<typeof test>[1]>[0]
 
 const ask = ($: Engine, text: string, extra: Record<string, unknown> = {}) =>
   $.prompt.submit({ text, origin: { kind: 'composer' }, ...extra } as never)

@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore } from './kit'
 
 const blockFor = (excerpt: string) =>
-  `track: this turn's prompt looks like a question ("${excerpt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.`
+  `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.`
 
 const prepare = (on: Parameters<typeof atomStore>[0]) => {
   mock.clock(on)

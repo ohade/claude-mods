@@ -400,9 +400,12 @@ const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|wa
 // pending input until an accepted row covers it: a question created or reused for it, or new steps.
 // The pending atom, not the turn atom: a turn-atom write retries forever against a test that pins
 // the turn version. $.state survives a mod reload; module memory did not.
-// A turn holds more inputs only when the person types that many while it runs; past the cap the
-// oldest leave, with a debug line.
+// Round 2 (Codex's review of 12e11c8): an unresolved input stays until a row covers it, across
+// turns; it is held once, then named on each later prompt. At the cap a covered input leaves
+// first; with none, the new prompt is not recorded, with a debug line. Never an unresolved one.
 const MAX_INPUTS = 50
+// How long Stop waits for a Haiku label already in flight.
+const STOP_JOIN_MS = 2000
 // A main prompt the gate may judge, trimmed, or absent for a slash command, a doorbell, terminal
 // input or a notification.
 const gateable = (text: string, originKind: string | undefined): string | undefined => {
@@ -1383,44 +1386,59 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   }
   const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
   await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
-}
-
-// The inputs Stop judges for the turn: bound to it, or not yet bound to any turn.
-const ofTurn = (inputs: PendingInput[], currentId: string): PendingInput[] =>
-  inputs.filter(i => i.turnId === currentId || i.turnId === null)
-
-// An accepted Track row covers one uncovered input of the current turn: the one its named source
-// is, else the oldest that needs a row. A named source that is no input of this turn covers nothing.
-const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown } = {}): Promise<void> => {
-  const currentId = (await read($, turn)).currentId
-  if (currentId === null) return
-  let head: string | undefined
-  if (typeof source.source_text === 'string') head = headOf(source.source_text)
-  else if (typeof source.source_request_id === 'string') {
-    const requestId = source.source_request_id
-    const named = (await read($, ledger)).prompts.find(p => p.requestId === requestId || p.rowKey === rowKey(requestId))
-    if (named === undefined) return
-    head = named.head
-  }
+  // The newest input with these words and no row yet takes this row: its identity for a
+  // source_request_id.
   await update($, pending, p => {
-    // New steps never cover a prompt Haiku called a question. Prompts that need a row come first.
-    const open = ofTurn(p.inputs, currentId).filter(i => i.covered !== true && (head === undefined || norm(i.head) === norm(head)) && (kind === 'question' || i.label !== 'question'))
-    const target = open.find(needsQuestion) ?? open[0]
-    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target.id ? { ...i, covered: true as const } : i)) }
+    const target = [...p.inputs].reverse().find(i => i.rowKey === undefined && norm(i.head) === norm(head))
+    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target.id ? { ...i, rowKey: prompt.rowKey } : i)) }
   })
 }
 
-// The Stop message for the inputs no row covered, quoting each one's first 80 characters.
+// The inputs of the turn: bound to it, or not yet bound to any turn.
+const ofTurn = (inputs: PendingInput[], currentId: string): PendingInput[] =>
+  inputs.filter(i => i.turnId === currentId || i.turnId === null)
+
+// Haiku labels in flight, by input id, so Stop can wait briefly for one. Module memory: a reload
+// stops the managed timer, and the input falls back to the wording check.
+const classifying = new Map<number, Promise<void>>()
+
+// An accepted Track row covers one uncovered input: the one its source names. source_request_id
+// must be that input's own row; source_text matches its first line, the oldest first. With no
+// source, a question covers the current turn's input only when exactly one there needs a row,
+// and steps cover nothing: an unrelated row must not cover a waiting question. New steps never
+// cover a prompt Haiku called a question.
+const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown } = {}): Promise<void> => {
+  const currentId = (await read($, turn)).currentId
+  if (currentId === null) return
+  const text = typeof source.source_text === 'string' ? headOf(source.source_text) : undefined
+  const row = text === undefined && typeof source.source_request_id === 'string' ? rowKey(source.source_request_id) : undefined
+  if (text === undefined && row === undefined && kind === 'steps') return
+  await update($, pending, p => {
+    const fits = (i: PendingInput) => i.covered === undefined && (kind === 'question' || i.label !== 'question')
+    let target: PendingInput | undefined
+    if (text !== undefined) target = p.inputs.find(i => fits(i) && norm(i.head) === norm(text))
+    else if (row !== undefined) target = p.inputs.find(i => fits(i) && i.rowKey === row)
+    else {
+      const waiting = ofTurn(p.inputs, currentId).filter(i => fits(i) && needsQuestion(i))
+      target = waiting.length === 1 ? waiting[0] : undefined
+    }
+    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target!.id ? { ...i, covered: kind } : i)) }
+  })
+}
+
+// The Stop message for the inputs no row covered, quoting each one's first 80 characters. It names
+// only repairs that cover: mark_step on an existing step never does.
 const uncoveredBlock = (inputs: PendingInput[]): string => {
-  const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, use track_steps/mark_step. Then finish.'
-  if (inputs.length === 1) return `track: this turn's prompt looks like a question ("${inputs[0]!.excerpt}") but no Track row was written. Call mcp__track__track_question (source_text = its first line), ${tail}`
-  return `track: this turn's prompts look like questions (${inputs.map(i => `"${i.excerpt}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question once for each (source_text = its first line), ${tail}`
+  const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
+  if (inputs.length === 1) return `track: a prompt looks like a question ("${inputs[0]!.excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${tail}`
+  return `track: these prompts look like questions (${inputs.map(i => `"${i.excerpt}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${tail}`
 }
 
 const classifierOn = async ($: EngineInterface): Promise<boolean> => {
   try {
     return ((await $.store.get(CLASSIFIER_KEY)) as { isOn?: unknown } | undefined)?.isOn === true
-  } catch {
+  } catch (error) {
+    $.ui.log(`track: the classifier setting is unreadable, so it is off: ${reason(error)}`, { to: 'debug' })
     return false
   }
 }
@@ -1439,8 +1457,16 @@ const classifyInput = async ($: EngineInterface, id: number, text: string): Prom
       $.ui.log(`track: the classifier failed: ${reason(error)}`, { to: 'debug' })
     }
   }
+  // A question label undoes coverage by new steps: steps never cover a question.
   await update($, pending, p => (p.inputs.some(i => i.id === id && i.label === undefined)
-    ? { ...p, inputs: p.inputs.map(i => (i.id === id ? { ...i, label } : i)) }
+    ? { ...p, inputs: p.inputs.map(i => {
+      if (i.id !== id) return i
+      if (label === 'question' && i.covered === 'steps') {
+        const { covered: _covered, ...rest } = i
+        return { ...rest, label }
+      }
+      return { ...i, label }
+    }) }
     : p))
 }
 
@@ -1562,6 +1588,7 @@ export const register: Register = on => {
         properties: {
           steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' },
           after: { type: 'string', description: 'Insert after this step id (plan:2, task:7, ...) and keep the plan' },
+          source_text: { type: 'string', description: 'Optional exact first line of the user message these steps carry out; it registers that request' },
         },
         required: ['steps'],
       },
@@ -1708,12 +1735,12 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     // prompt.submit may already have stored this turn's inputs, unbound: they are this turn's.
-    // Inputs of an earlier turn were judged by its Stop, or it was interrupted; they leave.
+    // A covered input of an earlier turn is done and leaves; an unresolved one stays.
     await update($, turn, t => ({ ...t, currentId: e.turnId } as Turn))
     if (typeof e.turnId === 'string') {
       await update($, pending, p => (p.inputs.length === 0 ? p : {
         ...p,
-        inputs: p.inputs.filter(i => i.turnId === null || i.turnId === e.turnId).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
+        inputs: p.inputs.filter(i => i.covered === undefined || i.turnId === null || i.turnId === e.turnId).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
       }))
     }
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
@@ -1752,22 +1779,42 @@ export const register: Register = on => {
     let added: number | undefined
     if (trimmed !== undefined && (wording || classify)) {
       const excerpt = trimmed.slice(0, 80)
+      const head = headOf(String(e.text))
       const turnId = typeof e.turnId === 'string' ? e.turnId : null
+      const textHash = await checksumOf(String(e.text))
+      // The prompt row may already be recorded: the newest with these words, not yet taken.
+      const prompts = (await read($, ledger)).prompts
+      let full = false
       await update($, pending, p => {
         added = undefined
-        // The same words again in the same turn are the same question. An unbound input is the
-        // running turn's when this one arrives inside a turn.
-        if (p.inputs.some(i => i.excerpt === excerpt && (i.turnId === turnId || (i.turnId === null && turnId !== null)))) return p
+        full = false
+        // The same full text again in the same turn is a redelivery, not a new question. An
+        // unbound input is the running turn's when this one arrives inside a turn.
+        if (p.inputs.some(i => i.textHash === textHash && (i.turnId === turnId || (i.turnId === null && turnId !== null)))) return p
+        let inputs = p.inputs
+        if (inputs.length >= MAX_INPUTS) {
+          const done = inputs.find(i => i.covered !== undefined)
+          if (done === undefined) {
+            full = true
+            return p
+          }
+          inputs = inputs.filter(i => i.id !== done.id)
+        }
+        const taken = new Set(inputs.map(i => i.rowKey))
+        const row = [...prompts].reverse().find(r => r.turnId === null && norm(r.head) === norm(head) && !taken.has(r.rowKey))?.rowKey
         added = p.nextId
-        const inputs = [...p.inputs, { id: p.nextId, head: headOf(String(e.text)), excerpt, turnId, ...(!wording && { wording: false as const }) }]
-        return { inputs: inputs.slice(-MAX_INPUTS), nextId: p.nextId + 1 }
+        return { inputs: [...inputs, { id: p.nextId, head, excerpt, textHash, turnId, ...(row !== undefined && { rowKey: row }), ...(!wording && { wording: false as const }) }], nextId: p.nextId + 1 }
       })
-      if (added !== undefined && (await read($, pending)).inputs.length >= MAX_INPUTS) $.ui.log(`track: ${MAX_INPUTS} pending inputs; the oldest left.`, { to: 'debug' })
+      if (full) $.ui.log(`track: ${MAX_INPUTS} unresolved prompts; this one was not recorded.`, { to: 'debug' })
       // Started, not awaited: the label is read at Stop. A managed timer stops on a reload.
       if (added !== undefined && classify) {
         const id = added
         const text = String(e.text)
-        $.clock.after(0, () => classifyInput($, id, text))
+        $.clock.after(0, () => {
+          const run = classifyInput($, id, text).finally(() => classifying.delete(id))
+          classifying.set(id, run)
+          return run
+        })
       }
     }
     const entered = await (async () => {
@@ -1808,6 +1855,12 @@ export const register: Register = on => {
         }
       }
       const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
+      // A prompt Stop already asked about once and no row covers yet is named again here.
+      const unresolved = (await read($, pending)).inputs.filter(i => i.held === true && i.covered === undefined && needsQuestion(i))
+      if (unresolved.length > 0) {
+        const named = unresolved.slice(-OPEN_LISTED).map(i => `"${truncate(i.excerpt, 60)}"`).join(', ')
+        lines.push(`track: still unregistered: ${named}${unresolved.length > OPEN_LISTED ? ` (+${unresolved.length - OPEN_LISTED} more)` : ''}; register each with mcp__track__track_question, or mcp__track__track_steps for a request, source_text = its first line.`)
+      }
       const l = await read($, ledger)
       // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
       const withdrawn = l.withdrawn ?? []
@@ -1867,9 +1920,13 @@ export const register: Register = on => {
     // own mark bounds the repair, so no loop. Unbound inputs are this turn's and are bound now.
     if (t.currentId !== null) {
       const currentId = t.currentId
+      // Wait briefly for a Haiku label already in flight; past the wait the wording check decides.
+      const inFlight = (await read($, pending)).inputs.filter(i => i.covered === undefined && i.held !== true && i.label === undefined).map(i => classifying.get(i.id)).filter(run => run !== undefined)
+      if (inFlight.length > 0) await Promise.race([Promise.all(inFlight), $.clock.sleep(STOP_JOIN_MS)])
       let uncovered: PendingInput[] = []
       await update($, pending, p => {
-        uncovered = ofTurn(p.inputs, currentId).filter(i => i.covered !== true && i.held !== true && needsQuestion(i))
+        // Any unresolved input not yet asked about: this turn's, or one an interrupted turn left.
+        uncovered = p.inputs.filter(i => i.covered === undefined && i.held !== true && needsQuestion(i))
         const held = new Set(uncovered.map(i => i.id))
         const bound = p.inputs.some(i => i.turnId === null)
         if (held.size === 0 && !bound) return p
@@ -2279,13 +2336,13 @@ export const register: Register = on => {
 
         return { ...cur, steps: capSteps(steps) }
       })
-      await coverInput($, 'steps')
+      await coverInput($, 'steps', { source_text: e.source_text })
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
-    await coverInput($, 'steps')
+    await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
   })
