@@ -900,7 +900,8 @@ const gateWrites = { queue: Promise.resolve() }
 
 const closeLock = async (stream: LockStream): Promise<void> => { await stream.return({ code: null, signal: 'SIGTERM' }) }
 const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write', session: string): Promise<LockStream> => {
-  const stream = $.process.spawn({ argv: ['python3', `${$.plugin.root}/hooks/writer-lock.py`, mode, session, writer.token] })
+  // The caller's worktree may have been removed while this session stayed open.
+  const stream = $.process.spawn({ argv: ['python3', `${$.plugin.root}/hooks/writer-lock.py`, mode, session, writer.token], cwd: $.plugin.root })
   // return() closes a live stream by design, so its result rejects on normal cleanup.
   void stream.result.catch(() => undefined)
   let deadline: Timer | undefined
@@ -1513,7 +1514,7 @@ const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
     const git = (path: string, args: string[]) => {
       const remaining = deadline - Date.now()
       if (remaining <= 0) throw new Error('drift check deadline reached')
-      return $.process.run(['git', '-C', path, ...args], { timeoutMs: remaining })
+      return $.process.run(['git', '-C', path, ...args], { timeoutMs: remaining, cwd: repo })
     }
     const [main, deployed, receiptText] = await Promise.all([
       git(repo, ['rev-parse', '--verify', 'refs/heads/main']),
