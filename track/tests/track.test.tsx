@@ -406,15 +406,9 @@ test('the pane opens by itself outside a git repository too', async ($, on) => {
 
 test('a resumed session gets its saved questions back', async ($, on) => {
   const saved = { v: 1, savedAt: 1, ledger: OPEN_ONE }
-  const writes: Array<{ questions: QuestionRow[] }> = []
   pluginStore(on, { [`s:${SESSION}`]: saved })
-  atomStore(on, 'ledger', { v: 1, nextQuestionId: 1, questions: [], steps: [], prompts: [] })
+  const { writes } = atomStore(on, 'ledger', { v: 1, nextQuestionId: 1, questions: [] as QuestionRow[], steps: [], prompts: [] })
   on('session.id', () => ({ value: SESSION }))
-  on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
-    writes.push(e.value as { questions: QuestionRow[] })
-
-    return { value: { isSet: true as const, version: 2 } }
-  })
 
   on('classic.SessionStart', () => ({}))
 
