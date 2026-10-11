@@ -101,10 +101,12 @@ test('validated restore save failure returns one parseable unsuccessful receipt'
 
 test('validated restore conflict returns a JSON failure without replacing unfinished rows', async ($, on) => {
   const { l, setSession } = prepare(on)
+  const durable = atomStore(on, 'durability', { isUnsaved: false, reason: '' } as any)
   const expected = receipt(await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OLD } as never))
   setSession(SESSION)
   l.value = { ...EMPTY, steps: [{ id: 'plan:local', source: 'plan', subject: 'Local unfinished work', status: 'in_progress' }] } as any
-  atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION })
+  durable.value = { ...durable.value, memorySession: SESSION }
+  durable.version++
   const before = JSON.stringify(l.value)
   const failed = receipt(await $.tool.call({ tool: 'mcp__track__restore_tracker', from_session: OLD, expected_checkpoint: expected, tool_use_id: 'restore-a' } as never))
   expect(failed).toMatchObject({ v: 1, ok: false, source_session: OLD, destination_session: SESSION })
@@ -124,12 +126,14 @@ test('an empty checkpoint restores successfully with zero counts and the empty c
 
 test('validated restore refuses capacity before dropping any checkpointed answer', async ($, on) => {
   const { l, setSession } = prepare(on)
+  const durable = atomStore(on, 'durability', { isUnsaved: false, reason: '' } as any)
   l.value = { ...EMPTY, nextQuestionId: 201, questions: Array.from({ length: 200 }, (_, i) => ({ id: i + 1, head: `Saved ${i + 1}`, at: i, turnId: 'old', status: 'answered', answerText: `Answer ${i + 1}` })) } as any
   const expected = receipt(await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OLD } as never))
   expect(expected.counts).toEqual({ questions: 200, answers: 200, steps: 0 })
   setSession(SESSION)
   l.value = { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'Local unfinished question', at: 1000, turnId: 'new', status: 'open' }] } as any
-  atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION })
+  durable.value = { ...durable.value, memorySession: SESSION }
+  durable.version++
   const before = JSON.stringify(l.value)
   const failed = receipt(await $.tool.call({ tool: 'mcp__track__restore_tracker', from_session: OLD, expected_checkpoint: expected, tool_use_id: 'restore-full' } as never))
   expect(failed.ok).toBe(false)
