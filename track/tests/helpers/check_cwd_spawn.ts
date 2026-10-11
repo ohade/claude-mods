@@ -89,7 +89,7 @@ try {
   await renewed.return({ code: null, signal: 'SIGTERM' })
   console.log('PASS: actual lease, write and reacquisition from a deleted cwd')
 
-  const drift = compile('const checkDeployDrift =', 'export const register:', 'checkDeployDrift')
+  const drift = compile('const deployDrift =', 'export const register:', 'checkDeployDrift')
   await drift(engine)
   assert(runs.length >= 2, 'both main/live Git probes must run')
   for (const result of await Promise.all(runs)) assert.equal(result.exitCode, 0, 'Git probe must succeed from a deleted caller cwd')
