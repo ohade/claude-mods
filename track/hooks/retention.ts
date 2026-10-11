@@ -20,7 +20,9 @@ const CLEANUP = 'cleanup'
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Guard = { state: 'closed' | 'live'; release: () => Promise<void> }
 type Value = Record<string, unknown>
-type CleanupRecovery = { v: 1; session_id: string; entries: Array<{ key: string; before: unknown; after?: unknown }> }
+type RecoveryEntry = { key: string; before: unknown; after?: unknown; stamp?: { session_id: string; closedAt: number } }
+type CleanupRecovery = { v: 1; session_id: string; entries: RecoveryEntry[] }
+const recoveryAfter = (entry: RecoveryEntry): unknown => entry.stamp === undefined ? entry.after : { ...entry.before as Value, ...entry.stamp }
 const recoveryKey = (session: string): string => `cleanup:${session}`
 export const sameRecord = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right)
 
@@ -41,11 +43,12 @@ export const recoverCleanup = async (store: RetentionStore, session: string): Pr
   if (recovery === undefined) return false
   if (!SESSION_ID.test(session) || recovery?.v !== 1 || recovery.session_id !== session ||
       !Array.isArray(recovery.entries) || recovery.entries.some(entry =>
-        !ownedKeys([entry.key], session).length || entry.before === undefined)) throw new Error('cleanup rollback pending: ambiguous durable recovery record')
+        !ownedKeys([entry.key], session).length || entry.before === undefined ||
+        entry.stamp !== undefined && (entry.stamp.session_id !== session || !Number.isFinite(entry.stamp.closedAt) || entry.stamp.closedAt < 0 || entry.after !== undefined))) throw new Error('cleanup rollback pending: ambiguous durable recovery record')
   for (const entry of recovery.entries) {
     const current = await store.get(entry.key)
     if (sameRecord(current, entry.before)) continue
-    if (!sameRecord(current, entry.after)) throw new Error(`cleanup rollback pending: could not verify ${entry.key}; later value was kept`)
+    if (!sameRecord(current, recoveryAfter(entry))) throw new Error(`cleanup rollback pending: could not verify ${entry.key}; later value was kept`)
     await writeVerified(store, entry.key, entry.before)
   }
   await writeVerified(store, key, undefined)
@@ -88,12 +91,18 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
   if (changes.every(([key, value], index) => key === entries[index][0] && sameRecord(value, entries[index][1]))) return false
   const key = recoveryKey(session)
   const recovery: CleanupRecovery = { v: 1, session_id: session,
-    entries: entries.map(([key, before], index) => ({ key, before, after: changes[index][1] })) }
+    entries: entries.map(([key, before], index) => {
+      const after = changes[index][1] as Value | undefined
+      const stamp = after === undefined ? undefined : { session_id: session, closedAt: after.closedAt as number }
+      return stamp !== undefined && sameRecord({ ...before as Value, ...stamp }, after)
+        ? { key, before, stamp } : { key, before, after }
+    }) }
   // Reserve durable rollback space before the first mutation. A full store
   // refuses cleanup rather than discarding the only remaining copy of a row.
   // Ordinary saves stop at 3 MiB. The store's remaining 1 MiB is reserved
   // for rollback, so expiry can reclaim space after that save limit is hit.
   checkSizes(sizes, { [key]: recovery }, 4 * 1024 * 1024)
+  checkSizes(sizes, { ...Object.fromEntries(changes), [key]: recovery }, 4 * 1024 * 1024)
   const write = async (key: string, value: unknown) => {
     await writeVerified(store, key, value)
     if (value === undefined) sizes.delete(key)
@@ -134,7 +143,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   let verified = 0
   let sizes: Map<string, number> | undefined
   const failures: string[] = []
-  const previous = await store.get(CLEANUP) as { lastCleanup?: number; cursor?: string; recoveryCursor?: string } | undefined
+  const previous = await store.get(CLEANUP) as { lastCleanup?: number; lastAttempt?: number; cursor?: string; recoveryCursor?: string } | undefined
   let cursor = previous?.cursor ?? ''
   let recoveryCursor = previous?.recoveryCursor ?? ''
   const recovered = new Set<string>()
@@ -165,7 +174,8 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
     }
   }
   // A backwards wall clock cannot accelerate expiry or repeatedly run cleanup.
-  const isDue = typeof previous?.lastCleanup !== 'number' || now - previous.lastCleanup >= HOUR
+  const lastAttempt = previous?.lastAttempt ?? previous?.lastCleanup
+  const isDue = typeof lastAttempt !== 'number' || now - lastAttempt >= HOUR
   const keys = await store.keys()
   const sessions = [...new Set(keys.flatMap(key => key.startsWith('s:') || key.startsWith('h:') || key.startsWith('r:') ? [key.split(':')[1]] : []))]
     .filter(session => session !== caller && !recovered.has(session) && !pending.includes(recoveryKey(session)) && SESSION_ID.test(session)).sort()
@@ -214,8 +224,9 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       catch (error) { failures.push(String(error)); store.log(`track: cleanup guard release failed: ${String(error)}`) }
     }
   }
-  if (verified > 0 || cursor !== (previous?.cursor ?? '') || recoveryCursor !== (previous?.recoveryCursor ?? '')) {
+  if (isDue || verified > 0 || cursor !== (previous?.cursor ?? '') || recoveryCursor !== (previous?.recoveryCursor ?? '')) {
     await writeVerified(store, CLEANUP, { v: 1, ...previous, cursor, recoveryCursor,
+      ...(isDue && { lastAttempt: now }),
       ...(verified > 0 && failures.length === 0 && { lastCleanup: now }) })
   }
   if (failures.length) throw new Error(failures.join('; '))

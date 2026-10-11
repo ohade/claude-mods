@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import sys
 import time
 
@@ -62,8 +63,14 @@ def main():
             except BlockingIOError:
                 state = "live"
             emit({"ok": True, "mode": mode, "token": token, "state": state})
+            # EOF on stdin is immediate in the engine. Watch stdout instead:
+            # a disconnected reader releases an orphan without a time limit
+            # that could cut off an in-flight rollback.
+            disconnected = select.poll()
+            disconnected.register(sys.stdout.fileno(), select.POLLERR | select.POLLHUP | select.POLLNVAL)
             while os.getppid() == parent:
-                time.sleep(0.5)
+                if disconnected.poll(500):
+                    break
             return 0
         if mode == "lease":
             # A cleaner can hold this same lease briefly while it expires a

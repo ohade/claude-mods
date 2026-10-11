@@ -889,7 +889,7 @@ const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
-const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
+const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; memorySession?: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
 const gateWrites = { queue: Promise.resolve() }
 
 const closeLock = async (stream: LockStream): Promise<void> => { await stream.return({ code: null, signal: 'SIGTERM' }) }
@@ -1094,6 +1094,9 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
   try {
     const intent = await read($, durability)
     id = await $.session.id()
+    const declaredOwner = (await read($, ledger)).session_id
+    // Ownership survives even when the first lease or save is refused.
+    await update($, durability, current => current.memorySession === undefined || declaredOwner === id ? { ...current, memorySession: id } : current)
     await ensureWriter($, id)
     lock = await acquireLock($, 'write', id)
     await recoverSave($, id)
@@ -1102,7 +1105,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     await repairHead($, id)
     const owned = await read($, ledger)
     const acknowledged = await read($, durability)
-    if (owned.session_id !== undefined && owned.session_id !== id ||
+    if (acknowledged.memorySession !== id || owned.session_id !== undefined && owned.session_id !== id ||
         acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) && acknowledged.rewindBaseline?.session_id !== id && await $.store.get(`s:${id}`) !== undefined) {
       await resumeLedger($, id)
     }
@@ -1181,7 +1184,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     // its own acknowledgement. Keep its gate while the queued save catches up.
     await update($, durability, cur => cur.closedByPerson !== preference || cur.rewindSession !== pending.rewindSession
       ? { ...cur, baseline: { session_id: id!, ledger: current, checkpoint, generation }, isUnsaved: true, reason: cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
-      : { isUnsaved: false, reason: '', baseline: { session_id: id!, ledger: current, checkpoint, generation } })
+      : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
   } catch (error) {
     persistence.failure = reason(error)
     if (lock !== undefined && id !== undefined) {
@@ -1221,14 +1224,15 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
       const restored = savedLedger(raw, id)
       if (raw !== undefined && restored === undefined) throw new Error('resume record is incompatible; current rows were kept')
       let memory = await read($, ledger)
-      if (memory.session_id !== undefined && memory.session_id !== id) {
-        await preserveVersion($, id, 'session-switch', { source_session: memory.session_id, ledger: memory })
+      const memoryOwner = memory.session_id ?? (await read($, durability)).memorySession
+      if (memoryOwner !== undefined && memoryOwner !== id) {
+        await preserveVersion($, id, 'session-switch', { source_session: memoryOwner, ledger: memory })
         const stale = memory
         await update($, ledger, current => {
           if (!sameValue(current, stale)) throw new Error('ledger changed during session switch; archived snapshot was kept')
           return { ...EMPTY_LEDGER, session_id: id }
         })
-        await update($, durability, () => ({ isUnsaved: false, reason: '' }))
+        await update($, durability, () => ({ isUnsaved: false, reason: '', memorySession: id }))
         memory = await read($, ledger)
       }
       const pending = await read($, durability)
@@ -1258,6 +1262,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
         const checkpoint = raw?.checkpoint ?? head?.checkpoint
         if (checkpoint !== undefined) savedRevisions.set(id, checkpoint.revision)
         await update($, durability, current => ({ ...current,
+          memorySession: id,
           baseline: { session_id: id, ledger: durable, checkpoint, generation: head?.generation } }))
       } else if (head !== undefined) {
         // A missing body never resets the remembered expected revision to zero.
@@ -2662,7 +2667,8 @@ export const register: Register = on => {
     const before = await read($, ledger)
     // Legacy unowned ledgers need no destination lookup for an in-memory
     // restore. Explicit ownership must still match the active session.
-    if (destination === undefined && before.session_id !== undefined) destination = await $.session.id()
+    const beforeOwner = before.session_id ?? (await read($, durability)).memorySession
+    if (destination === undefined && beforeOwner !== undefined) destination = await $.session.id()
     let refusal: string | undefined
     let restored: Question[] = []
     let personNotice: string | undefined
@@ -2671,7 +2677,7 @@ export const register: Register = on => {
     const propose = (cur: Ledger): Ledger => {
       // An explicit restore may adopt a truly empty ledger left by a session
       // transition. Foreign rows or archives remain a refusal, never relabeled.
-      if (cur.session_id !== undefined && cur.session_id !== destination) {
+      if ((cur.session_id ?? beforeOwner) !== undefined && (cur.session_id ?? beforeOwner) !== destination) {
         if (cur.prompts.length || cur.questions.length || cur.steps.length ||
             cur.withdrawn?.length || cur.restores?.length || Object.keys(cur.restoredIds ?? {}).length) {
           refusal = 'track: destination ledger belongs to another session; original rows were kept.'
@@ -2707,6 +2713,7 @@ export const register: Register = on => {
 
       return {
         ...cur,
+        ...(destination !== undefined && { session_id: destination }),
         steps: steps.length > 0 && (replace || cur.steps.length === 0) ? steps : cur.steps,
         questions: combined,
         nextQuestionId: Math.max(nextId, ...restored.map(q => q.id + 1)),

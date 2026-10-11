@@ -64,6 +64,31 @@ class RetentionGuardTests(unittest.TestCase):
         receipt = json.loads(child.stdout.readline())
         self.assertTrue(receipt['ok'], receipt)
 
+    def test_disconnected_guard_stdout_releases_target_without_parent_exit(self):
+        guard, receipt = self.start_helper('guard')
+        self.assertEqual(receipt['state'], 'closed')
+        guard.stdout.close()
+        guard.stdout = None
+        with open(self.directory / f'{SID}.lock', 'r+') as target:
+            deadline = time.monotonic() + 1.5
+            while True:
+                try:
+                    fcntl.flock(target, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    self.assertLess(time.monotonic(), deadline, 'disconnected guard must release before parent exits')
+                    time.sleep(0.02)
+        self.assertEqual(guard.wait(timeout=1), 0)
+
+    def test_connected_guard_keeps_lease_during_retained_operation(self):
+        guard, receipt = self.start_helper('guard')
+        self.assertEqual(receipt['state'], 'closed')
+        time.sleep(1.6)
+        self.assertIsNone(guard.poll())
+        with open(self.directory / f'{SID}.lock', 'r+') as target:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(target, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
 
 if __name__ == '__main__':
     unittest.main()
