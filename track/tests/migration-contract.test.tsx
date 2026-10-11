@@ -40,9 +40,20 @@ test('import copies and reads back each missing legacy record and repeat import 
   store.held.delete(`s:${OLD}`)
   const first = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
   expect(first).toMatchObject({ v: 1, ok: true, imported: [OLD], verified: [OLD] })
-  expect(store.held.get(`s:${OLD}`)).toEqual(legacy)
+  const saved = store.held.get(`s:${OLD}`) as { generation: string }
+  const bundle = JSON.parse(files.get('/backup.json')!)
+  expect(saved.generation).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  const checkpoint = { v: 1, ok: true, source_session: OLD, revision: 1,
+    checksum: '4e3669fae00884b78e0bc0a200063b5ba19d62d915c842643d5720121c9a4604',
+    counts: { questions: 1, answers: 0, steps: 0 } }
+  const expected = { ...legacy, session_id: OLD, generation: saved.generation, checkpoint,
+    ledger: { ...legacy.ledger, session_id: OLD, questions: legacy.ledger.questions.map(q => ({ ...q, session_id: OLD })) },
+    import_provenance: { source_identity: bundle.source_identity, bundle_checksum: bundle.checksum, source_session: OLD } }
+  expect(saved).toEqual(expected)
+  expect(store.held.get(`h:${OLD}`)).toEqual({ v: 1, session_id: OLD, generation: saved.generation, checkpoint })
   const second = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
   expect(second).toMatchObject({ ok: true, imported: [], verified: [OLD] })
+  expect(store.held.get(`s:${OLD}`)).toEqual(expected)
   expect(files.has('/backup.json')).toBe(true)
 })
 
