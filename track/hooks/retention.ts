@@ -69,7 +69,7 @@ const holdArchiveSources = async (store: RetentionStore, intent: ExpiryIntent, g
 
 // Expired data is already committed for deletion. A small intent finishes
 // after a crash, without duplicating the body into the rollback reserve.
-const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true, probe?: Probe): Promise<boolean> => {
+const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true, probe?: Probe, publishIntent = false): Promise<boolean> => {
   const key = recoveryKey(intent.session_id)
   const matches = async (entry: ExpiryIntent['entries'][number]): Promise<boolean> => {
     const value = await store.get(entry.key)
@@ -88,6 +88,12 @@ const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStar
   const guards = new Map<string, Guard>()
   try {
     if (!(await holdArchiveSources(store, intent, guards, probe, canStart))) return false
+    // Publish only after every source is CLOSED; a blocked fresh expiry must
+    // not leave a journal that prevents imports or retries on every save.
+    if (publishIntent) {
+      if (!canStart()) throw new Error('expiry elapsed budget reached before intent publication')
+      await writeVerified(store, key, intent)
+    }
     for (const entry of intent.entries) {
       if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
       if (!(await matches(entry))) return await cancel()
@@ -113,7 +119,7 @@ export const recoverCleanup = async (store: RetentionStore, session: string, opt
   if (recovery === undefined) return false
   if (recovery.v === 2) {
     if (!SESSION_ID.test(session) || recovery.session_id !== session || recovery.mode !== 'expiry' ||
-        !Number.isFinite(recovery.closedAt) || recovery.closedAt < 0 || Date.now() - recovery.closedAt < CLOSED_TTL ||
+        !Number.isFinite(recovery.closedAt) || recovery.closedAt < 0 || !options.owner && Date.now() - recovery.closedAt < CLOSED_TTL ||
         !Array.isArray(recovery.entries) || recovery.entries.length === 0 ||
         new Set(recovery.entries.map(entry => entry.key)).size !== recovery.entries.length || recovery.entries.some(entry =>
           !ownedKeys([entry.key], session).length || !/^[a-f0-9]{64}$/.test(entry.checksum) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0)) throw new Error('cleanup expiry pending: ambiguous durable intent')
@@ -241,11 +247,15 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   let verified = 0
   let sizes: Map<string, number> | undefined
   const failures: string[] = []
-  const previous = await store.get(CLEANUP) as { lastCleanup?: number; lastAttempt?: number; cursor?: string; recoveryCursor?: string } | undefined
+  const previous = await store.get(CLEANUP) as { lastCleanup?: number; lastAttempt?: number; cursor?: string; recoveryCursor?: string; blocked?: string[] } | undefined
+  // A backwards wall clock cannot accelerate expiry or repeatedly run cleanup.
+  const lastAttempt = previous?.lastAttempt ?? previous?.lastCleanup
+  const isDue = typeof lastAttempt !== 'number' || now - lastAttempt >= HOUR
   let cursor = previous?.cursor ?? ''
   let recoveryCursor = previous?.recoveryCursor ?? ''
   const recovered = new Set<string>()
   const pending = (await store.keys()).filter(key => key.startsWith('cleanup:')).sort()
+  const blocked = new Set((Array.isArray(previous?.blocked) ? previous.blocked : []).filter(session => pending.includes(recoveryKey(session))))
   const pendingAfter = pending.filter(key => key > recoveryCursor)
   const orderedPending = [...pendingAfter, ...pending.filter(key => key <= recoveryCursor)]
   for (const key of orderedPending.slice(0, BATCH)) {
@@ -253,6 +263,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
     recoveryCursor = key
     const session = key.slice('cleanup:'.length)
     if (!SESSION_ID.test(session)) { store.log(`track: cleanup keeps invalid pending identity ${session}`); continue }
+    if (session !== caller && blocked.has(session) && !isDue) continue
     let guard: Guard | undefined
     try {
       // Production resolves caller recovery before reading its body. This path
@@ -264,7 +275,8 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       if (await recoverCleanup(store, session, { owner: session === caller, canStart, probe })) {
         visited++
         recovered.add(session)
-      }
+        blocked.delete(session)
+      } else blocked.add(session)
     } catch (error) {
       failures.push(String(error))
       store.log(`track: cleanup keeps pending recovery ${session}: ${String(error)}`)
@@ -273,9 +285,6 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       catch (error) { failures.push(String(error)); store.log(`track: cleanup guard release failed: ${String(error)}`) }
     }
   }
-  // A backwards wall clock cannot accelerate expiry or repeatedly run cleanup.
-  const lastAttempt = previous?.lastAttempt ?? previous?.lastCleanup
-  const isDue = typeof lastAttempt !== 'number' || now - lastAttempt >= HOUR
   const keys = await store.keys()
   const sessions = [...new Set(keys.flatMap(key => key.startsWith('s:') || key.startsWith('h:') || key.startsWith('r:') ? [key.split(':')[1]] : []))]
     .filter(session => session !== caller && !recovered.has(session) && !pending.includes(recoveryKey(session)) && SESSION_ID.test(session)).sort()
@@ -315,8 +324,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
           entries: await Promise.all(deletionOrder.map(async ([key, value]) => ({ key, checksum: await checksumOf(value), bytes: entryBytes(key, value) }))) }
         checkSizes(sizes, { [recoveryKey(session)]: intent }, 4 * 1024 * 1024)
         if (!canStart()) break
-        await writeVerified(store, recoveryKey(session), intent)
-        if (await finishExpiry(store, intent, canStart, probe)) verified++
+        if (await finishExpiry(store, intent, canStart, probe, true)) verified++
         sizes = undefined // Finished expiry changed several indexed keys.
       } else if (closedAt === undefined) {
         const stamped = { ...(head ?? { v: 1, retentionOnly: true }), session_id: session, closedAt: closedAt ?? now }
@@ -333,8 +341,8 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       catch (error) { failures.push(String(error)); store.log(`track: cleanup guard release failed: ${String(error)}`) }
     }
   }
-  if (isDue || verified > 0 || cursor !== (previous?.cursor ?? '') || recoveryCursor !== (previous?.recoveryCursor ?? '')) {
-    await writeVerified(store, CLEANUP, { v: 1, ...previous, cursor, recoveryCursor,
+  if (isDue || verified > 0 || cursor !== (previous?.cursor ?? '') || recoveryCursor !== (previous?.recoveryCursor ?? '') || !sameRecord([...blocked], previous?.blocked ?? [])) {
+    await writeVerified(store, CLEANUP, { v: 1, ...previous, cursor, recoveryCursor, blocked: [...blocked],
       ...(isDue && { lastAttempt: now }),
       ...(verified > 0 && failures.length === 0 && { lastCleanup: now }) })
   }

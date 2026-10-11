@@ -1076,8 +1076,12 @@ const sessionHead = (raw: unknown, id: string): SessionHead | undefined => {
   return head
 }
 
-// Under the owner's lease and store lock, a validated next-revision body
-// is the completed side of a crash between the body and head writes.
+// Called after repairHead has validated any generation-less legacy body.
+const bodyMatchesHead = (body: { generation?: string; checkpoint?: Checkpoint }, head: SessionHead): boolean =>
+  (body.generation === undefined || body.generation === head.generation) && sameValue(body.checkpoint, head.checkpoint)
+
+// Under the owner's lease and store lock, complete a torn next-revision write
+// or accept a checksummed legacy successor after preserving the prior head.
 const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
   const body = await $.store.get(`s:${id}`) as { v?: number; session_id?: string; generation?: string; checkpoint?: Checkpoint; ledger?: Ledger } | undefined
   const head = sessionHead(await $.store.get(`h:${id}`), id)
@@ -1085,8 +1089,15 @@ const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
   if (body.session_id !== undefined && body.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
   assertLedgerOwner(body.ledger, id)
   if (head === undefined || sameValue(body.checkpoint, head.checkpoint) && body.generation === head.generation) return
-  if (body.v !== 1 || body.ledger === undefined || body.generation !== head.generation || body.checkpoint?.revision !== head.checkpoint.revision + 1 ||
+  if (body.v !== 1 || body.ledger === undefined || body.generation !== undefined && body.generation !== head.generation ||
       !matchesCheckpoint(await describeCheckpoint(body.ledger, id, body.checkpoint), body.checkpoint)) throw new Error('durable head/body checkpoint mismatch; both were kept')
+  if (body.generation === undefined) {
+    // An old writer can still publish during rollout. Validate its successor
+    // checkpoint and preserve the old head before accepting it under our locks.
+    if (sameValue(body.checkpoint, head.checkpoint)) return
+    if (!Number.isSafeInteger(body.checkpoint?.revision) || (body.checkpoint?.revision ?? 0) <= head.checkpoint.revision) throw new Error('durable head/body checkpoint mismatch; both were kept')
+    await preserveVersion($, id, 'legacy-head', head)
+  } else if (body.checkpoint?.revision !== head.checkpoint.revision + 1) throw new Error('durable head/body checkpoint mismatch; both were kept')
   await writeVerified($, `h:${id}`, { v: 1, session_id: id, generation: head.generation, checkpoint: body.checkpoint })
 }
 
@@ -1172,7 +1183,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     }
     const memory = await read($, ledger)
     let current = identifyLedger(memory, id)
-    const previous = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string } | undefined
+    const previous = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string; generation?: string } | undefined
     const previousHead = await $.store.get(`h:${id}`)
     const head = sessionHead(previousHead, id)
     if (previous?.session_id !== undefined && previous.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
@@ -1192,8 +1203,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       await preserveConflict($, id, memory, baseline, previousHead)
       throw new Error('stale writer revision; newer durable head was kept; its missing body needs recovery')
     }
-    if (previous !== undefined && head !== undefined &&
-        ((previous as { generation?: string }).generation !== head.generation || !sameValue(previous.checkpoint, head.checkpoint))) throw new Error('durable head/body checkpoint mismatch; both were kept')
+    if (previous !== undefined && head !== undefined && !bodyMatchesHead(previous, head)) throw new Error('durable head/body checkpoint mismatch; both were kept')
     if (previous !== undefined && ((expected !== undefined && expected !== revision) ||
         (baseline?.generation !== undefined && head !== undefined && baseline.generation !== head.generation))) {
       const durable = savedLedger(previous, id)
@@ -1273,11 +1283,10 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
       await recoverCleanup(retentionStore($), id, { owner: true })
       await clearOwnedClocks(retentionStore($), id)
       await repairHead($, id)
-      const raw = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string } | undefined
+      const raw = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string; generation?: string } | undefined
       const head = sessionHead(await $.store.get(`h:${id}`), id)
       if (raw?.session_id !== undefined && raw.session_id !== id) throw new Error('resume record identity is ambiguous')
-      if (raw !== undefined && head !== undefined &&
-          ((raw as { generation?: string }).generation !== head.generation || !sameValue(raw.checkpoint, head.checkpoint))) throw new Error('durable head/body checkpoint mismatch; both were kept')
+      if (raw !== undefined && head !== undefined && !bodyMatchesHead(raw, head)) throw new Error('durable head/body checkpoint mismatch; both were kept')
       const restored = savedLedger(raw, id)
       if (raw !== undefined && restored === undefined) throw new Error('resume record is incompatible; current rows were kept')
       let memory = await read($, ledger)
