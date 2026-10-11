@@ -1512,10 +1512,15 @@ const classifyInput = async ($: EngineInterface, id: number, text: string): Prom
     : p))
 }
 
+// Whether the drift status shows: while it does, each main turn's end checks
+// again, so a land clears it; with none, a session checks at start alone.
+const deployDrift = { isShown: false }
+
 // CC-159, 2026-10-10: tested main changes repeatedly remained absent from live.
 // Engine calls must stay in this file for the native capability scanner.
 const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
   const deadline = Date.now() + 2000
+  let isShowing = false
   try {
     const home = await $.env.get('HOME')
     if (!home?.startsWith('/')) return
@@ -1539,9 +1544,14 @@ const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
     const ancestry = await git(repo, ['merge-base', '--is-ancestor', liveHead, mainHead])
     if (ancestry.exitCode !== 0 || Date.now() > deadline) return
     $.ui.status(message)
+    isShowing = true
   } catch {
     // Advisory only: missing receipts, refused I/O and Git errors stay silent.
     // Never turn an unknown deployment state into a false drift warning.
+  } finally {
+    // Any check that shows no drift takes down a status shown before.
+    if (!isShowing && deployDrift.isShown) $.ui.status(undefined)
+    deployDrift.isShown = isShowing
   }
 }
 
@@ -1585,6 +1595,8 @@ export const register: Register = on => {
   })
 
   on('session.start', async ($, e, next) => {
+    // A reload keeps the status the last load set, so the first check clears it.
+    deployDrift.isShown = true
     $.clock.after(0, () => checkDeployDrift($))
     renderInstances.clear()
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
@@ -2021,6 +2033,7 @@ export const register: Register = on => {
       await update($, activity, a => ({ ...a, background: a.background.filter(id => id !== agentId) }))
     }
     const done = await next(e)
+    if (e.agentId === undefined && deployDrift.isShown) $.clock.after(0, () => checkDeployDrift($))
     if (e.agentId === undefined) {
       if (e.isAborted) {
         const now = await $.clock.now()
