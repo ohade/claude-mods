@@ -36,9 +36,6 @@ declare module 'claude-code' {
       submittedAt: number
       // A slash command's pictures, waiting for the first reply row with text.
       slashPending: number[]
-      // The running slash command's pictures, drawn in the band above the
-      // prompt until the turn ends and the reply's rows reach scrollback.
-      turnPictures: number[]
       // The slash command pictures drawn above a reply row, by its request id.
       replyPictures: StateFamily<number[]>
     }

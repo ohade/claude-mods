@@ -61,7 +61,6 @@ Shows each image you paste into a prompt as a small framed thumbnail under your 
 - **Click the picture** to expand it in place, at full resolution, up to 24 rows tall. Click again to shrink it.
 - **`open in pane`** under the frame opens the image in a pane. The pane docks beside the transcript in the fullscreen layout when the terminal is at least 110 columns wide; otherwise it opens above the prompt.
 - **`/image [n]`** opens image `#n`, or the latest one, in the same pane.
-- **A slash command's pictures** (`/recall … [Image #1]`) cannot sit under the command's own row, which the engine draws with no render hook. They show in the band above the prompt while the turn runs, and above the first text of Claude's reply once it is written. The band copy leaves when the turn ends and the reply's rows reach scrollback; a picture drawn on a reply row while the turn runs goes blank at the live region's next redraw (Ghostty in cmux, Claude Code 2.1.296) until then.
 
 Requirements: macOS (the mod uses `sips` and `base64`), Claude Code 2.1.289 or later with function-hook plugins, and a terminal that draws images with the kitty graphics protocol (Ghostty, kitty). Elsewhere the thumbnail shows its `[Image #n]` label instead.
 
