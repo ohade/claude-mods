@@ -99,7 +99,7 @@ export type Ledger = {
   questions: Question[]
   steps: Step[]
   // Questions the user withdrew with ✕, told to the model once on the next prompt.
-  withdrawn?: Array<{ id: number; head: string }>
+  withdrawn?: Array<{ id: number; head: string; session_id?: string }>
   // When the transcript was last compacted. Questions older than that are never dropped by the
   // rewind check, because compaction removes their tool calls too. Saved with the register, so a
   // resumed session keeps it.
@@ -161,7 +161,7 @@ declare module 'claude-code' {
       scroll: ScrollAt
       // The time the step clocks were last moved on, by a timer while a step is under way.
       tick: number
-      durability: { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean; baseline?: import('../hooks/reconcile').Baseline }
+      durability: { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean; baseline?: import('../hooks/reconcile').Baseline; rewindBaseline?: Pick<import('../hooks/reconcile').Baseline, 'session_id' | 'ledger'> }
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
       reveal: Record<string, 'q' | 'a' | undefined>
     }

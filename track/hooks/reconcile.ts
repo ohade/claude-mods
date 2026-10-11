@@ -10,7 +10,12 @@ const canonical = (value: unknown): string | undefined => JSON.stringify(value, 
     ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left.localeCompare(right))) : entry)
 const equal = (left: unknown, right: unknown): boolean => canonical(left) === canonical(right)
 
-export const identifyLedger = (value: Ledger, session: string): Ledger => ({
+export const identifyLedger = (value: Ledger, session: string): Ledger => {
+  const owned = [value, ...value.prompts, ...value.questions, ...value.steps,
+    ...(value.withdrawn ?? []), ...(value.restores ?? []),
+    ...(value.restores ?? []).flatMap(row => row.questions)]
+  if (owned.some(row => row.session_id !== undefined && row.session_id !== session)) throw new Error('ledger identity is ambiguous; original rows were kept')
+  return {
   ...value,
   session_id: session,
   prompts: value.prompts.map(row => ({ ...row, session_id: session })),
@@ -19,7 +24,8 @@ export const identifyLedger = (value: Ledger, session: string): Ledger => ({
   ...(value.withdrawn && { withdrawn: value.withdrawn.map(row => ({ ...row, session_id: session })) }),
   ...(value.restores && { restores: value.restores.map(row => ({ ...row, session_id: session,
     questions: row.questions.map(question => ({ ...question, session_id: session })) })) }),
-})
+  }
+}
 
 const mergeRows = <T>(base: T[] | undefined, durable: T[], local: T[], identity: (row: T) => string): T[] => {
   const original = new Map((base ?? []).map(row => [identity(row), row]))
