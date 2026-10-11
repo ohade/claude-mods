@@ -1,6 +1,7 @@
 // FIXTURE, TRACK-21 (2026-10-11): reproduced Refuter findings must fail
 // before implementation changes, then pass without changing these checks.
 import { expect, test } from 'claude-code/testing'
+import { describeCheckpoint } from '../hooks/checkpoint'
 import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
@@ -10,15 +11,29 @@ const question = { id: 1, head: 'acknowledged history', at: 1, status: 'open', t
 test('TRACK-21 failed resume cannot authorize replacing an existing durable ledger', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
   const options = { leaseFailure: 'another loaded Track instance owns this session' }
-  const durable = { v: 1, savedAt: 1, ledger: { ...EMPTY, nextQuestionId: 2, questions: [question] } }
-  const store = pluginStore(on, { [`s:${SESSION}`]: durable }, undefined, options)
+  const originalLedger = { ...EMPTY, nextQuestionId: 2, questions: [question] } as any
+  const generation = '22222222-3333-4444-8555-666666666666'
+  const durable = { v: 1, session_id: SESSION, generation, savedAt: 1, ledger: originalLedger, checkpoint: await describeCheckpoint(originalLedger, SESSION) }
+  const store = pluginStore(on, { [`s:${SESSION}`]: durable, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation, checkpoint: durable.checkpoint } }, undefined, options)
   on('session.id', () => ({ value: SESSION }))
   on('classic.SessionStart', () => ({}))
   logs(on)
   try { await $.classic.SessionStart({ source: 'resume', session_id: SESSION } as never) } catch { /* Expected lease refusal. */ }
-  delete options.leaseFailure
+  // H1 intent kept; refuter-2 M1 lockout fix (amendment authorized).
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'unverified new row' } as never)
   expect(store.held.get(`s:${SESSION}`)).toEqual(durable)
+  expect((await checkpoint($)).ok).toBe(false)
+  expect(store.held.get(`s:${SESSION}`)).toEqual(durable)
+  delete (options as { leaseFailure?: string }).leaseFailure
+  const receipt = await checkpoint($)
+  expect(receipt.ok).toBe(true)
+  const applied = store.held.get(`s:${SESSION}`) as any
+  const head = store.held.get(`h:${SESSION}`) as any
+  expect(applied.ledger.questions.map((row: any) => row.head)).toEqual(['acknowledged history', 'unverified new row'])
+  expect(applied.checkpoint.revision).toBe(durable.checkpoint.revision + 1)
+  expect(applied.generation).toBe(generation)
+  expect(head.generation).toBe(applied.generation)
+  expect(head.checkpoint).toEqual(applied.checkpoint)
 })
 
 test('TRACK-21 foreign cleanup reserve exhaustion does not block the caller checkpoint', async ($, on) => {
