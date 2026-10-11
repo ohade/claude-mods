@@ -20,6 +20,10 @@ const requestIdOf = (uuid: string): string => `${uuid.slice(0, 24)}000000000000`
 
 const PANE = 'image-view'
 
+// A slash command's row as the prompt shows it: `/name` or `/plugin:name`,
+// then a space or the end. A path (`/Users/me/shot.png`) is not one.
+const SLASH_ROW = /^\/[\w.:-]+(?:\s|$)/
+
 // The rows that carry a pasted picture among their blocks: a typed prompt and
 // a slash command's expansion. A skill's expansion (/recall ...) is a meta row
 // of its own by the note door; the command's row before it has the text alone.
@@ -390,6 +394,10 @@ const fitCells = (size: Size, room: { columns: number; rows: number }): { column
   return { columns: Math.max(2, columns), rows: Math.max(1, rows) }
 }
 
+// The slash command pictures tied to any of these reply rows.
+const replyPictures = async ($: EngineInterface, ids: string[]): Promise<number[]> =>
+  (await Promise.all(ids.map(async id => (await $.state.get({ ...REPLY_PICTURES, id })).value ?? []))).flat()
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // A pane asked for by code below 144 columns waits unseen; drop any such
@@ -440,8 +448,9 @@ export const register: Register = on => {
   })
 
   // A slash command's pictures are in its arguments. The engine draws the
-  // command's own row with no render hook, so they wait for the first row of
-  // the reply that has text, and are drawn above it.
+  // command's row through UserMessage only as a placeholder while the command
+  // starts, and the row that stays with no render hook; so they wait for the
+  // reply's first row, a tool call or text, and are drawn above it, once.
   on('command.run', async ($, e, next) => {
     const named = imageNumbers(e.args)
     if (named.length > 0) {
@@ -453,10 +462,14 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The reply's first row that draws: a text block's, under the row's id, or a
+  // tool call's, under its tool_use id. Thinking draws no row of its own.
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const { value: pending = [] } = await $.state.get(SLASH_PENDING)
-    if (pending.length > 0 && e.message.content.some(block => block.type === 'text')) {
-      await $.state.set({ ...REPLY_PICTURES, id: requestIdOf(e.uuid) }, pending)
+    const first = e.message.content.find(block => block.type === 'text' || block.type === 'tool_use')
+    if (pending.length > 0 && first !== undefined) {
+      const id = first.type === 'tool_use' ? String(first.id) : requestIdOf(e.uuid)
+      await $.state.set({ ...REPLY_PICTURES, id }, pending)
       await $.state.set(SLASH_PENDING, [])
     }
 
@@ -536,17 +549,31 @@ export const register: Register = on => {
     return {}
   })
 
-  on('ui.render', { component: ['UserMessage', 'AssistantMessage'] }, async ($, e, next) => {
+  on('ui.render', { component: ['UserMessage', 'AssistantMessage', 'ToolUse', 'ToolGroup'] }, async ($, e, next) => {
     if (e.surface !== 'terminal') {
       return next(e)
     }
     // A prompt's row by the numbers it names, not by the row: a message sent
     // mid-turn is drawn under an id other than the row its pictures came in
-    // on. A reply's row by the slash command pictures tied to it.
-    const isReply = e.component === 'AssistantMessage'
-    const numbers = isReply
-      ? ((await $.state.get({ ...REPLY_PICTURES, id: e.requestId })).value ?? [])
-      : imageNumbers(e.props.text)
+    // on; a slash command's placeholder row draws none. A reply's row (text,
+    // a tool call, a folded group of calls) by the slash command pictures
+    // tied to it; an unfolded group leaves them to its own ToolUse rows.
+    const isReply = e.component !== 'UserMessage'
+    const numbers =
+      e.component === 'UserMessage'
+        ? SLASH_ROW.test(e.props.text)
+          ? []
+          : imageNumbers(e.props.text)
+        : e.component === 'AssistantMessage'
+          ? await replyPictures($, [e.requestId])
+          : e.component === 'ToolUse'
+            ? await replyPictures($, [e.props.tool_use_id])
+            : e.props.isExpanded
+              ? []
+              : await replyPictures(
+                  $,
+                  e.props.calls.flatMap(call => (call.tool_use_id === undefined ? [] : [call.tool_use_id])),
+                )
     if (numbers.length === 0) {
       return next(e)
     }

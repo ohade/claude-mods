@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 // The kit cannot raise session.append in this build (2.1.292): it skips any
 // session.append answer that does not call next, the test's own included, and
@@ -57,14 +58,25 @@ test('a row that names no stored picture draws as the engine draws it', async ($
   expect(await unknown.findAll({ type: 'Image' })).toHaveLength(0)
 })
 
-test('a slash command row draws the thumbnails its [Image #n] tags name', async ($, on) => {
-  // The pictures came in on the command's expansion, a row of their own.
+test("a slash command's row draws no picture: it is the engine's placeholder, replaced at once", async ($, on) => {
+  // Live, a slash command's row goes through UserMessage only as a placeholder
+  // while the command starts; the row that stays is drawn with no render hook,
+  // so a picture drawn on the placeholder shows for a moment and is gone.
   storeThumbs(on, [2, 3])
 
   const ui = await $.ui.mount(userMessage('/recall look at these [Image #2] [Image #3]'))
+  const plugin = await $.ui.mount(userMessage('/image-thumbs:image [Image #2]', 'c3000000-0000-4000-8000-000000000000'))
 
-  const images = await ui.findAll({ type: 'Image' })
-  expect(images.map(image => image.props.alt)).toEqual(['[Image #2]', '[Image #3]'])
+  expect(await ui.findAll({ type: 'Image' })).toHaveLength(0)
+  expect(await plugin.findAll({ type: 'Image' })).toHaveLength(0)
+})
+
+test('a prompt that starts with a path is not a slash command and draws its picture', async ($, on) => {
+  storeThumbs(on, [2])
+
+  const ui = await $.ui.mount(userMessage('/Users/me/shot.png looks off [Image #2]'))
+
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #2]' })
 })
 
 // sips, base64, mktemp and rm: the size query answers 64x32, mktemp a folder,
@@ -111,7 +123,8 @@ test("a skill's slash command draws the picture its expansion brings in on a not
     },
   })
   await appended.catch(() => undefined)
-  const ui = await $.ui.mount(userMessage('/recall look at this [Image #1]'))
+  // Built: a later prompt that names the picture draws it.
+  const ui = await $.ui.mount(userMessage('look again at [Image #1]'))
 
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
 })
@@ -164,6 +177,28 @@ const standInForSavedPictures = (on: On, saved: string[], copied: string[], inFo
   on('ui.render', engineRow, (_, e) => ({ type: 'Text', props: {}, children: [e.props.text] }))
 }
 
+// Claude's reply opening with a text row: stored, then drawn as the engine
+// draws it, under the row's uuid with the last group zeroed.
+async function replyDraws($: Parameters<TestBody>[0], uuid: string, text: string) {
+  await settle(
+    $.session.append({
+      door: 'response',
+      origin: { kind: 'model', model: 'claude-test' },
+      uuid,
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] },
+    }),
+  )
+
+  return $.ui.mount({
+    plugin: 'image-thumbs',
+    surface: 'terminal' as const,
+    component: 'AssistantMessage' as const,
+    requestId: `${uuid.slice(0, 24)}000000000000`,
+    viewport: { columns: 100, rows: 40 },
+    props: { text, isFirstOfReply: true },
+  })
+}
+
 // How a command is shown: the main screen, 100 columns.
 const PRESENTATION = { isFullscreen: false, columns: 100 }
 
@@ -180,14 +215,15 @@ const settle = async (call: Promise<unknown>) => {
 test("a slash command's row draws the picture pasted into it, before any row brings the picture's bytes", async ($, on) => {
   const copied: string[] = []
   standInForSavedPictures(on, [savedName(2, '6524ECCF')], copied)
+  standInForRows(on)
 
   // Live, the command's row is printed before the row carrying the picture
   // arrives, and a printed row is not drawn again: the thumbnail must exist
   // when the command runs.
   await settle($.command.run({ command: 'recall', args: 'look at this [Image #1]', origin: { kind: 'composer' }, presentation: PRESENTATION }))
-  const ui = await $.ui.mount(userMessage('/recall look at this [Image #1]'))
+  const reply = await replyDraws($, 'd1000000-0000-4000-8000-000000000001', 'Looking.')
 
-  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
+  expect((await reply.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
   expect(copied).toEqual([savedName(2, '6524ECCF')])
 })
 
@@ -196,14 +232,15 @@ test("a picture pasted from the clipboard is drawn from the session's images fol
   // A clipboard paste is saved as <session folder>/images/<n>.png; no
   // clipboard-* file is written for it.
   standInForSavedPictures(on, [], copied, [5])
+  standInForRows(on)
 
   await settle(
     $.command.run({ command: 'recall', args: 'test [Image #5]', origin: { kind: 'composer' }, presentation: PRESENTATION }),
   )
-  const ui = await $.ui.mount(userMessage('/recall test [Image #5]'))
+  const reply = await replyDraws($, 'd2000000-0000-4000-8000-000000000001', 'Looking.')
 
   expect(copied).toEqual(['/private/tmp/claude-501/-Users-me-git/session-folder/images/5.png'])
-  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
+  expect((await reply.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
 })
 
 const assistantMessage = (text: string, requestId: string) => ({
@@ -324,4 +361,82 @@ test('a click on the picture expands it in place and a second click shrinks it',
 
   await ui.pointer(click)
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ columns: 21, rows: 5 })
+})
+
+const toolUse = (id: string) => ({
+  plugin: 'image-thumbs',
+  surface: 'terminal' as const,
+  component: 'ToolUse' as const,
+  requestId: id,
+  viewport: { columns: 100, rows: 40 },
+  props: { tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, isRunning: true, isErrored: false, isInterrupted: false },
+})
+
+const toolGroup = (ids: string[], isExpanded: boolean) => ({
+  plugin: 'image-thumbs',
+  surface: 'terminal' as const,
+  component: 'ToolGroup' as const,
+  requestId: `group-${ids.join('-')}-${isExpanded}`,
+  viewport: { columns: 100, rows: 40 },
+  props: {
+    calls: ids.map(id => ({ tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, isRunning: false, isErrored: false, isInterrupted: false })),
+    isActive: false,
+    isExpanded,
+  },
+})
+
+const appendReply = async ($: Parameters<TestBody>[0], uuid: string, content: unknown[]) =>
+  settle(
+    $.session.append({
+      door: 'response',
+      origin: { kind: 'model', model: 'claude-test' },
+      uuid,
+      message: { type: 'assistant', role: 'assistant', content: content as never },
+    }),
+  )
+
+const standInForRows = (on: On) => {
+  on('ui.render', { component: 'AssistantMessage' }, (_, e) => ({ type: 'Text', props: {}, children: [e.props.text] }))
+  on('ui.render', { component: 'ToolUse' }, (_, e) => ({ type: 'Text', props: {}, children: [e.props.tool] }))
+  on('ui.render', { component: 'ToolGroup' }, () => ({ type: 'Text', props: {}, children: ['Ran 1 shell command'] }))
+}
+
+test("a slash command's pictures are drawn once, above the reply's first tool call", async ($, on) => {
+  standInForSavedPictures(on, [], [], [5])
+  standInForRows(on)
+
+  await settle(
+    $.command.run({ command: 'recall', args: 'test [Image #5]', origin: { kind: 'composer' }, presentation: PRESENTATION }),
+  )
+  // Thinking alone draws no row to carry them.
+  await appendReply($, 'f0000000-0000-4000-8000-000000000001', [{ type: 'thinking', thinking: 'hmm', signature: 's' }])
+  await appendReply($, 'f0000000-0000-4000-8000-000000000002', [
+    { type: 'tool_use', id: 'toolu_first', name: 'Bash', input: { command: 'ls' } },
+  ])
+  await appendReply($, 'f0000000-0000-4000-8000-000000000003', [{ type: 'text', text: 'Done.' }])
+
+  const tool = await $.ui.mount(toolUse('toolu_first'))
+  const text = await $.ui.mount(assistantMessage('Done.', 'f0000000-0000-4000-8000-000000000000'))
+
+  expect((await tool.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
+  expect(await text.findAll({ type: 'Image' })).toHaveLength(0)
+})
+
+test("a folded group holding the reply's first tool call draws the pictures above its line", async ($, on) => {
+  standInForSavedPictures(on, [], [], [5])
+  standInForRows(on)
+
+  await settle(
+    $.command.run({ command: 'recall', args: 'test [Image #5]', origin: { kind: 'composer' }, presentation: PRESENTATION }),
+  )
+  await appendReply($, 'f1000000-0000-4000-8000-000000000001', [
+    { type: 'tool_use', id: 'toolu_grouped', name: 'Bash', input: { command: 'ls' } },
+  ])
+
+  const folded = await $.ui.mount(toolGroup(['toolu_grouped'], false))
+  // Unfolded, its rows are ToolUse rows, and the first of them draws them.
+  const unfolded = await $.ui.mount(toolGroup(['toolu_grouped'], true))
+
+  expect((await folded.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
+  expect(await unfolded.findAll({ type: 'Image' })).toHaveLength(0)
 })
