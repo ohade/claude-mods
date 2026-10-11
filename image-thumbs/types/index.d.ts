@@ -36,6 +36,9 @@ declare module 'claude-code' {
       submittedAt: number
       // A slash command's pictures, waiting for the first reply row with text.
       slashPending: number[]
+      // The reply rows stored since the slash command ran: the first of them
+      // that draws through this mod takes its pictures.
+      turnRows: string[]
       // The slash command pictures drawn above a reply row, by its request id.
       replyPictures: StateFamily<number[]>
     }

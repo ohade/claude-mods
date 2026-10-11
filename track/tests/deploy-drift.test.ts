@@ -42,3 +42,56 @@ for (const scenario of ['equal', 'git-error', 'receipt-mismatch', 'divergent'] a
     expect(lines).toEqual([])
   })
 }
+
+// A land moves live to main while a session runs; the status set at start
+// must not outlive it. Rechecked after a turn only while it shows.
+const setupMoving = (on: On, heads: { main: string }) => {
+  const statuses: (string | undefined)[] = []
+  const calls = { git: 0 }
+  on('env.get', { name: 'HOME' }, () => ({ value: '/fixture' }))
+  on('fs.read', { path: '/fixture/.claude/state/claude-mods-live.json' }, () => ({ value: JSON.stringify({ commit: LIVE }) }))
+  on('process.run', (_, e) => {
+    if (e.argv[0] !== 'git') return { deny: 'unexpected process' }
+    calls.git += 1
+    if (e.argv.includes('merge-base')) return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    const sha = e.argv.includes('/fixture/git/claude-mods') ? heads.main : LIVE
+    return { value: { exitCode: 0, stdout: sha + '\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.status', (_, e) => { statuses.push(typeof e.text === 'string' ? e.text : undefined); return { value: undefined } })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.complete', () => ({ text: '' }))
+  return { statuses, calls }
+}
+
+const endTurn = async ($: Parameters<TestBody>[0]) => {
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' }).catch(() => undefined)
+}
+
+test('the drift status clears after a turn once live has caught up with main', async ($, on) => {
+  const clock = mock.clock(on)
+  const heads = { main: MAIN }
+  const { statuses } = setupMoving(on, heads)
+  await $.session.start({ cwd: '/fixture', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  expect(statuses).toEqual(['claude-mods: main bbbbbbb is not live (live aaaaaaa). Run scripts/land.sh main.'])
+
+  // Landed: live now equals main.
+  heads.main = LIVE
+  await endTurn($)
+  await clock.advance(0)
+  expect(statuses.at(-1)).toBeUndefined()
+  expect(statuses).toHaveLength(2)
+})
+
+test('with no drift at start a turn runs no further check', async ($, on) => {
+  const clock = mock.clock(on)
+  const { statuses, calls } = setupMoving(on, { main: LIVE })
+  await $.session.start({ cwd: '/fixture', surface: 'terminal', isInteractive: true })
+  await clock.advance(0)
+  const atStart = calls.git
+
+  await endTurn($)
+  await clock.advance(0)
+  expect(calls.git).toBe(atStart)
+  expect(statuses.filter(one => one !== undefined)).toEqual([])
+})
