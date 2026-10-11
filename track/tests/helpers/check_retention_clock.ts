@@ -38,15 +38,15 @@ check('first CLOSED starts seven full days; exact boundary expires body/head/rec
   await cleanupRecords(store, caller, closed)
   for (const prefix of ['s', 'h', 'r']) assert.equal([...values.keys()].some(key => key.startsWith(`${prefix}:${id(1)}`)), false)
 })
-for (const state of ['live', 'unknown'] as const) check(`${state} clears an old clock and preserves every row`, async () => {
+// Design amended by lead, refuter M5: only the owner clears its clock.
+for (const state of ['live', 'unknown'] as const) check(`${state} leaves the foreign record byte-identical`, async () => {
   const record = { v: 1, session_id: id(2), closedAt: now - CLOSED_TTL, ledger: { question: 'keep' } }
   const { store, values } = makeStore({ [`s:${id(2)}`]: record })
   await cleanupRecords(store, caller, async () => {
     if (state === 'unknown') throw new Error('probe refused')
     return { state: 'live', release: async () => {} }
   })
-  const { closedAt, ...expected } = record
-  assert.deepEqual(values.get(`s:${id(2)}`), expected)
+  assert.deepEqual(values.get(`s:${id(2)}`), record)
 })
 check('hour throttle and backwards time do not probe; exact next hour can probe', async () => {
   const start = now
@@ -85,7 +85,7 @@ check('failed mutation cannot publish lastCleanup', async () => {
   const set = store.set
   store.set = async (key, value) => { if (key === `s:${id(4)}`) throw new Error('write refused'); return set(key, value) }
   await assert.rejects(cleanupRecords(store, caller, closed), /write refused/)
-  assert.equal(values.has('cleanup'), false)
+  assert.equal((values.get('cleanup') as any)?.lastCleanup, undefined)
 })
 check('durable rollback recovery obeys the same elapsed work budget', async () => {
   const initial: Record<string, unknown> = {}
