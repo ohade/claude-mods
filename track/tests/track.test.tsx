@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { atomStore, pane, SESSION } from './kit'
+import { atomStore, pane, pluginStore, SESSION } from './kit'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -407,7 +407,9 @@ test('the pane opens by itself outside a git repository too', async ($, on) => {
 test('a resumed session gets its saved questions back', async ($, on) => {
   const saved = { v: 1, savedAt: 1, ledger: OPEN_ONE }
   const writes: Array<{ questions: QuestionRow[] }> = []
-  on('store.get', (_, e) => ({ value: e.key === 's:S1' ? saved : undefined }))
+  pluginStore(on, { [`s:${SESSION}`]: saved })
+  atomStore(on, 'ledger', { v: 1, nextQuestionId: 1, questions: [], steps: [], prompts: [] })
+  on('session.id', () => ({ value: SESSION }))
   on('state.set', { plugin: 'track', key: 'ledger' }, (_, e) => {
     writes.push(e.value as { questions: QuestionRow[] })
 
@@ -416,7 +418,7 @@ test('a resumed session gets its saved questions back', async ($, on) => {
 
   on('classic.SessionStart', () => ({}))
 
-  await $.classic.SessionStart({ hook_event_name: 'SessionStart', source: 'resume', session_id: 'S1', transcript_path: '/t', cwd: '/repo' } as never)
+  await $.classic.SessionStart({ hook_event_name: 'SessionStart', source: 'resume', session_id: SESSION, transcript_path: '/t', cwd: '/repo' } as never)
 
   expect(writes.at(-1)?.questions.map(q => q.id)).toEqual([1])
 })

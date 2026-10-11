@@ -32,8 +32,8 @@ for (const width of [17, 80]) {
       const ui = await $.ui.mount(pane('dock', width, 30))
       expect(store.held.size).toBe(0)
       await ui.press({ key })
-      expect(l.value.questions).toEqual(QUESTIONS)
-      expect(l.value.steps).toEqual(STEPS.map(s => s.status === 'completed' ? { ...s, cleared: true } : s))
+      expect(l.value.questions).toEqual(QUESTIONS.map(row => ({ ...row, session_id: SESSION })))
+      expect(l.value.steps).toEqual(STEPS.map(s => ({ ...(s.status === 'completed' ? { ...s, cleared: true } : s), session_id: SESSION })))
       expect((store.held.get(`s:${SESSION}`) as any).ledger).toEqual(l.value)
     })
   }
@@ -48,8 +48,8 @@ for (const width of [17, 80]) {
     expect(String(button?.props.label).length + 3).toBeLessThanOrEqual(width)
     expect(store.held.size).toBe(0)
     await ui.press({ key: 'clear-answered' })
-    expect(l.value.steps).toEqual(STEPS)
-    expect(l.value.questions).toEqual(QUESTIONS.map(q => q.status === 'answered' ? { ...q, cleared: true } : q))
+    expect(l.value.steps).toEqual(STEPS.map(row => ({ ...row, session_id: SESSION })))
+    expect(l.value.questions).toEqual(QUESTIONS.map(q => ({ ...(q.status === 'answered' ? { ...q, cleared: true } : q), session_id: SESSION })))
     expect((store.held.get(`s:${SESSION}`) as any).ledger).toEqual(l.value)
     const writes = l.writes.length
     await ui.redraw()

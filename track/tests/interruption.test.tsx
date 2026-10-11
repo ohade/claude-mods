@@ -36,7 +36,7 @@ test('an interrupted main turn pauses its own marked work and durably keeps ever
   expect(ledger.value.steps[0]?.status).toBe('paused')
   expect(ledger.value.steps[0]?.note).toBe('interrupted')
   expect(ledger.value.steps[0]?.activeTurnId).toBeUndefined()
-  expect(ledger.value.steps.slice(1)).toEqual(others)
+  expect(ledger.value.steps.slice(1)).toEqual(others.map(row => ({ ...row, session_id: SESSION })))
   expect(activity.value.isWorking).toBe(false)
   const saved = store.held.get(`s:${SESSION}`) as { ledger: Ledger } | undefined
   expect(saved?.ledger.steps).toEqual(ledger.value.steps)

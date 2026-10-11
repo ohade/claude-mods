@@ -86,18 +86,23 @@ test('pending rollback reconciles a foreign index without overwriting foreign le
 })
 
 test('an unverified history write remains pending on the next retry', async ($, on) => {
-  const store = prepare(on)
+  const foreign = '00000000-0000-4000-8000-000000000001'
+  atomStore(on, 'ledger', EMPTY)
+  atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  const store = pluginStore(on, {}, undefined, { guardStates: { [foreign]: 'closed' } })
+  on('session.id', () => ({ value: SESSION }))
   logs(on)
-  for (let i = 0; i < 20; i++) store.held.set(`s:history-${i}`, { v: 1, savedAt: i, ledger: { ...EMPTY } })
-  store.faults.mismatchAfterSet = `s:${SESSION}`
-  store.faults.alteredAfterSet = 's:history-0'
+  // The removed count-pruner no longer writes history-0. Exercise the same
+  // unverified foreign write through retained-lease closure stamping instead.
+  store.held.set(`s:${foreign}`, { v: 1, savedAt: 0, ledger: { ...EMPTY } })
+  store.faults.alteredAfterSet = `s:${foreign}`
   const failed = await $.tool.call({ tool: 'mcp__track__track_question', summary: 'History verification failed' } as never)
   expect(JSON.stringify(failed)).toContain('recovery pending')
-  const unverified = store.held.get('s:history-0')
+  const unverified = store.held.get(`s:${foreign}`)
   expect((unverified as any).changedByStore).toBe(true)
   const retried = JSON.parse((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result as string)
   expect(retried.ok).toBe(false)
-  expect(retried.reason).toContain('could not verify s:history-0')
-  expect(store.held.get('s:history-0')).toEqual(unverified)
+  expect(retried.reason).toContain(`could not verify s:${foreign}`)
+  expect(store.held.get(`s:${foreign}`)).toEqual(unverified)
   expect(store.held.has(`s:${SESSION}`)).toBe(false)
 })

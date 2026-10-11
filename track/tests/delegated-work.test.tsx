@@ -30,10 +30,10 @@ test('delegated state participates in checkpoint validation and survives restora
   on('session.id', () => ({ value: session }))
   const checkpoint = async () => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: session } as never)).result))
   const first = await checkpoint()
-  ledger.value.steps[0].delegated = false
+  ledger.value = { ...ledger.value, steps: ledger.value.steps.map((row: any) => ({ ...row, delegated: false })) }
   const second = await checkpoint()
   expect(first.checksum).not.toBe(second.checksum)
-  ledger.value.steps[0].delegated = true
+  ledger.value = { ...ledger.value, steps: ledger.value.steps.map((row: any) => ({ ...row, delegated: true })) }
   const expected = await checkpoint()
   session = '11111111-2222-4333-8444-555555555555'
   ledger.value = { ...EMPTY }

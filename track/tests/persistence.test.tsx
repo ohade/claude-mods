@@ -100,9 +100,8 @@ test('a resume that fails says so in the debug log, and the session starts', asy
   expect(lines.some(line => line.startsWith('track:') && line.includes('resume'))).toBe(true)
 })
 
-// The store holds at most 4 MiB of JSON in all. Twenty full buckets are larger than that, so the
-// oldest go before the new one is written, not after.
-test('a save that would pass the store cap drops the oldest sessions first', async ($, on) => {
+// TRACK-21 replaces count/byte eviction with refusal: every protected record stays.
+test('a save that would pass the store cap refuses without deleting history', async ($, on) => {
   const big = (n: number) => Array.from({ length: 200 }, (_, i) => ({ rowKey: `r${i}`, head: 'p'.repeat(1300), turnId: null, at: n }))
   const initial: Record<string, unknown> = {}
   const ids = Array.from({ length: 15 }, (_, i) => `old-${String(i + 1).padStart(2, '0')}`)
@@ -117,15 +116,15 @@ test('a save that would pass the store cap drops the oldest sessions first', asy
 
   await finishTurn($, on)
 
-  expect(store.held.has(`s:${SESSION}`)).toBe(true)
+  expect(store.held.has(`s:${SESSION}`)).toBe(false)
   expect(store.held.has('s:old-15')).toBe(true)
-  expect(store.held.has('s:old-01')).toBe(false)
+  expect(store.held.has('s:old-01')).toBe(true)
+  for (const id of ids) expect(store.held.get(`s:${id}`)).toEqual(initial[`s:${id}`])
   expect(store.size()).toBeLessThanOrEqual(4 * 1024 * 1024)
 })
 
-// Two sessions saving at once can each write the index without the other's entry. The bucket the
-// index lost is still in the store; it is pruned by its age like any other, never kept for good.
-test('a bucket the index lost is counted, so the store keeps twenty sessions at most', async ($, on) => {
+// An incomplete index does not give a caller authority to delete an unexpired bucket.
+test('a bucket the index lost is retained along with every other unexpired session', async ($, on) => {
   const initial: Record<string, unknown> = { 's:lost': { v: 1, savedAt: 0, ledger: EMPTY } }
   const ids = Array.from({ length: 20 }, (_, i) => `old-${String(i + 1).padStart(2, '0')}`)
   ids.forEach((id, i) => {
@@ -140,10 +139,11 @@ test('a bucket the index lost is counted, so the store keeps twenty sessions at 
   await finishTurn($, on)
 
   const buckets = [...store.held.keys()].filter(k => k.startsWith('s:'))
-  expect(buckets).toHaveLength(20)
+  expect(buckets).toHaveLength(22)
   expect(buckets).toContain(`s:${SESSION}`)
-  expect(buckets).not.toContain('s:lost')
-  expect(buckets).not.toContain('s:old-01')
+  expect(buckets).toContain('s:lost')
+  expect(buckets).toContain('s:old-01')
+  for (const id of ids) expect(store.held.get(`s:${id}`)).toEqual(initial[`s:${id}`])
 })
 
 test('a save that fails says so in the debug log', async ($, on) => {

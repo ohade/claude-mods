@@ -35,8 +35,8 @@ test('75 retained rows count as 25 current steps in both reminder and public che
   const saved = await call($, { tool: 'mcp__track__checkpoint', expected_session: OLD })
   expect(saved).toMatchObject({ checksum: expected.checksum, counts: { steps: 25 } })
   expect(saved.open_steps).toEqual([{ id: 'plan:75', status: 'paused', subject: 'Work 75' }])
-  expect(fixture.ledger.value.steps).toEqual(steps)
-  expect((fixture.store.held.get(`s:${OLD}`) as { ledger: Ledger }).ledger.steps).toEqual(steps)
+  expect(fixture.ledger.value.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
+  expect((fixture.store.held.get(`s:${OLD}`) as { ledger: Ledger }).ledger.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
 })
 
 const mechanicalCaller = { plugins: [{ name: 'fixture-caller', register(on: On) {
@@ -70,7 +70,7 @@ test('safe registration adds four waiting decisions to one existing open row and
   const saved = await call($, { tool: 'mcp__track__checkpoint', expected_session: OLD })
   expect(saved.open_steps).toHaveLength(5)
   expect(saved.open_steps.map((s: Step) => s.id)).toEqual(['plan:75', 'plan:76', 'plan:77', 'plan:78', 'plan:79'])
-  expect(fixture.ledger.value.steps.slice(0, 75)).toEqual(rows())
+  expect(fixture.ledger.value.steps.slice(0, 75)).toEqual(rows().map(row => ({ ...row, session_id: OLD })))
   fixture.destination()
   for (let n = 0; n < 2; n++) {
     const restored = await call($, { tool: 'mcp__track__restore_tracker', from_session: OLD, expected_checkpoint: saved, tool_use_id: `restore_${n}` })

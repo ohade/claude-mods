@@ -48,5 +48,5 @@ test('capacity is checked inside the atomic question write under concurrent regi
   ])
   expect(l.value.questions).toHaveLength(200)
   expect(results.filter(r => r.deny?.includes('capacity'))).toHaveLength(1)
-  expect(l.value.questions.slice(0, 199)).toEqual(questions)
+  expect(l.value.questions.slice(0, 199)).toEqual(questions.map(row => ({ ...row, session_id: SESSION })))
 })

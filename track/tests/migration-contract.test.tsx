@@ -35,7 +35,7 @@ test('export refuses an unowned snapshot instead of publishing records while ano
 })
 
 test('import copies and reads back each missing legacy record and repeat import is safe', async ($, on) => {
-  const { files, store } = prepare(on, { [`s:${OLD}`]: legacy })
+  const { files, store } = prepare(on, { [`s:${OLD}`]: legacy }, { guardStates: { [OLD]: 'closed' } })
   await exported($)
   store.held.delete(`s:${OLD}`)
   const first = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
@@ -44,6 +44,18 @@ test('import copies and reads back each missing legacy record and repeat import 
   const second = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
   expect(second).toMatchObject({ ok: true, imported: [], verified: [OLD] })
   expect(files.has('/backup.json')).toBe(true)
+})
+
+test('a live foreign lease refuses import without changing the source bundle', async ($, on) => {
+  const { files, store } = prepare(on, { [`s:${OLD}`]: legacy })
+  await exported($)
+  const source = files.get('/backup.json')
+  store.held.delete(`s:${OLD}`)
+  const result = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+  expect(result.ok).toBe(false)
+  expect(result.reason).toContain('live or unknown')
+  expect(store.held.has(`s:${OLD}`)).toBe(false)
+  expect(files.get('/backup.json')).toBe(source)
 })
 
 test('corrupt or conflicting migration data changes no destination record', async ($, on) => {
