@@ -1093,9 +1093,17 @@ const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
       !matchesCheckpoint(await describeCheckpoint(body.ledger, id, body.checkpoint), body.checkpoint)) throw new Error('durable head/body checkpoint mismatch; both were kept')
   if (body.generation === undefined) {
     // An old writer can still publish during rollout. Validate its successor
-    // checkpoint and preserve the old head before accepting it under our locks.
+    // checkpoint before accepting it under our locks. The old-head archive is
+    // metadata only; preserve rows separately before reconciliation can drop them.
     if (sameValue(body.checkpoint, head.checkpoint)) return
     if (!Number.isSafeInteger(body.checkpoint?.revision) || (body.checkpoint?.revision ?? 0) <= head.checkpoint.revision) throw new Error('durable head/body checkpoint mismatch; both were kept')
+    const memory = await read($, ledger)
+    const pending = await read($, durability)
+    const owner = memory.session_id ?? pending.memorySession
+    const baseline = pending.baseline?.session_id === id ? pending.baseline : undefined
+    // Foreign or unknown memory is preserved by the session-switch path.
+    const local = owner === id || owner === undefined ? memory : baseline?.ledger
+    if (local !== undefined) await preserveConflict($, id, local, baseline, { body, head })
     await preserveVersion($, id, 'legacy-head', head)
   } else if (body.checkpoint?.revision !== head.checkpoint.revision + 1) throw new Error('durable head/body checkpoint mismatch; both were kept')
   await writeVerified($, `h:${id}`, { v: 1, session_id: id, generation: head.generation, checkpoint: body.checkpoint })
