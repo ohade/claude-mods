@@ -1085,15 +1085,17 @@ const preserveVersion = async ($: EngineInterface, id: string, kind: string, val
 }
 
 // TRACK-21 refuter 4: a refusal must not archive a fresh full ledger on every
-// call. Keep the first conflict input for this durable version and baseline.
+// call. Deduplicate identical inputs, including memory: a concurrent new row
+// needs its own archive before durable history can replace local memory.
 const preserveConflict = async ($: EngineInterface, id: string, memory: Ledger, baseline: Baseline | undefined, durable: unknown): Promise<string> => {
-  const key = `r:${id}:conflict-${await checksumOf({ durable, baseline })}`
+  const identified = identifyLedger(memory, id)
+  const key = `r:${id}:conflict-${await checksumOf({ durable, baseline, memory: identified })}`
   const existing = await $.store.get(key) as { session_id?: string; kind?: string } | undefined
   if (existing !== undefined) {
     if (existing.session_id !== id || existing.kind !== 'conflict') throw new Error('conflict archive identity is ambiguous; all inputs were kept')
     return key
   }
-  const snapshot = { v: 1, session_id: id, kind: 'conflict', value: { ledger: identifyLedger(memory, id), baseline, durable } }
+  const snapshot = { v: 1, session_id: id, kind: 'conflict', value: { ledger: identified, baseline, durable } }
   await ensureCapacity($, { [key]: snapshot }, STORE_BUDGET)
   await writeVerified($, key, snapshot)
   return key
@@ -1135,7 +1137,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     await ensureWriter($, id)
     lock = await acquireLock($, 'write', id)
     await recoverSave($, id)
-    if (await recoverCleanup(retentionStore($), id)) await resumeLedger($, id)
+    if (await recoverCleanup(retentionStore($), id, { owner: true })) await resumeLedger($, id)
     else await clearOwnedClocks(retentionStore($), id)
     await repairHead($, id)
     const owned = await read($, ledger)
@@ -1211,15 +1213,19 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     await writeVerified($, `h:${id}`, nextHead)
     await retentionStore($).set(SAVED_INDEX, index)
     if (!sameValue(await $.store.get(SAVED_INDEX), index)) throw new Error('save index read-back did not match')
+    let memoryChanged = false
+    await update($, ledger, cur => {
+      memoryChanged = !sameValue(cur, memory)
+      return memoryChanged ? reconcileLedger(memory, current, cur, id!) : current
+    })
     savedRevisions.set(id, bucket.checkpoint.revision)
     saveRecoveries.delete(id)
     persistence.failure = ''
     saved = true
-    await update($, ledger, cur => sameValue(cur, memory) ? current : cur)
     // A rewind or UI choice that arrived after this save's snapshot needs
     // its own acknowledgement. Keep its gate while the queued save catches up.
-    await update($, durability, cur => cur.closedByPerson !== preference || cur.rewindSession !== pending.rewindSession
-      ? { ...cur, baseline: { session_id: id!, ledger: current, checkpoint, generation }, isUnsaved: true, reason: cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
+    await update($, durability, cur => memoryChanged || cur.closedByPerson !== preference || cur.rewindSession !== pending.rewindSession
+      ? { ...cur, baseline: { session_id: id!, ledger: current, checkpoint, generation }, isUnsaved: true, reason: memoryChanged ? 'ledger save pending' : cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
       : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
   } catch (error) {
     persistence.failure = reason(error)
@@ -1249,7 +1255,7 @@ const savePanePreference = async ($: EngineInterface, closedByPerson: boolean): 
 }
 
 const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
-      await recoverCleanup(retentionStore($), id)
+      await recoverCleanup(retentionStore($), id, { owner: true })
       await clearOwnedClocks(retentionStore($), id)
       await repairHead($, id)
       const raw = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string } | undefined
@@ -1279,7 +1285,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
         // Rows minted after a failed initial resume have no durable identity
         // yet. Allocate them beyond the saved IDs before the three-way merge.
         let nextId = Math.max(memory.nextQuestionId, durable.nextQuestionId)
-        const local = prior === undefined && memory.session_id === undefined ? { ...memory,
+        const local = prior === undefined ? { ...memory,
           questions: memory.questions.map(row => {
             const saved = durable.questions.find(saved => saved.id === row.id)
             const fresh = pending.unverifiedQuestions?.some(minted => minted.id === row.id && minted.at === row.at && minted.head === row.head)
@@ -1359,6 +1365,7 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     const normalized: Array<{ key: string; value: unknown; head: SessionHead }> = []
     for (const record of records) {
       const target = record.key.slice(2)
+      if (await $.store.get(`cleanup:${target}`) !== undefined) throw new Error(`migration keeps session ${target}: pending cleanup must be resolved by its owner`)
       const owner = (record.value as { session_id?: unknown }).session_id
       if (owner !== undefined && owner !== target) throw new Error('migration record identity is ambiguous')
       const current = await $.store.get(record.key)
@@ -1667,8 +1674,9 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   if (head === '' || head.startsWith('/')) {
     return
   }
+  const session = await $.session.id()
   const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
-  await update($, ledger, l => ({ ...l, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
+  await update($, ledger, l => ({ ...l, session_id: l.session_id ?? session, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
   // The newest input with these words and no row yet takes this row: its identity for a
   // source_request_id.
   await update($, pending, p => {
@@ -2340,6 +2348,7 @@ export const register: Register = on => {
       return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
     }
     if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
+    const session = await $.session.id()
     let trackedOrder = 0
     let trackedTurnId: string | null = null
     await update($, turn, cur => {
@@ -2371,7 +2380,7 @@ export const register: Register = on => {
       capacityExceeded = questions.length > MAX_QUESTIONS
       if (capacityExceeded) return l
 
-      return { ...l, nextQuestionId: l.nextQuestionId + 1, questions }
+      return { ...l, session_id: l.session_id ?? session, nextQuestionId: l.nextQuestionId + 1, questions }
     })
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
@@ -2472,6 +2481,7 @@ export const register: Register = on => {
     }
     const taskId = String(task.id)
     const subject = headOf(String(e.subject ?? ''))
+    const session = await $.session.id()
     await update<Ledger>($, ledger, cur => {
       const plan = cur.steps.find(s => s.source === 'plan' && s.taskId === undefined && norm(s.subject) === norm(subject))
       if (plan !== undefined) {
@@ -2486,7 +2496,7 @@ export const register: Register = on => {
         ...(e.tool_use_id !== undefined && { createdRequestId: e.tool_use_id }),
       }
 
-      return { ...cur, steps: capSteps([...cur.steps, step]) }
+      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps, step]) }
     })
 
     return ran
@@ -2531,6 +2541,7 @@ export const register: Register = on => {
     }
     // Two todos whose titles normalize alike get #2, #3 after the id, so mark_step reaches each.
     // A todo written again keeps its clock.
+    const session = await $.session.id()
     const now = await $.clock.now()
     await update<Ledger>($, ledger, cur => {
       const before = new Map(cur.steps.filter(s => s.source === 'todo').map(s => [s.id, s]))
@@ -2546,7 +2557,7 @@ export const register: Register = on => {
         return withStatus(row, t.status, now, currentId)
       })
 
-      return { ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }
+      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }
     })
     await dropFinishedOwners($)
 
@@ -2619,6 +2630,7 @@ export const register: Register = on => {
     if (titles.length === 0) {
       return { result: 'No steps given: pass steps as an array of one-line titles.' }
     }
+    const session = await $.session.id()
     const after = typeof e.after === 'string' && e.after !== '' ? e.after : undefined
     if (after !== undefined) {
       // New work joins a running plan: insert after that step, ids after the highest plan id. The
@@ -2634,14 +2646,14 @@ export const register: Register = on => {
         const i = cur.steps.findIndex(s => s.id === after)
         const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
 
-        return { ...cur, steps: capSteps(steps) }
+        return { ...cur, session_id: cur.session_id ?? session, steps: capSteps(steps) }
       })
       await coverInput($, 'steps', { source_text: e.source_text })
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
+    await update<Ledger>($, ledger, cur => ({ ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
     await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
