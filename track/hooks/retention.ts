@@ -1,4 +1,5 @@
 import { entryBytes, includeIndexSize } from './size-index'
+import { checksumOf } from './checkpoint'
 
 export type RetentionStore = {
   get: (key: string) => Promise<unknown>
@@ -20,8 +21,9 @@ const CLEANUP = 'cleanup'
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Guard = { state: 'closed' | 'live'; release: () => Promise<void> }
 type Value = Record<string, unknown>
-type RecoveryEntry = { key: string; before: unknown; after?: unknown; stamp?: { session_id: string; closedAt: number } }
+type RecoveryEntry = { key: string; before: unknown; missing?: true; after?: unknown; stamp?: { session_id: string; closedAt: number } }
 type CleanupRecovery = { v: 1; session_id: string; entries: RecoveryEntry[] }
+type ExpiryIntent = { v: 2; mode: 'expiry'; session_id: string; closedAt: number; entries: Array<{ key: string; checksum: string; bytes: number }> }
 const recoveryAfter = (entry: RecoveryEntry): unknown => entry.stamp === undefined ? entry.after : { ...entry.before as Value, ...entry.stamp }
 const recoveryKey = (session: string): string => `cleanup:${session}`
 export const sameRecord = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right)
@@ -35,15 +37,50 @@ export const writeVerified = async (store: RetentionStore, key: string, value: u
 const ownedKeys = (keys: string[], session: string): string[] => keys.filter(key =>
   key === `s:${session}` || key === `h:${session}` || key.startsWith(`r:${session}:`))
 
+// Expired data is already committed for deletion. A small intent finishes
+// after a crash, without duplicating the body into the rollback reserve.
+const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true): Promise<boolean> => {
+  const key = recoveryKey(intent.session_id)
+  const matches = async (entry: ExpiryIntent['entries'][number]): Promise<boolean> => {
+    const value = await store.get(entry.key)
+    return value === undefined || entryBytes(entry.key, value) === entry.bytes && await checksumOf(value) === entry.checksum
+  }
+  const cancel = async (): Promise<boolean> => {
+    store.log(`track: expiry cancelled for ${intent.session_id}; changed history was kept`)
+    await writeVerified(store, key, undefined)
+    return true
+  }
+  // Preflight all remaining keys before the first deletion. New owned keys
+  // or a changed body mean a returning owner; keep all remaining history.
+  const listed = new Set(intent.entries.map(entry => entry.key))
+  if (ownedKeys(await store.keys(), intent.session_id).some(key => !listed.has(key))) return cancel()
+  for (const entry of intent.entries) if (!(await matches(entry))) return cancel()
+  for (const entry of intent.entries) {
+    if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
+    if (!(await matches(entry))) return cancel()
+    await writeVerified(store, entry.key, undefined)
+  }
+  await writeVerified(store, key, undefined)
+  return true
+}
+
 // Caller holds either its own lease or a retained CLOSED guard, plus the store
 // lock. Resume uses this before its first body read, not on the next save.
 export const recoverCleanup = async (store: RetentionStore, session: string): Promise<boolean> => {
   const key = recoveryKey(session)
-  const recovery = await store.get(key) as CleanupRecovery | undefined
+  const recovery = await store.get(key) as CleanupRecovery | ExpiryIntent | undefined
   if (recovery === undefined) return false
+  if (recovery.v === 2) {
+    if (!SESSION_ID.test(session) || recovery.session_id !== session || recovery.mode !== 'expiry' ||
+        !Number.isFinite(recovery.closedAt) || recovery.closedAt < 0 || Date.now() - recovery.closedAt < CLOSED_TTL ||
+        !Array.isArray(recovery.entries) || recovery.entries.length === 0 ||
+        new Set(recovery.entries.map(entry => entry.key)).size !== recovery.entries.length || recovery.entries.some(entry =>
+          !ownedKeys([entry.key], session).length || !/^[a-f0-9]{64}$/.test(entry.checksum) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0)) throw new Error('cleanup expiry pending: ambiguous durable intent')
+    return finishExpiry(store, recovery)
+  }
   if (!SESSION_ID.test(session) || recovery?.v !== 1 || recovery.session_id !== session ||
       !Array.isArray(recovery.entries) || recovery.entries.some(entry =>
-        !ownedKeys([entry.key], session).length || entry.before === undefined ||
+        !ownedKeys([entry.key], session).length || entry.before === undefined && (entry.missing !== true || entry.key !== `h:${session}`) ||
         entry.stamp !== undefined && (entry.stamp.session_id !== session || !Number.isFinite(entry.stamp.closedAt) || entry.stamp.closedAt < 0 || entry.after !== undefined))) throw new Error('cleanup rollback pending: ambiguous durable recovery record')
   for (const entry of recovery.entries) {
     const current = await store.get(entry.key)
@@ -95,7 +132,7 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
       const after = changes[index][1] as Value | undefined
       const stamp = after === undefined ? undefined : { session_id: session, closedAt: after.closedAt as number }
       return stamp !== undefined && sameRecord({ ...before as Value, ...stamp }, after)
-        ? { key, before, stamp } : { key, before, after }
+        ? { key, before, stamp } : { key, before, ...(before === undefined && { missing: true as const }), after }
     }) }
   // Reserve durable rollback space before the first mutation. A full store
   // refuses cleanup rather than discarding the only remaining copy of a row.
@@ -152,9 +189,9 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   const orderedPending = [...pendingAfter, ...pending.filter(key => key <= recoveryCursor)]
   for (const key of orderedPending.slice(0, BATCH)) {
     if (!canStart()) break
-    visited++
     recoveryCursor = key
     const session = key.slice('cleanup:'.length)
+    if (!SESSION_ID.test(session)) { store.log(`track: cleanup keeps invalid pending identity ${session}`); continue }
     let guard: Guard | undefined
     try {
       // Production resolves caller recovery before reading its body. This path
@@ -164,6 +201,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       // An already-started integrity step finishes before releasing its guard,
       // just like rollback. The budget prevents starting the next target.
       await recoverCleanup(store, session)
+      visited++
       recovered.add(session)
     } catch (error) {
       failures.push(String(error))
@@ -200,19 +238,28 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
         cursor = session
         continue
       }
+      const headKey = `h:${session}`
+      const head = entries.find(([key]) => key === headKey)?.[1] as Value | undefined
+      const validClock = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= now
       const closures = entries.map(([, value]) => (value as Value).closedAt)
-      const closedAt = closures.length > 0 && closures.every(value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= now)
-        ? Math.max(...closures as number[]) : undefined
+      const closedAt = validClock(head?.closedAt) ? head.closedAt : closures.length > 0 && closures.every(validClock) ? Math.max(...closures as number[]) : undefined
       const expired = closedAt !== undefined && now - closedAt >= CLOSED_TTL
-      const changes: Array<[string, unknown]> = entries.map(([key, value]) => {
-        if (expired) return [key, undefined]
-        if (closedAt !== undefined && (value as Value).session_id === session && (value as Value).closedAt === closedAt) return [key, value]
-        const { closedAt: _old, ...record } = value as Value
-        return [key, { ...record, session_id: session, closedAt: closedAt ?? now }]
-      })
       if (sizes === undefined) sizes = await readSizes(store)
       if (!canStart()) break
-      if (await changeRecord(store, session, entries, changes, sizes, canStart)) verified++
+      if (expired) {
+        // Recovery snapshots first; the ledger body is the last deletion.
+        const ordered = [...entries].sort(([left], [right]) => (left.startsWith('r:') ? 0 : left.startsWith('h:') ? 1 : 2) - (right.startsWith('r:') ? 0 : right.startsWith('h:') ? 1 : 2))
+        const intent: ExpiryIntent = { v: 2, mode: 'expiry', session_id: session, closedAt,
+          entries: await Promise.all(ordered.map(async ([key, value]) => ({ key, checksum: await checksumOf(value), bytes: entryBytes(key, value) }))) }
+        checkSizes(sizes, { [recoveryKey(session)]: intent }, 4 * 1024 * 1024)
+        if (!canStart()) break
+        await writeVerified(store, recoveryKey(session), intent)
+        if (await finishExpiry(store, intent, canStart)) verified++
+        sizes = undefined // Finished expiry changed several indexed keys.
+      } else if (closedAt === undefined) {
+        const stamped = { ...(head ?? { v: 1, retentionOnly: true }), session_id: session, closedAt: closedAt ?? now }
+        if (await changeRecord(store, session, [[headKey, head]], [[headKey, stamped]], sizes, canStart)) verified++
+      }
       cursor = session
     } catch (error) {
       failures.push(String(error))

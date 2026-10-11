@@ -916,7 +916,7 @@ const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write' | 'guard'
       }
     })()
     const expired = new Promise<never>((_, reject) => {
-      deadline = $.clock.after(4000, () => reject(new Error('writer lock receipt timed out')))
+      deadline = $.clock.after(mode === 'guard' ? 1000 : 4000, () => reject(new Error('writer lock receipt timed out')))
     })
     const receipt = await Promise.race([reading, expired])
     if (receipt.ok !== true || receipt.token !== writer.token || receipt.mode !== mode) throw new Error(receipt.reason ?? 'writer lock receipt is incompatible')
@@ -926,7 +926,10 @@ const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write' | 'guard'
     }
     return stream
   } catch (error) {
-    await closeLock(stream).catch(() => undefined)
+    // A pending next() can also stall return() in the transport. Start child
+    // termination, but do not hold the store lock waiting for an unknown guard.
+    if (mode === 'guard') void closeLock(stream).catch(cleanup => $.ui.log(`track: timed-out guard release failed: ${reason(cleanup)}`, { to: 'debug' }))
+    else await closeLock(stream).catch(() => undefined)
     throw error
   } finally {
     deadline?.cancel()
@@ -1050,6 +1053,9 @@ const ensureCapacity = async ($: EngineInterface, replacements: Record<string, u
 
 const sessionHead = (raw: unknown, id: string): SessionHead | undefined => {
   if (raw === undefined) return undefined
+  const clock = raw as { v?: number; session_id?: string; retentionOnly?: boolean }
+  if (clock?.v === 1 && clock.session_id === id && clock.retentionOnly === true &&
+      Object.keys(clock).every(key => ['v', 'session_id', 'retentionOnly', 'closedAt'].includes(key))) return undefined
   const head = raw as SessionHead
   if (head?.v !== 1 || head.session_id !== id || typeof head.generation !== 'string' ||
       !Number.isSafeInteger(head.checkpoint?.revision) || head.checkpoint.revision < 1 ||
@@ -1076,6 +1082,35 @@ const preserveVersion = async ($: EngineInterface, id: string, kind: string, val
   const snapshot = { v: 1, session_id: id, kind, value }
   await ensureCapacity($, { [key]: snapshot }, STORE_BUDGET)
   await writeVerified($, key, snapshot)
+}
+
+// TRACK-21 refuter 4: a refusal must not archive a fresh full ledger on every
+// call. Keep the first conflict input for this durable version and baseline.
+const preserveConflict = async ($: EngineInterface, id: string, memory: Ledger, baseline: Baseline | undefined, durable: unknown): Promise<string> => {
+  const key = `r:${id}:conflict-${await checksumOf({ durable, baseline })}`
+  const existing = await $.store.get(key) as { session_id?: string; kind?: string } | undefined
+  if (existing !== undefined) {
+    if (existing.session_id !== id || existing.kind !== 'conflict') throw new Error('conflict archive identity is ambiguous; all inputs were kept')
+    return key
+  }
+  const snapshot = { v: 1, session_id: id, kind: 'conflict', value: { ledger: identifyLedger(memory, id), baseline, durable } }
+  await ensureCapacity($, { [key]: snapshot }, STORE_BUDGET)
+  await writeVerified($, key, snapshot)
+  return key
+}
+
+const adoptAfterConflict = async ($: EngineInterface, id: string, memory: Ledger, baseline: Baseline | undefined, durable: Ledger, checkpoint: Checkpoint | undefined, generation: string | undefined): Promise<string> => {
+  const key = await preserveConflict($, id, memory, baseline, { checkpoint, generation })
+  await update($, ledger, current => {
+    if (!sameValue(current, memory)) throw new Error('ledger changed during conflict recovery; archive was kept')
+    return durable
+  })
+  if (checkpoint !== undefined) savedRevisions.set(id, checkpoint.revision)
+  await update($, durability, current => ({ ...current, memorySession: id, rewindBaseline: undefined,
+    baseline: { session_id: id, ledger: durable, checkpoint, generation } }))
+  $.ui.log(`track: local conflicting rows kept in ${key}; resumed verified durable history`, { to: 'debug' })
+  $.ui.toast(`track: local conflicting rows kept in ${key}; resumed saved history`)
+  return key
 }
 
 const cleanupOwned = async ($: EngineInterface, id: string): Promise<void> => {
@@ -1106,7 +1141,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const owned = await read($, ledger)
     const acknowledged = await read($, durability)
     if (acknowledged.memorySession !== id || owned.session_id !== undefined && owned.session_id !== id ||
-        acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) && acknowledged.rewindBaseline?.session_id !== id && await $.store.get(`s:${id}`) !== undefined) {
+        acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) && await $.store.get(`s:${id}`) !== undefined &&
+        (acknowledged.rewindBaseline?.session_id !== id || !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await $.store.get(`s:${id}`), id) ?? EMPTY_LEDGER, id)))) {
       await resumeLedger($, id)
     }
     try { await cleanupOwned($, id) }
@@ -1136,20 +1172,20 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     if (previous === undefined && head !== undefined &&
         (expected === undefined || expected !== head.checkpoint.revision ||
          (baseline?.generation !== undefined && baseline.generation !== head.generation))) {
-      await preserveVersion($, id, 'memory', { ledger: current, baseline })
-      await preserveVersion($, id, 'newer-head', previousHead)
+      await preserveConflict($, id, memory, baseline, previousHead)
       throw new Error('stale writer revision; newer durable head was kept; its missing body needs recovery')
     }
     if (previous !== undefined && head !== undefined &&
         ((previous as { generation?: string }).generation !== head.generation || !sameValue(previous.checkpoint, head.checkpoint))) throw new Error('durable head/body checkpoint mismatch; both were kept')
     if (previous !== undefined && ((expected !== undefined && expected !== revision) ||
         (baseline?.generation !== undefined && head !== undefined && baseline.generation !== head.generation))) {
-      await preserveVersion($, id, 'memory', { ledger: current, baseline })
-      await preserveVersion($, id, 'newer', previous)
       const durable = savedLedger(previous, id)
       if (durable === undefined) throw new Error('stale writer revision; newer durable ledger was kept')
       try { current = reconcileLedger(baseline?.ledger, durable, current, id) }
-      catch (error) { throw new Error(`stale writer revision; newer durable ledger was kept; ${reason(error)}`) }
+      catch (error) {
+        const archive = await adoptAfterConflict($, id, memory, baseline, identifyLedger(durable, id), previous.checkpoint, head?.generation)
+        throw new Error(`stale writer revision; newer durable ledger was kept; local rows archived in ${archive}; ${reason(error)}`)
+      }
     }
     const missing = previous === undefined && (head !== undefined || (expected ?? 0) > 0 || pending.isUnsaved)
     let priorCheckpoint = previous?.checkpoint ?? head?.checkpoint ?? baseline?.checkpoint
@@ -1251,9 +1287,13 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
           }) } : memory
         let reconciled = isEmpty ? durable : identifyLedger({ ...local, nextQuestionId: nextId }, id)
         if (!isEmpty && !sameValue(reconciled, durable)) {
-          await preserveVersion($, id, 'memory', { ledger: reconciled, baseline: prior })
-          await preserveVersion($, id, 'newer', raw)
-          reconciled = reconcileLedger(prior?.ledger, durable, reconciled, id)
+          try { reconciled = reconcileLedger(prior?.ledger, durable, reconciled, id) }
+          catch (error) {
+            await adoptAfterConflict($, id, memory, prior, durable, raw?.checkpoint ?? head?.checkpoint, head?.generation)
+            $.ui.log(`track: resume conflict: ${reason(error)}`, { to: 'debug' })
+            await publishGate($)
+            return
+          }
         }
         await update($, ledger, current => {
           if (!sameValue(current, memory)) throw new Error('ledger changed during resume; both snapshots were kept')
@@ -1263,6 +1303,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
         if (checkpoint !== undefined) savedRevisions.set(id, checkpoint.revision)
         await update($, durability, current => ({ ...current,
           memorySession: id,
+          rewindBaseline: undefined,
           baseline: { session_id: id, ledger: durable, checkpoint, generation: head?.generation } }))
       } else if (head !== undefined) {
         // A missing body never resets the remembered expected revision to zero.
