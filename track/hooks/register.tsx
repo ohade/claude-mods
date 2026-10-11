@@ -889,8 +889,21 @@ const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
-const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; memorySession?: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
+const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; memorySession?: string | null; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
 const gateWrites = { queue: Promise.resolve() }
+
+// An identity failure must not discard a tracking event. Null records explicitly
+// unknown ownership: a later save archives these rows instead of relabelling them.
+const captureMintOwner = async ($: EngineInterface): Promise<string | undefined> => {
+  try {
+    const session = await $.session.id()
+    return (await read($, durability)).memorySession === null ? undefined : session
+  } catch (error) {
+    await update($, durability, current => current.memorySession === undefined ? { ...current, memorySession: null } : current)
+    $.ui.log(`track: mint identity unavailable; rows kept for owner recovery: ${reason(error)}`, { to: 'debug' })
+    return undefined
+  }
+}
 
 const closeLock = async (stream: LockStream): Promise<void> => { await stream.return({ code: null, signal: 'SIGTERM' }) }
 const guardStates = new WeakMap<LockStream, 'live' | 'closed'>()
@@ -1674,7 +1687,7 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   if (head === '' || head.startsWith('/')) {
     return
   }
-  const session = await $.session.id()
+  const session = await captureMintOwner($)
   const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
   await update($, ledger, l => ({ ...l, session_id: l.session_id ?? session, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
   // The newest input with these words and no row yet takes this row: its identity for a
@@ -2348,7 +2361,7 @@ export const register: Register = on => {
       return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
     }
     if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
-    const session = await $.session.id()
+    const session = await captureMintOwner($)
     let trackedOrder = 0
     let trackedTurnId: string | null = null
     await update($, turn, cur => {
@@ -2481,7 +2494,7 @@ export const register: Register = on => {
     }
     const taskId = String(task.id)
     const subject = headOf(String(e.subject ?? ''))
-    const session = await $.session.id()
+    const session = await captureMintOwner($)
     await update<Ledger>($, ledger, cur => {
       const plan = cur.steps.find(s => s.source === 'plan' && s.taskId === undefined && norm(s.subject) === norm(subject))
       if (plan !== undefined) {
@@ -2541,7 +2554,7 @@ export const register: Register = on => {
     }
     // Two todos whose titles normalize alike get #2, #3 after the id, so mark_step reaches each.
     // A todo written again keeps its clock.
-    const session = await $.session.id()
+    const session = await captureMintOwner($)
     const now = await $.clock.now()
     await update<Ledger>($, ledger, cur => {
       const before = new Map(cur.steps.filter(s => s.source === 'todo').map(s => [s.id, s]))
@@ -2630,7 +2643,7 @@ export const register: Register = on => {
     if (titles.length === 0) {
       return { result: 'No steps given: pass steps as an array of one-line titles.' }
     }
-    const session = await $.session.id()
+    const session = await captureMintOwner($)
     const after = typeof e.after === 'string' && e.after !== '' ? e.after : undefined
     if (after !== undefined) {
       // New work joins a running plan: insert after that step, ids after the highest plan id. The
