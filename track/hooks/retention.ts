@@ -1,9 +1,12 @@
+import { entryBytes, includeIndexSize } from './size-index'
+
 export type RetentionStore = {
   get: (key: string) => Promise<unknown>
   set: (key: string, value: unknown) => Promise<unknown>
   delete: (key: string) => Promise<unknown>
   keys: () => Promise<string[]>
   log: (message: string) => void
+  sizes?: () => Promise<Map<string, number>>
 }
 
 // TRACK-21 (2026-10-11): save-time count eviction removed live session data.
@@ -61,8 +64,8 @@ export const clearOwnedClocks = async (store: RetentionStore, session: string): 
   }
 }
 
-const entryBytes = (key: string, value: unknown): number => new TextEncoder().encode(JSON.stringify({ [key]: value })).length - 2
 const readSizes = async (store: RetentionStore): Promise<Map<string, number>> => {
+  if (store.sizes !== undefined) return store.sizes()
   const sizes = new Map<string, number>()
   for (const key of await store.keys()) {
     const value = await store.get(key)
@@ -76,12 +79,13 @@ const checkSizes = (sizes: Map<string, number>, replacements: Record<string, unk
     if (value === undefined) planned.delete(key)
     else planned.set(key, entryBytes(key, value))
   }
+  includeIndexSize(planned)
   const bytes = 2 + [...planned.values()].reduce((total, size) => total + size, 0) + Math.max(0, planned.size - 1)
   if (bytes >= budget) throw new Error('capacity: protected or unexpired history fills the UTF-8 store budget; nothing was pruned')
 }
 
-const changeRecord = async (store: RetentionStore, session: string, entries: Array<[string, unknown]>, changes: Array<[string, unknown]>, sizes: Map<string, number>, canStart: () => boolean): Promise<void> => {
-  if (changes.every(([key, value], index) => key === entries[index][0] && sameRecord(value, entries[index][1]))) return
+const changeRecord = async (store: RetentionStore, session: string, entries: Array<[string, unknown]>, changes: Array<[string, unknown]>, sizes: Map<string, number>, canStart: () => boolean): Promise<boolean> => {
+  if (changes.every(([key, value], index) => key === entries[index][0] && sameRecord(value, entries[index][1]))) return false
   const key = recoveryKey(session)
   const recovery: CleanupRecovery = { v: 1, session_id: session,
     entries: entries.map(([key, before], index) => ({ key, before, after: changes[index][1] })) }
@@ -95,7 +99,7 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
     if (value === undefined) sizes.delete(key)
     else sizes.set(key, entryBytes(key, value))
   }
-  if (!canStart()) return
+  if (!canStart()) return false
   await write(key, recovery)
   try {
     for (const [key, value] of changes) {
@@ -103,6 +107,7 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
       await write(key, value)
     }
     await write(key, undefined)
+    return true
   } catch (error) {
     const failures: string[] = []
     for (const [index, [key, value]] of entries.entries()) {
@@ -154,7 +159,10 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
     } catch (error) {
       failures.push(String(error))
       store.log(`track: cleanup keeps pending recovery ${session}: ${String(error)}`)
-    } finally { await guard?.release() }
+    } finally {
+      try { await guard?.release() }
+      catch (error) { failures.push(String(error)); store.log(`track: cleanup guard release failed: ${String(error)}`) }
+    }
   }
   // A backwards wall clock cannot accelerate expiry or repeatedly run cleanup.
   const isDue = typeof previous?.lastCleanup !== 'number' || now - previous.lastCleanup >= HOUR
@@ -171,7 +179,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       catch (error) { store.log(`track: cleanup keeps ${session}: lease ambiguous: ${String(error)}`); cursor = session; continue }
       // Cleaners never rewrite LIVE or unknown records. Only an owner clears
       // its own clocks, under its retained lease, including on resume.
-      if (guard.state !== 'closed') { verified++; cursor = session; continue }
+      if (guard.state !== 'closed') { cursor = session; continue }
       if (!canStart()) break
       const entries: Array<[string, unknown]> = []
       for (const key of ownedKeys(keys, session)) entries.push([key, await store.get(key)])
@@ -188,13 +196,13 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       const expired = closedAt !== undefined && now - closedAt >= CLOSED_TTL
       const changes: Array<[string, unknown]> = entries.map(([key, value]) => {
         if (expired) return [key, undefined]
+        if (closedAt !== undefined && (value as Value).session_id === session && (value as Value).closedAt === closedAt) return [key, value]
         const { closedAt: _old, ...record } = value as Value
         return [key, { ...record, session_id: session, closedAt: closedAt ?? now }]
       })
       if (sizes === undefined) sizes = await readSizes(store)
       if (!canStart()) break
-      await changeRecord(store, session, entries, changes, sizes, canStart)
-      verified++
+      if (await changeRecord(store, session, entries, changes, sizes, canStart)) verified++
       cursor = session
     } catch (error) {
       failures.push(String(error))
@@ -202,7 +210,8 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       cursor = session
       store.log(`track: cleanup keeps ${session}; deferred: ${String(error)}`)
     } finally {
-      await guard?.release()
+      try { await guard?.release() }
+      catch (error) { failures.push(String(error)); store.log(`track: cleanup guard release failed: ${String(error)}`) }
     }
   }
   if (verified > 0 || cursor !== (previous?.cursor ?? '') || recoveryCursor !== (previous?.recoveryCursor ?? '')) {

@@ -10,11 +10,19 @@ const canonical = (value: unknown): string | undefined => JSON.stringify(value, 
     ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left.localeCompare(right))) : entry)
 const equal = (left: unknown, right: unknown): boolean => canonical(left) === canonical(right)
 
+export const assertLedgerOwner = (value: unknown, session: string): void => {
+  const record = value as Record<string, unknown> | undefined
+  const rows = (value: unknown): unknown[] => Array.isArray(value) ? value : []
+  const restores = rows(record?.restores)
+  const owned = [value, ...rows(record?.prompts), ...rows(record?.questions), ...rows(record?.steps),
+    ...rows(record?.withdrawn), ...restores,
+    ...restores.flatMap(row => rows((row as Record<string, unknown> | null)?.questions))]
+  if (owned.some(row => row !== null && typeof row === 'object' &&
+      (row as Record<string, unknown>).session_id !== undefined && (row as Record<string, unknown>).session_id !== session)) throw new Error('ledger identity is ambiguous; original rows were kept')
+}
+
 export const identifyLedger = (value: Ledger, session: string): Ledger => {
-  const owned = [value, ...value.prompts, ...value.questions, ...value.steps,
-    ...(value.withdrawn ?? []), ...(value.restores ?? []),
-    ...(value.restores ?? []).flatMap(row => row.questions)]
-  if (owned.some(row => row.session_id !== undefined && row.session_id !== session)) throw new Error('ledger identity is ambiguous; original rows were kept')
+  assertLedgerOwner(value, session)
   return {
   ...value,
   session_id: session,

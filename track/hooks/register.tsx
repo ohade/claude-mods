@@ -8,7 +8,8 @@ import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { RetentionStore } from './retention'
-import { identifyLedger, reconcileLedger } from './reconcile'
+import { indexedStore } from './size-index'
+import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 
 const PANE = 'track'
@@ -797,7 +798,7 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   )) return true
   // Capture the pre-rewind rows in memory. The save path verifies this
   // snapshot against the durable body under its locks before adopting it.
-  await update($, durability, cur => ({ ...cur, rewindBaseline: cur.rewindBaseline?.session_id === session ? cur.rewindBaseline : { session_id: session, ledger: l } }))
+  await update($, durability, cur => ({ ...cur, rewindBaseline: { session_id: session, ledger: l } }))
   const observed = new Map(l.questions.map(q => [q.id, q]))
   let changed = false
   await update<Ledger>($, ledger, cur => {
@@ -888,7 +889,7 @@ const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
-const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'> })
+const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
 const gateWrites = { queue: Promise.resolve() }
 
 const closeLock = async (stream: LockStream): Promise<void> => { await stream.return({ code: null, signal: 'SIGTERM' }) }
@@ -972,12 +973,18 @@ const publishGate = async ($: EngineInterface): Promise<void> => {
   await gateWrites.queue
 }
 
-// Rebuild the index from actual bodies, including records missing from the cache.
+// Existing entries are verified save metadata. Read only newly discovered
+// bodies; capacity uses the separate byte-size index for all stored keys.
 const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
   const keys = await $.store.keys()
+  const cached = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
   const index: SavedIndex = {}
   for (const key of keys.filter(k => k.startsWith('s:'))) {
     const id = key.slice(2)
+    if (cached?.[id] !== undefined && Number.isFinite(cached[id].at) && Number.isSafeInteger(cached[id].bytes) && cached[id].bytes >= 0) {
+      index[id] = cached[id]
+      continue
+    }
     const bucket = (await $.store.get(key)) as { savedAt?: unknown; ledger?: Ledger } | undefined
     const l = bucket?.ledger
     const unfinished = !Array.isArray(l?.questions) || !Array.isArray(l?.steps) || l.questions.some(q => q.cleared !== true && q.status !== 'answered') || l.steps.some(s => s.cleared !== true && s.status !== 'completed')
@@ -997,8 +1004,8 @@ const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
     const current = await $.store.get(key)
     if (!sameValue(current, recovery.previous)) {
       if (!sameValue(current, recovery.bucket)) throw new Error('save recovery kept a changed durable ledger; reload this session before writing')
-      if (recovery.previous === undefined) await $.store.delete(key)
-      else await $.store.set(key, recovery.previous)
+      if (recovery.previous === undefined) await retentionStore($).delete(key)
+      else await retentionStore($).set(key, recovery.previous)
       if (!sameValue(await $.store.get(key), recovery.previous)) throw new Error('save recovery read-back did not match the prior ledger')
     }
   } catch (error) { failures.push(reason(error)) }
@@ -1016,8 +1023,8 @@ const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
       // The index is a cache. Rebuild a changed one from actual buckets, keeping
       // another session's entries instead of treating metadata as ownership.
       const restoredIndex = sameValue(index, recovery.index) ? recovery.previousIndex : await savedIndex($)
-      if (restoredIndex === undefined) await $.store.delete(SAVED_INDEX)
-      else await $.store.set(SAVED_INDEX, restoredIndex)
+      if (restoredIndex === undefined) await retentionStore($).delete(SAVED_INDEX)
+      else await retentionStore($).set(SAVED_INDEX, restoredIndex)
       if (!sameValue(await $.store.get(SAVED_INDEX), restoredIndex)) throw new Error('save recovery could not verify the rebuilt index')
     }
   } catch (error) { failures.push(reason(error)) }
@@ -1027,7 +1034,7 @@ const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
 
 // The hooks compiler requires engine calls to stay in this module. Imported
 // retention logic receives ordinary callbacks, never the engine interface.
-const retentionStore = ($: EngineInterface): RetentionStore => ({
+const retentionStore = ($: EngineInterface): RetentionStore => indexedStore({
   get: key => $.store.get(key),
   set: (key, value) => $.store.set(key, value),
   delete: key => $.store.delete(key),
@@ -1048,6 +1055,20 @@ const sessionHead = (raw: unknown, id: string): SessionHead | undefined => {
       !Number.isSafeInteger(head.checkpoint?.revision) || head.checkpoint.revision < 1 ||
       typeof head.checkpoint.checksum !== 'string') throw new Error('durable session head is invalid; history was kept')
   return head
+}
+
+// Under the owner's lease and store lock, a validated next-revision body
+// is the completed side of a crash between the body and head writes.
+const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
+  const body = await $.store.get(`s:${id}`) as { v?: number; session_id?: string; generation?: string; checkpoint?: Checkpoint; ledger?: Ledger } | undefined
+  const head = sessionHead(await $.store.get(`h:${id}`), id)
+  if (body === undefined) return
+  if (body.session_id !== undefined && body.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
+  assertLedgerOwner(body.ledger, id)
+  if (head === undefined || sameValue(body.checkpoint, head.checkpoint) && body.generation === head.generation) return
+  if (body.v !== 1 || body.ledger === undefined || body.generation !== head.generation || body.checkpoint?.revision !== head.checkpoint.revision + 1 ||
+      !matchesCheckpoint(await describeCheckpoint(body.ledger, id, body.checkpoint), body.checkpoint)) throw new Error('durable head/body checkpoint mismatch; both were kept')
+  await writeVerified($, `h:${id}`, { v: 1, session_id: id, generation: head.generation, checkpoint: body.checkpoint })
 }
 
 const preserveVersion = async ($: EngineInterface, id: string, kind: string, value: unknown): Promise<void> => {
@@ -1071,18 +1092,26 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
   let lock: LockStream | undefined
   let id: string | undefined
   try {
+    const intent = await read($, durability)
     id = await $.session.id()
     await ensureWriter($, id)
     lock = await acquireLock($, 'write', id)
     await recoverSave($, id)
     if (await recoverCleanup(retentionStore($), id)) await resumeLedger($, id)
     else await clearOwnedClocks(retentionStore($), id)
+    await repairHead($, id)
+    const owned = await read($, ledger)
+    const acknowledged = await read($, durability)
+    if (owned.session_id !== undefined && owned.session_id !== id ||
+        acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) && acknowledged.rewindBaseline?.session_id !== id && await $.store.get(`s:${id}`) !== undefined) {
+      await resumeLedger($, id)
+    }
     try { await cleanupOwned($, id) }
     catch (error) { $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
-    const pending = await read($, durability)
+    const pending = { ...await read($, durability), closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }
     const preference = pending.closedByPerson
     if (preference !== undefined) {
-      await $.store.set('closedByPerson', preference)
+      await retentionStore($).set('closedByPerson', preference)
       if (await $.store.get('closedByPerson') !== preference) throw new Error('pane preference read-back did not match')
     }
     const memory = await read($, ledger)
@@ -1094,7 +1123,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const revision = previous?.checkpoint?.revision ?? head?.checkpoint.revision ?? 0
     let baseline = pending.baseline?.session_id === id ? pending.baseline : undefined
     if (baseline === undefined && pending.rewindBaseline?.session_id === id && previous !== undefined) {
-      const restored = savedLedger(previous)
+      const restored = savedLedger(previous, id)
       if (restored === undefined || !sameValue(identifyLedger(pending.rewindBaseline.ledger, id), identifyLedger(restored, id))) throw new Error('rewind baseline differs; resume before saving; durable ledger was kept')
       baseline = { session_id: id, ledger: identifyLedger(restored, id), checkpoint: previous.checkpoint, generation: head?.generation }
     }
@@ -1114,7 +1143,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
         (baseline?.generation !== undefined && head !== undefined && baseline.generation !== head.generation))) {
       await preserveVersion($, id, 'memory', { ledger: current, baseline })
       await preserveVersion($, id, 'newer', previous)
-      const durable = savedLedger(previous)
+      const durable = savedLedger(previous, id)
       if (durable === undefined) throw new Error('stale writer revision; newer durable ledger was kept')
       try { current = reconcileLedger(baseline?.ledger, durable, current, id) }
       catch (error) { throw new Error(`stale writer revision; newer durable ledger was kept; ${reason(error)}`) }
@@ -1137,11 +1166,11 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
     await ensureCapacity($, { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }, STORE_BUDGET)
     saveRecoveries.set(id, { previous, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
-    await $.store.set(`s:${id}`, bucket)
+    await retentionStore($).set(`s:${id}`, bucket)
     const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
     if (JSON.stringify(verified) !== JSON.stringify(bucket)) throw new Error('save read-back did not match the acknowledged ledger')
     await writeVerified($, `h:${id}`, nextHead)
-    await $.store.set(SAVED_INDEX, index)
+    await retentionStore($).set(SAVED_INDEX, index)
     if (!sameValue(await $.store.get(SAVED_INDEX), index)) throw new Error('save index read-back did not match')
     savedRevisions.set(id, bucket.checkpoint.revision)
     saveRecoveries.delete(id)
@@ -1183,20 +1212,40 @@ const savePanePreference = async ($: EngineInterface, closedByPerson: boolean): 
 const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
       await recoverCleanup(retentionStore($), id)
       await clearOwnedClocks(retentionStore($), id)
+      await repairHead($, id)
       const raw = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string } | undefined
       const head = sessionHead(await $.store.get(`h:${id}`), id)
       if (raw?.session_id !== undefined && raw.session_id !== id) throw new Error('resume record identity is ambiguous')
       if (raw !== undefined && head !== undefined &&
           ((raw as { generation?: string }).generation !== head.generation || !sameValue(raw.checkpoint, head.checkpoint))) throw new Error('durable head/body checkpoint mismatch; both were kept')
-      const restored = savedLedger(raw)
+      const restored = savedLedger(raw, id)
       if (raw !== undefined && restored === undefined) throw new Error('resume record is incompatible; current rows were kept')
-      const memory = await read($, ledger)
+      let memory = await read($, ledger)
+      if (memory.session_id !== undefined && memory.session_id !== id) {
+        await preserveVersion($, id, 'session-switch', { source_session: memory.session_id, ledger: memory })
+        const stale = memory
+        await update($, ledger, current => {
+          if (!sameValue(current, stale)) throw new Error('ledger changed during session switch; archived snapshot was kept')
+          return { ...EMPTY_LEDGER, session_id: id }
+        })
+        await update($, durability, () => ({ isUnsaved: false, reason: '' }))
+        memory = await read($, ledger)
+      }
       const pending = await read($, durability)
       const prior = pending.baseline?.session_id === id ? pending.baseline : undefined
       if (restored !== undefined) {
         const durable = identifyLedger(restored, id)
         const isEmpty = memory.questions.length === 0 && memory.steps.length === 0 && memory.prompts.length === 0
-        let reconciled = isEmpty ? durable : identifyLedger(memory, id)
+        // Rows minted after a failed initial resume have no durable identity
+        // yet. Allocate them beyond the saved IDs before the three-way merge.
+        let nextId = Math.max(memory.nextQuestionId, durable.nextQuestionId)
+        const local = prior === undefined && memory.session_id === undefined ? { ...memory,
+          questions: memory.questions.map(row => {
+            const saved = durable.questions.find(saved => saved.id === row.id)
+            const fresh = pending.unverifiedQuestions?.some(minted => minted.id === row.id && minted.at === row.at && minted.head === row.head)
+            return saved !== undefined && fresh && !sameValue(row, saved) ? { ...row, id: nextId++ } : row
+          }) } : memory
+        let reconciled = isEmpty ? durable : identifyLedger({ ...local, nextQuestionId: nextId }, id)
         if (!isEmpty && !sameValue(reconciled, durable)) {
           await preserveVersion($, id, 'memory', { ledger: reconciled, baseline: prior })
           await preserveVersion($, id, 'newer', raw)
@@ -1499,12 +1548,13 @@ const savedStep = (row: unknown): Step | undefined => {
 // A saved bucket's register, or undefined when it is not one of this version: a resume reads what
 // an earlier version or a damaged store left. Only well-formed rows are kept, and the next
 // question id stays above every id kept or withdrawn.
-const savedLedger = (raw: unknown): Ledger | undefined => {
+const savedLedger = (raw: unknown, owner?: string): Ledger | undefined => {
   const bucket = raw as { v?: unknown; ledger?: Record<string, unknown> | null } | undefined
   const l = bucket?.ledger
   if (bucket?.v !== 1 || typeof l !== 'object' || l === null) {
     return undefined
   }
+  if (owner !== undefined) assertLedgerOwner(l, owner)
   const rows = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
   const questions = capRows(rows(l.questions).map(savedQuestion).filter(isDefined), MAX_QUESTIONS, q => q.status === 'answered')
   const withdrawn = rows(l.withdrawn).filter(
@@ -2280,7 +2330,12 @@ export const register: Register = on => {
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
     await update($, scrollAt, cur => ({ ...cur, questions: null }))
-    if (minted !== undefined) await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: minted.id })
+    if (minted !== undefined) {
+      const created = minted
+      await update($, durability, cur => cur.baseline !== undefined ? cur : { ...cur,
+        unverifiedQuestions: [...(cur.unverifiedQuestions ?? []), { id: created.id, at: created.at, head: created.head }] })
+      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: minted.id })
+    }
 
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered with id ${minted?.id}, status "answered", and answer_text containing the completed answer.` }
@@ -2574,7 +2629,7 @@ export const register: Register = on => {
       return failed(`track: "${truncate(from, 60)}" is not a session id; nothing changed.`)
     }
     const saved = (await $.store.get(`s:${from}`)) as { checkpoint?: Checkpoint; ledger?: { steps?: unknown; questions?: unknown } } | undefined
-    const source = savedLedger(saved)
+    const source = savedLedger(saved, from)
     let checkpoint: Checkpoint | undefined
     if (expected !== undefined) {
       if (source === undefined || saved?.checkpoint === undefined) return failed('source checkpoint is missing or incompatible')
