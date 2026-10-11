@@ -20,6 +20,7 @@ const WORK_MS = 250
 const CLEANUP = 'cleanup'
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 type Guard = { state: 'closed' | 'live'; release: () => Promise<void> }
+type Probe = (session: string) => Promise<Guard>
 type Value = Record<string, unknown>
 type RecoveryEntry = { key: string; before: unknown; missing?: true; after?: unknown; stamp?: { session_id: string; closedAt: number } }
 type CleanupRecovery = { v: 1; session_id: string; entries: RecoveryEntry[] }
@@ -37,9 +38,38 @@ export const writeVerified = async (store: RetentionStore, key: string, value: u
 const ownedKeys = (keys: string[], session: string): string[] => keys.filter(key =>
   key === `s:${session}` || key === `h:${session}` || key.startsWith(`r:${session}:`))
 
+// TRACK-21 refuter 6: a switch archive in B's namespace can contain A's
+// unsaved rows. B's CLOSED lease gives no authority to delete a live A's rows.
+const holdArchiveSources = async (store: RetentionStore, intent: ExpiryIntent, guards: Map<string, Guard>, probe: Probe | undefined, canStart: () => boolean): Promise<boolean> => {
+  for (const entry of intent.entries.filter(entry => entry.key.startsWith('r:'))) {
+    if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
+    const archive = await store.get(entry.key) as { kind?: string; value?: { source_session?: unknown; ledger?: { session_id?: unknown } } } | undefined
+    if (archive?.kind !== 'session-switch') continue
+    const source = archive.value?.source_session
+    if (typeof source !== 'string' || !SESSION_ID.test(source) ||
+        archive.value?.ledger?.session_id !== undefined && archive.value.ledger.session_id !== source) {
+      store.log(`track: expiry keeps ${intent.session_id}: session-switch source is unknown or ambiguous`)
+      return false
+    }
+    if (source === intent.session_id || guards.has(source)) continue
+    if (probe === undefined) {
+      store.log(`track: expiry keeps ${intent.session_id}: source ${source} has no lease probe`)
+      return false
+    }
+    if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
+    const guard = await probe(source)
+    guards.set(source, guard)
+    if (guard.state !== 'closed') {
+      store.log(`track: expiry keeps ${intent.session_id}: source ${source} is live or unknown`)
+      return false
+    }
+  }
+  return true
+}
+
 // Expired data is already committed for deletion. A small intent finishes
 // after a crash, without duplicating the body into the rollback reserve.
-const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true): Promise<boolean> => {
+const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true, probe?: Probe): Promise<boolean> => {
   const key = recoveryKey(intent.session_id)
   const matches = async (entry: ExpiryIntent['entries'][number]): Promise<boolean> => {
     const value = await store.get(entry.key)
@@ -55,18 +85,29 @@ const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStar
   const listed = new Set(intent.entries.map(entry => entry.key))
   if (ownedKeys(await store.keys(), intent.session_id).some(key => !listed.has(key))) return cancel()
   for (const entry of intent.entries) if (!(await matches(entry))) return cancel()
-  for (const entry of intent.entries) {
-    if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
-    if (!(await matches(entry))) return cancel()
-    await writeVerified(store, entry.key, undefined)
+  const guards = new Map<string, Guard>()
+  try {
+    if (!(await holdArchiveSources(store, intent, guards, probe, canStart))) return false
+    for (const entry of intent.entries) {
+      if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
+      if (!(await matches(entry))) return await cancel()
+      await writeVerified(store, entry.key, undefined)
+    }
+    await writeVerified(store, key, undefined)
+    return true
+  } finally {
+    const failures: string[] = []
+    for (const guard of guards.values()) {
+      try { await guard.release() }
+      catch (error) { failures.push(String(error)); store.log(`track: archive source guard release failed: ${String(error)}`) }
+    }
+    if (failures.length) throw new Error(failures.join('; '))
   }
-  await writeVerified(store, key, undefined)
-  return true
 }
 
 // Caller holds either its own lease or a retained CLOSED guard, plus the store
 // lock. Resume uses this before its first body read, not on the next save.
-export const recoverCleanup = async (store: RetentionStore, session: string, options: { owner?: boolean; canStart?: () => boolean } = {}): Promise<boolean> => {
+export const recoverCleanup = async (store: RetentionStore, session: string, options: { owner?: boolean; canStart?: () => boolean; probe?: Probe } = {}): Promise<boolean> => {
   const key = recoveryKey(session)
   const recovery = await store.get(key) as CleanupRecovery | ExpiryIntent | undefined
   if (recovery === undefined) return false
@@ -82,7 +123,7 @@ export const recoverCleanup = async (store: RetentionStore, session: string, opt
       await writeVerified(store, key, undefined)
       return true
     }
-    return finishExpiry(store, recovery, options.canStart)
+    return finishExpiry(store, recovery, options.canStart, options.probe)
   }
   if (!SESSION_ID.test(session) || recovery?.v !== 1 || recovery.session_id !== session ||
       !Array.isArray(recovery.entries) || recovery.entries.some(entry =>
@@ -193,7 +234,7 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
   }
 }
 
-export const cleanupRecords = async (store: RetentionStore, caller: string, probe: (session: string) => Promise<Guard>): Promise<void> => {
+export const cleanupRecords = async (store: RetentionStore, caller: string, probe: Probe): Promise<void> => {
   const now = Date.now()
   const canStart = () => Date.now() - now < WORK_MS
   let visited = 0
@@ -220,9 +261,10 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       if (guard.state !== 'closed') continue
       // Rollback may finish past the budget; expiry must check before each
       // new delete. The returning caller cancels its own expiry instead.
-      await recoverCleanup(store, session, { owner: session === caller, canStart })
-      visited++
-      recovered.add(session)
+      if (await recoverCleanup(store, session, { owner: session === caller, canStart, probe })) {
+        visited++
+        recovered.add(session)
+      }
     } catch (error) {
       failures.push(String(error))
       store.log(`track: cleanup keeps pending recovery ${session}: ${String(error)}`)
@@ -274,7 +316,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
         checkSizes(sizes, { [recoveryKey(session)]: intent }, 4 * 1024 * 1024)
         if (!canStart()) break
         await writeVerified(store, recoveryKey(session), intent)
-        if (await finishExpiry(store, intent, canStart)) verified++
+        if (await finishExpiry(store, intent, canStart, probe)) verified++
         sizes = undefined // Finished expiry changed several indexed keys.
       } else if (closedAt === undefined) {
         const stamped = { ...(head ?? { v: 1, retentionOnly: true }), session_id: session, closedAt: closedAt ?? now }

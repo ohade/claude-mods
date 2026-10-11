@@ -1156,8 +1156,10 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const owned = await read($, ledger)
     const acknowledged = await read($, durability)
     if (acknowledged.memorySession !== id || owned.session_id !== undefined && owned.session_id !== id ||
-        acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) && await $.store.get(`s:${id}`) !== undefined &&
-        (acknowledged.rewindBaseline?.session_id !== id || !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await $.store.get(`s:${id}`), id) ?? EMPTY_LEDGER, id)))) {
+        acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) &&
+        (await $.store.get(`s:${id}`) !== undefined || await $.store.get(`h:${id}`) !== undefined) &&
+        (acknowledged.rewindBaseline?.session_id !== id || await $.store.get(`s:${id}`) === undefined ||
+         !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await $.store.get(`s:${id}`), id) ?? EMPTY_LEDGER, id)))) {
       await resumeLedger($, id)
     }
     try { await cleanupOwned($, id) }
