@@ -17,8 +17,10 @@ test('TRACK-21 first closed sighting stamps closure without expiring old unfinis
   on('turn.complete', (_, e) => ({ text: e.answer }))
   await save($)
   const retained = store.held.get(`s:${FOREIGN}`) as { closedAt?: number; session_id?: string; ledger: unknown }
-  expect(retained.closedAt).toBeGreaterThan(0)
-  expect(retained.session_id).toBe(FOREIGN)
+  const head = store.held.get(`h:${FOREIGN}`) as { closedAt?: number; session_id?: string }
+  expect(head.closedAt).toBeGreaterThan(0)
+  expect(head.session_id).toBe(FOREIGN)
+  expect(retained).toEqual(foreign)
   expect(retained.ledger).toEqual(foreign.ledger)
 })
 

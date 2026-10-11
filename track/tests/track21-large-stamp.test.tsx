@@ -8,14 +8,18 @@ test('TRACK-21 a permitted large closure stamp preserves the exact body payload'
   atomStore(on, 'ledger', EMPTY)
   const padding = 'p'.repeat(1486000)
   const beforeHash = await checksumOf(padding)
-  const store = pluginStore(on, { [`s:${FOREIGN}`]: { v: 1, savedAt: 1, ledger: EMPTY, padding } }, undefined, { guardStates: { [FOREIGN]: 'closed' } })
+  const before = { v: 1, savedAt: 1, ledger: EMPTY, padding }
+  const bodyHash = await checksumOf(before)
+  const store = pluginStore(on, { [`s:${FOREIGN}`]: before }, undefined, { guardStates: { [FOREIGN]: 'closed' } })
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(receipt.ok).toBe(true)
   const after = store.held.get(`s:${FOREIGN}`) as any
-  expect(after.session_id).toBe(FOREIGN)
-  expect(typeof after.closedAt).toBe('number')
+  const head = store.held.get(`h:${FOREIGN}`) as any
+  expect(head.session_id).toBe(FOREIGN)
+  expect(typeof head.closedAt).toBe('number')
+  expect(await checksumOf(after)).toBe(bodyHash)
   expect(await checksumOf(after.padding)).toBe(beforeHash)
   expect(store.held.has(`cleanup:${FOREIGN}`)).toBe(false)
   expect(store.held.has(`s:${SESSION}`)).toBe(true)

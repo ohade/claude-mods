@@ -39,14 +39,16 @@ test('TRACK-21 failed resume cannot authorize replacing an existing durable ledg
 test('TRACK-21 foreign cleanup reserve exhaustion does not block the caller checkpoint', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
   const foreign = { v: 1, savedAt: 1, ledger: EMPTY, padding: 'p'.repeat(1486000) }
-  // Compact stamp journals need additional protected history to exhaust
-  // reserve: ordinary saves fit below 3 MiB; journal + body exceeds 4 MiB.
-  const store = pluginStore(on, { [`s:${FOREIGN}`]: foreign, protected: { padding: 'p'.repeat(1300000) } }, undefined, { guardStates: { [FOREIGN]: 'closed' } })
+  // Head-only stamping journals the head, so an oversized head plus protected
+  // history is required to exercise reserve exhaustion.
+  const body = { v: 1, ledger: EMPTY }
+  const store = pluginStore(on, { [`s:${FOREIGN}`]: body, [`h:${FOREIGN}`]: foreign, protected: { padding: 'p'.repeat(1300000) } }, undefined, { guardStates: { [FOREIGN]: 'closed' } })
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   expect((await checkpoint($)).ok).toBe(true)
   expect((await checkpoint($)).ok).toBe(true)
-  expect(store.held.get(`s:${FOREIGN}`)).toEqual(foreign)
+  expect(store.held.get(`h:${FOREIGN}`)).toEqual(foreign)
+  expect(store.held.get(`s:${FOREIGN}`)).toEqual(body)
   expect(store.held.has(`s:${SESSION}`)).toBe(true)
 })
 

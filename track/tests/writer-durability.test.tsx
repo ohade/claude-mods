@@ -94,19 +94,21 @@ test('an unverified foreign history write remains pending without blocking the c
   logs(on)
   // The removed count-pruner no longer writes history-0. Exercise the same
   // unverified foreign write through retained-lease closure stamping instead.
-  store.held.set(`s:${foreign}`, { v: 1, savedAt: 0, ledger: { ...EMPTY } })
-  store.faults.alteredAfterSet = `s:${foreign}`
+  const body = { v: 1, savedAt: 0, ledger: { ...EMPTY } }
+  store.held.set(`s:${foreign}`, body)
+  store.faults.alteredAfterSet = `h:${foreign}`
   // TRACK-21 Refuter H2 (2026-10-11): a foreign cleanup error must preserve
   // its recovery journal while the independently verified caller save proceeds.
   const saved = await $.tool.call({ tool: 'mcp__track__track_question', summary: 'History verification failed' } as never)
   expect(JSON.stringify(saved)).not.toContain('unsaved')
-  const unverified = store.held.get(`s:${foreign}`)
+  const unverified = store.held.get(`h:${foreign}`)
   expect((unverified as any).changedByStore).toBe(true)
   const journal = store.held.get(`cleanup:${foreign}`)
   expect(journal).toBeDefined()
   const retried = JSON.parse((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result as string)
   expect(retried.ok).toBe(true)
-  expect(store.held.get(`s:${foreign}`)).toEqual(unverified)
+  expect(store.held.get(`h:${foreign}`)).toEqual(unverified)
+  expect(store.held.get(`s:${foreign}`)).toEqual(body)
   expect(store.held.get(`cleanup:${foreign}`)).toEqual(journal)
   expect((store.held.get(`s:${SESSION}`) as any).ledger.questions.map((q: any) => q.head)).toEqual(['History verification failed'])
 })

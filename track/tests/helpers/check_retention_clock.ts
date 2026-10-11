@@ -28,7 +28,8 @@ check('first CLOSED starts seven full days; exact boundary expires body/head/rec
   const { store, values } = makeStore({ [`s:${id(1)}`]: record, [`h:${id(1)}`]: record, [`r:${id(1)}:old`]: record })
   const start = now
   await cleanupRecords(store, caller, closed)
-  assert.equal((values.get(`s:${id(1)}`) as any).closedAt, start)
+  assert.equal((values.get(`h:${id(1)}`) as any).closedAt, start)
+  assert.deepEqual(values.get(`s:${id(1)}`), record)
   assert.deepEqual((values.get(`s:${id(1)}`) as any).checkpoint, { revision: 7 })
   now = start + CLOSED_TTL - 1
   await cleanupRecords(store, caller, closed)
@@ -83,9 +84,10 @@ check('elapsed budget stops starting new targets after one slow probe', async ()
 check('failed mutation cannot publish lastCleanup', async () => {
   const { store, values } = makeStore({ [`s:${id(4)}`]: { v: 1, ledger: {} } })
   const set = store.set
-  store.set = async (key, value) => { if (key === `s:${id(4)}`) throw new Error('write refused'); return set(key, value) }
+  store.set = async (key, value) => { if (key === `h:${id(4)}`) throw new Error('write refused'); return set(key, value) }
   await assert.rejects(cleanupRecords(store, caller, closed), /write refused/)
   assert.equal((values.get('cleanup') as any)?.lastCleanup, undefined)
+  assert.deepEqual(values.get(`s:${id(4)}`), { v: 1, ledger: {} })
 })
 check('durable rollback recovery obeys the same elapsed work budget', async () => {
   const initial: Record<string, unknown> = {}
