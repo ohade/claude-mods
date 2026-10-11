@@ -440,3 +440,27 @@ test("a folded group holding the reply's first tool call draws the pictures abov
   expect((await folded.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
   expect(await unfolded.findAll({ type: 'Image' })).toHaveLength(0)
 })
+
+test("a reply row another mod draws on its own leaves the pictures to the next row that draws here", async ($, on) => {
+  standInForSavedPictures(on, [], [], [5])
+  standInForRows(on)
+
+  await settle(
+    $.command.run({ command: 'recall', args: 'test [Image #5]', origin: { kind: 'composer' }, presentation: PRESENTATION }),
+  )
+  // Live, the track mod draws its own question row and never hands it on, so
+  // this mod's hook never runs for it (2026-10-11, session 4c6d4018).
+  await appendReply($, 'f2000000-0000-4000-8000-000000000001', [
+    { type: 'tool_use', id: 'toolu_tracked', name: 'mcp__track__track_question', input: {} },
+  ])
+  await appendReply($, 'f2000000-0000-4000-8000-000000000002', [
+    { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'ls' } },
+  ])
+
+  const bash = await $.ui.mount(toolGroup(['toolu_bash'], false))
+  // Drawn once: the row that took them keeps them; another row does not.
+  const later = await $.ui.mount(toolUse('toolu_tracked'))
+
+  expect((await bash.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
+  expect(await later.findAll({ type: 'Image' })).toHaveLength(0)
+})

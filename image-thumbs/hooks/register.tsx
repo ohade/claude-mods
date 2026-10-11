@@ -14,6 +14,7 @@ const USED = { plugin: 'image-thumbs', key: 'used' } as const
 const SUBMITTED = { plugin: 'image-thumbs', key: 'submittedAt' } as const
 const SLASH_PENDING = { plugin: 'image-thumbs', key: 'slashPending' } as const
 const REPLY_PICTURES = { plugin: 'image-thumbs', key: 'replyPictures' } as const
+const TURN_ROWS = { plugin: 'image-thumbs', key: 'turnRows' } as const
 
 // A transcript row is drawn under its uuid with the last group zeroed.
 const requestIdOf = (uuid: string): string => `${uuid.slice(0, 24)}000000000000`
@@ -394,9 +395,21 @@ const fitCells = (size: Size, room: { columns: number; rows: number }): { column
   return { columns: Math.max(2, columns), rows: Math.max(1, rows) }
 }
 
-// The slash command pictures tied to any of these reply rows.
+// The slash command pictures a reply row took when it first drew.
 const replyPictures = async ($: EngineInterface, ids: string[]): Promise<number[]> =>
   (await Promise.all(ids.map(async id => (await $.state.get({ ...REPLY_PICTURES, id })).value ?? []))).flat()
+
+// The id of a reply row that may still take the waiting pictures: one of the
+// turn's rows stored since the slash command ran, while they wait.
+const claimableId = async ($: EngineInterface, ids: string[]): Promise<string | undefined> => {
+  const { value: pending = [] } = await $.state.get(SLASH_PENDING)
+  if (pending.length === 0) {
+    return undefined
+  }
+  const { value: rows = [] } = await $.state.get(TURN_ROWS)
+
+  return ids.find(id => rows.includes(id))
+}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -457,20 +470,24 @@ export const register: Register = on => {
       await storeSavedThumbs($, e.args)
       const stored = (await Promise.all(named.map(async n => ((await isStored($, n)) ? [n] : [])))).flat()
       await $.state.set(SLASH_PENDING, stored)
+      await $.state.set(TURN_ROWS, [])
     }
 
     return next(e)
   })
 
-  // The reply's first row that draws: a text block's, under the row's id, or a
-  // tool call's, under its tool_use id. Thinking draws no row of its own.
+  // The reply's rows, as each is stored: a text block's under the row's id, a
+  // tool call's under its tool_use id. Thinking draws no row of its own.
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const { value: pending = [] } = await $.state.get(SLASH_PENDING)
-    const first = e.message.content.find(block => block.type === 'text' || block.type === 'tool_use')
-    if (pending.length > 0 && first !== undefined) {
-      const id = first.type === 'tool_use' ? String(first.id) : requestIdOf(e.uuid)
-      await $.state.set({ ...REPLY_PICTURES, id }, pending)
-      await $.state.set(SLASH_PENDING, [])
+    if (pending.length > 0) {
+      const ids = e.message.content.flatMap(block =>
+        block.type === 'tool_use' ? [String(block.id)] : block.type === 'text' ? [requestIdOf(e.uuid)] : [],
+      )
+      if (ids.length > 0) {
+        const { value: rows = [] } = await $.state.get(TURN_ROWS)
+        await $.state.set(TURN_ROWS, [...rows, ...ids])
+      }
     }
 
     return next(e)
@@ -481,6 +498,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId === undefined) {
       await $.state.set(SLASH_PENDING, [])
+      await $.state.set(TURN_ROWS, [])
     }
 
     return next(e)
@@ -515,7 +533,21 @@ export const register: Register = on => {
   // pane: a click a Client posts counts as code, and the engine seats a pane
   // code opens only from 144 columns.
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { toggle?: unknown; repaint?: unknown } | null
+    const data = e.data as { toggle?: unknown; repaint?: unknown; claim?: unknown } | null
+    // A reply row's claim area, on the row's first drawing here
+    // (claim-area.ts): the first to claim takes the waiting pictures.
+    if (typeof data?.claim === 'string') {
+      const id = data.claim
+      const { value: pending = [] } = await $.state.get(SLASH_PENDING)
+      const { value: rows = [] } = await $.state.get(TURN_ROWS)
+      if (pending.length > 0 && rows.includes(id)) {
+        await $.state.set({ ...REPLY_PICTURES, id }, pending)
+        await $.state.set(SLASH_PENDING, [])
+        await $.state.set(TURN_ROWS, [])
+      }
+
+      return {}
+    }
     // A click area asking, after its first drawing, for its picture to be
     // drawn again under a new key (click-area.ts).
     if (typeof data?.repaint === 'number') {
@@ -559,23 +591,36 @@ export const register: Register = on => {
     // a tool call, a folded group of calls) by the slash command pictures
     // tied to it; an unfolded group leaves them to its own ToolUse rows.
     const isReply = e.component !== 'UserMessage'
+    const rowIds =
+      e.component === 'AssistantMessage'
+        ? [e.requestId]
+        : e.component === 'ToolUse'
+          ? [e.props.tool_use_id]
+          : e.component === 'ToolGroup' && !e.props.isExpanded
+            ? e.props.calls.flatMap(call => (call.tool_use_id === undefined ? [] : [call.tool_use_id]))
+            : []
     const numbers =
       e.component === 'UserMessage'
         ? SLASH_ROW.test(e.props.text)
           ? []
           : imageNumbers(e.props.text)
-        : e.component === 'AssistantMessage'
-          ? await replyPictures($, [e.requestId])
-          : e.component === 'ToolUse'
-            ? await replyPictures($, [e.props.tool_use_id])
-            : e.props.isExpanded
-              ? []
-              : await replyPictures(
-                  $,
-                  e.props.calls.flatMap(call => (call.tool_use_id === undefined ? [] : [call.tool_use_id])),
-                )
+        : await replyPictures($, rowIds)
     if (numbers.length === 0) {
-      return next(e)
+      const id = isReply ? await claimableId($, rowIds) : undefined
+      if (id === undefined) {
+        return next(e)
+      }
+      const row = await next(e)
+      const { Box, Client } = $.ui.resolve(e)
+
+      return (
+        <Box flexDirection="column">
+          {row}
+          <Box position="absolute" top={0} left={0}>
+            <Client key={`claim-${id}`} module="./claim-area.ts" props={{ id }} width={1} height={1} />
+          </Box>
+        </Box>
+      )
     }
     const stored = await Promise.all(numbers.map(async n => (await $.state.get({ ...BY_IMAGE, id: String(n) })).value))
     const thumbs = stored.filter((thumb): thumb is Thumb => thumb !== undefined)
