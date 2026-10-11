@@ -2,6 +2,7 @@
 // stored row's uuid with its last group dropped; `requestId` is the id the transcript
 // drew the row under, written once the row renders (the authoritative jump target).
 export type Prompt = {
+  session_id?: string
   rowKey: string
   requestId?: string
   turnId: string | null
@@ -14,6 +15,7 @@ export type Prompt = {
 // or the call that first displayed explicitly supplied completed text.
 // Legacy ledgers may still have the acknowledgement there; jumps use answerKey.
 export type Question = {
+  session_id?: string
   id: number
   head: string
   at: number
@@ -53,6 +55,7 @@ export type Question = {
 // What one restore_tracker call brought back, fixed at that call: its transcript row is drawn from
 // this, so clearing the pane later leaves the row as it was.
 export type Restore = {
+  session_id?: string
   by: string
   from: string
   steps: number
@@ -66,6 +69,7 @@ export type Restore = {
 
 // A step the model set itself: a Task, a todo line, or an explicit track_steps row.
 export type Step = {
+  session_id?: string
   id: string
   source: 'task' | 'todo' | 'plan'
   subject: string
@@ -88,6 +92,7 @@ export type Step = {
 }
 
 export type Ledger = {
+  session_id?: string
   v: 1
   nextQuestionId: number
   prompts: Prompt[]
@@ -156,7 +161,7 @@ declare module 'claude-code' {
       scroll: ScrollAt
       // The time the step clocks were last moved on, by a timer while a step is under way.
       tick: number
-      durability: { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean }
+      durability: { isUnsaved: boolean; reason: string; rewindSession?: string; closedByPerson?: boolean; baseline?: import('../hooks/reconcile').Baseline }
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
       reveal: Record<string, 'q' | 'a' | undefined>
     }

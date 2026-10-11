@@ -43,7 +43,7 @@ def main():
     if len(sys.argv) != 4:
         return fail("invalid lock arguments")
     mode, session, token = sys.argv[1:]
-    if mode not in ("lease", "write") or not re.fullmatch(r"[0-9a-fA-F-]{36}", session) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", token):
+    if mode not in ("lease", "write", "guard") or not re.fullmatch(r"[0-9a-fA-F-]{36}", session) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", token):
         return fail("invalid lock identity")
     os.umask(0o077)
     config = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
@@ -53,11 +53,30 @@ def main():
     lease = os.open(directory / f"{session}.lock", flags, 0o600)
     parent = os.getppid()
     with os.fdopen(lease, "r+") as session_file:
-        if mode == "lease":
+        if mode == "guard":
+            # TRACK-21: keep the acquired target lease until the caller finishes
+            # expiry/read-back/rollback. A released probe cannot fence a reopen.
             try:
                 fcntl.flock(session_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                state = "closed"
             except BlockingIOError:
-                return fail("another loaded Track instance owns this session")
+                state = "live"
+            emit({"ok": True, "mode": mode, "token": token, "state": state})
+            while os.getppid() == parent:
+                time.sleep(0.5)
+            return 0
+        if mode == "lease":
+            # A cleaner can hold this same lease briefly while it expires a
+            # closed record. Never read the record before ownership is granted.
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    fcntl.flock(session_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        return fail("another loaded Track instance owns this session")
+                    time.sleep(0.01)
             session_file.seek(0)
             session_file.truncate()
             json.dump({"token": token}, session_file)

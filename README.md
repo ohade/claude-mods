@@ -260,11 +260,26 @@ remain visibly **Unsaved**. Rendering performs no persistence. For each session 
   optional note, stable source identity, and answer text (up to 1,000 code points); up to 200;
 - the title and status of each step, cut to 200 characters; the last 300.
 
-The store budgets serialized UTF-8 conservatively below its 4 MiB limit. It prefers 20 sessions
-and a 3 MiB budget, pruning cleared/completed history first. Unfinished work is never silently
-discarded. When safe pruning cannot make room, the save returns a visible capacity failure.
-One process owns a session writer lease, and a shared lock serializes store writes. Stale revisions
-cannot overwrite a newer durable ledger. Beside the buckets it holds an index and one flag:
+The store budgets serialized UTF-8 conservatively below its 4 MiB limit. Ordinary saves stop
+at 3 MiB, including bodies, heads, indexes and recovery records. No count or byte eviction
+removes another session. A full protected store returns a visible capacity failure; cleanup
+reserves the remaining space for verified rollback and refuses if that reserve is insufficient.
+One process owns a session writer lease, and a shared lock serializes store writes. Startup
+owns both before reading its bucket. Each saved body has an explicit owner, generation and
+checkpoint, with a separate durable head. Missing acknowledged bodies recover current rows
+under a new generation; known revisions are retained. Newer conflicting snapshots are kept,
+and reload reconciles nonempty memory instead of authorizing a blind overwrite.
+
+Cleanup runs only during saves, at most hourly, with a fair cursor, eight targets per call and
+a 250 ms elapsed budget for starting targets, including pending rollback. An individual store
+operation can take longer. A foreign target is removable only while its CLOSED lease guard is
+held. First CLOSED observation starts its clock; a later CLOSED observation expires its body,
+head and recovery snapshots after seven full days. LIVE or unknown clears the clock. The caller
+is never expired. Metadata changes do not advance checkpoint revisions. Interrupted cleanup
+keeps a durable rollback journal; an unexpected later value is preserved. No saves means
+expiry can be delayed. An open cmux tab without a held Track lease does not protect a record.
+
+Beside the buckets the store holds an index and one flag:
 set when you close the pane by hand, cleared when `/track` shows it again. Explicit pane choices
 use the same owned, verified save queue. A refused preference remains unsaved in reload-persistent
 state and is retried by the next acknowledged save. The mod makes no network calls of its own; what it tells the model, such as tool
@@ -274,9 +289,11 @@ Use one canonical loading path on a machine: the plugin's loading identity selec
 For a path change, retain both legacy stores and export each with `/track export <absolute-path>`.
 Load the destination alone and use `/track import <absolute-path>`. Import checks the bundle
 checksum, rejects conflicting session records before writing, and reads back every copied record.
+Legacy imports add explicit owner IDs, a matching durable head and source provenance without
+changing original row values or IDs. A foreign import requires a retained CLOSED lease guard.
 Export and import join the save queue, require writer ownership, and reconcile pending save
 recovery under the shared store lock before reading records. Repeated imports are safe.
-Do not retire a legacy store until its exact records have been verified.
+Do not retire a legacy store until its original values and the added metadata have been verified.
 
 ### Local checkpoint/restore contract v1
 
