@@ -104,6 +104,7 @@ test('validated restore conflict returns a JSON failure without replacing unfini
   const expected = receipt(await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OLD } as never))
   setSession(SESSION)
   l.value = { ...EMPTY, steps: [{ id: 'plan:local', source: 'plan', subject: 'Local unfinished work', status: 'in_progress' }] } as any
+  atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION })
   const before = JSON.stringify(l.value)
   const failed = receipt(await $.tool.call({ tool: 'mcp__track__restore_tracker', from_session: OLD, expected_checkpoint: expected, tool_use_id: 'restore-a' } as never))
   expect(failed).toMatchObject({ v: 1, ok: false, source_session: OLD, destination_session: SESSION })
@@ -128,6 +129,7 @@ test('validated restore refuses capacity before dropping any checkpointed answer
   expect(expected.counts).toEqual({ questions: 200, answers: 200, steps: 0 })
   setSession(SESSION)
   l.value = { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'Local unfinished question', at: 1000, turnId: 'new', status: 'open' }] } as any
+  atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION })
   const before = JSON.stringify(l.value)
   const failed = receipt(await $.tool.call({ tool: 'mcp__track__restore_tracker', from_session: OLD, expected_checkpoint: expected, tool_use_id: 'restore-full' } as never))
   expect(failed.ok).toBe(false)

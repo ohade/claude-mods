@@ -26,6 +26,7 @@ test('repeat restore upgrades an old system target once and keeps local progress
   session = SESSION
   const locals = source.map(q => ({ ...q, turnId: 'restored', restoredFrom: FROM, restoredBy: LEGACY, sourceId: `${FROM}:Q${q.id}`, ...(q.id === 1 ? { status: 'deferred', note: 'Local progress' } : { cleared: true }) }))
   l.value = { ...EMPTY, nextQuestionId: 3, questions: locals, restores: [{ by: LEGACY, from: FROM, steps: 0, questions: locals }] }
+  atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION })
   const call = async () => JSON.parse((await $.tool.call({ tool: 'fixture__restore', from_session: FROM, expected_checkpoint: expected, tool_use_id: 'toolu_upgrade' } as never)).result as string)
   expect((await call()).ok).toBe(true)
   expect(notes).toHaveLength(2)
