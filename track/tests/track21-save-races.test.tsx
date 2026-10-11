@@ -75,7 +75,7 @@ for (const kind of ['question', 'step'] as const) test(`a ${kind} minted before 
   let session: string = SESSION
   on('session.id', () => ({ value: session }))
   // publishGate yields after the row was minted and before its queued save.
-  on('env.set', { key: 'TRACK_GATE_SNAPSHOT' }, () => {
+  on('env.set', { name: 'TRACK_GATE_SNAPSHOT' }, () => {
     session = OTHER
     return { value: undefined }
   })
