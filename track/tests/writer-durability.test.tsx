@@ -85,7 +85,7 @@ test('pending rollback reconciles a foreign index without overwriting foreign le
   expect((store.held.get('saved') as any).foreign).toMatchObject({ at: 5, unfinished: true })
 })
 
-test('an unverified history write remains pending on the next retry', async ($, on) => {
+test('an unverified foreign history write remains pending without blocking the caller', async ($, on) => {
   const foreign = '00000000-0000-4000-8000-000000000001'
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
@@ -96,13 +96,17 @@ test('an unverified history write remains pending on the next retry', async ($, 
   // unverified foreign write through retained-lease closure stamping instead.
   store.held.set(`s:${foreign}`, { v: 1, savedAt: 0, ledger: { ...EMPTY } })
   store.faults.alteredAfterSet = `s:${foreign}`
-  const failed = await $.tool.call({ tool: 'mcp__track__track_question', summary: 'History verification failed' } as never)
-  expect(JSON.stringify(failed)).toContain('recovery pending')
+  // TRACK-21 Refuter H2 (2026-10-11): a foreign cleanup error must preserve
+  // its recovery journal while the independently verified caller save proceeds.
+  const saved = await $.tool.call({ tool: 'mcp__track__track_question', summary: 'History verification failed' } as never)
+  expect(JSON.stringify(saved)).not.toContain('unsaved')
   const unverified = store.held.get(`s:${foreign}`)
   expect((unverified as any).changedByStore).toBe(true)
+  const journal = store.held.get(`cleanup:${foreign}`)
+  expect(journal).toBeDefined()
   const retried = JSON.parse((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result as string)
-  expect(retried.ok).toBe(false)
-  expect(retried.reason).toContain(`could not verify s:${foreign}`)
+  expect(retried.ok).toBe(true)
   expect(store.held.get(`s:${foreign}`)).toEqual(unverified)
-  expect(store.held.has(`s:${SESSION}`)).toBe(false)
+  expect(store.held.get(`cleanup:${foreign}`)).toEqual(journal)
+  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions.map((q: any) => q.head)).toEqual(['History verification failed'])
 })
