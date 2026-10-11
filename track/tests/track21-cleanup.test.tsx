@@ -33,7 +33,9 @@ test('TRACK-21 expired closed unfinished records are removed', async ($, on) => 
   expect(store.held.has(`s:${FOREIGN}`)).toBe(false)
 })
 
-test('TRACK-21 a live lease clears an expired closure clock and keeps all rows', async ($, on) => {
+// Design amended by lead, refuter M5: foreign LIVE/unknown values stay exact;
+// the owner clears its clock while holding its own lease and the store lock.
+test('TRACK-21 a live lease keeps every foreign record byte-identical', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const foreign = { v: 1, session_id: FOREIGN, savedAt: 1, closedAt: Date.now() - WEEK - 1000, ledger: EMPTY }
@@ -41,9 +43,18 @@ test('TRACK-21 a live lease clears an expired closure clock and keeps all rows',
   on('session.id', () => ({ value: SESSION }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   await save($)
-  const retained = store.held.get(`s:${FOREIGN}`) as { closedAt?: number; ledger: unknown }
-  expect(retained.closedAt).toBeUndefined()
-  expect(retained.ledger).toEqual(EMPTY)
+  expect(store.held.get(`s:${FOREIGN}`)).toEqual(foreign)
+})
+
+test('TRACK-21 owner resume clears its own clock without needing a later save', async ($, on) => {
+  atomStore(on, 'ledger', EMPTY)
+  const own = { v: 1, session_id: SESSION, savedAt: 1, closedAt: Date.now() - WEEK - 1000, ledger: EMPTY }
+  const store = pluginStore(on, { [`s:${SESSION}`]: own })
+  on('session.id', () => ({ value: SESSION }))
+  on('classic.SessionStart', () => ({}))
+  await $.classic.SessionStart({ source: 'resume', session_id: SESSION } as never)
+  const { closedAt, ...withoutClock } = own
+  expect(store.held.get(`s:${SESSION}`)).toEqual(withoutClock)
 })
 
 test('TRACK-21 reload cannot authorize replacing newer saved rows with nonempty memory', async ($, on) => {
