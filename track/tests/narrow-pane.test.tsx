@@ -70,7 +70,12 @@ test('narrow counts fit on one item and clocks sit below step text', async ($, o
   expect(all.filter(el => el.type === 'Text').map(el => el.text)).toContain('◔ 12/39')
   const step = all.find(el => el.key?.startsWith('row-s-'))
   expect(step?.props.flexDirection).toBe('column')
-  expect(all.find(el => el.key?.startsWith('s-clock-'))?.props.alignSelf).toBe('flex-end')
+  const id = String(step?.key ?? '').slice('row-s-'.length)
+  const children = step?.children as Array<{ props?: { flexDirection?: string }; children?: Array<{ props?: { key?: string } }> }>
+  const metadata = children.at(-1)
+  expect(metadata?.props?.flexDirection).toBe('row')
+  expect(metadata?.children?.at(-1)?.props?.key).toBe(`s-time-slot-${id}`)
+  expect(all.find(el => el.key === `s-time-slot-${id}`)?.props).toMatchObject({ justifyContent: 'flex-end', flexShrink: 0 })
 })
 
 test('a narrow banner preserves each state without wrapping or clipping', async ($, on) => {

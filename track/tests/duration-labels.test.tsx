@@ -32,13 +32,16 @@ for (const width of [25, 60]) {
       expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain(expected)
       const clock = await ui.find({ key: 's-clock-plan:1' })
       expect(clock?.props.flexShrink).toBe(0)
-      if (width === 25) {
-        expect(clock?.props.alignSelf).toBe('flex-end')
-      } else {
-        const text = await ui.find({ key: 's-text-plan:1' })
-        const row = await ui.find({ key: 'row-s-plan:1' })
-        expect(Number(text?.props.width) + expected.length + 2 + Number(row?.props.marginLeft) + 2).toBe(width)
-      }
+      const text = await ui.find({ key: 's-text-plan:1' })
+      const row = await ui.find({ key: 'row-s-plan:1' })
+      const owner = await ui.find({ key: 's-owner-plan:1' })
+      const slot = await ui.find({ key: 's-time-slot-plan:1' })
+      const children = row?.children as Array<{ props?: { key?: string; width?: number } }>
+      expect(Number(text?.props.width) + Number(owner?.props.width) + Number(slot?.props.width)
+        + 2 + 1 + 4 * Number(row?.props.columnGap) + Number(row?.props.marginLeft)).toBe(width)
+      expect(children.at(-1)?.props?.key).toBe('s-time-slot-plan:1')
+      expect(slot?.props).toMatchObject({ justifyContent: 'flex-end', flexShrink: 0 })
+      expect(Number(slot?.props.width)).toBeGreaterThanOrEqual(expected.length)
     })
   }
 }
