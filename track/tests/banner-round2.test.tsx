@@ -80,7 +80,7 @@ test('a wide agents row names the delegated step and the task count apart', asyn
   expect(at40).toContain('tasks 2')
 })
 
-test('four banner rows collapse when grouped headings would hide a third step', async ($, on) => {
+test('four banner rows collapse when their own seats would hide a third task', async ($, on) => {
   const ui = await mount(
     $, on,
     [step(1, 'waiting'), step(2, 'in_progress'), step(3, 'in_progress', { delegated: true })],
@@ -109,6 +109,17 @@ test('four banner rows collapse when grouped headings would hide a third step', 
   // little room for three tasks and their two distinct headings.
   expect(stepRows - 3).toBeLessThan(5)
   expect(stepRows).toBeGreaterThanOrEqual(5)
+})
+
+test('a 14-row pane keeps four separate banners and all three tasks', async ($, on) => {
+  const ui = await mount($, on,
+    [step(1, 'waiting'), step(2, 'in_progress'), step(3, 'in_progress', { delegated: true })],
+    { ...IDLE, isWorking: true },
+    { unsaved: true, reason: 'quota exhausted', rows: 14 },
+  )
+  const boxes = await ui.findAll({ type: 'Box' })
+  expect(boxes.filter(el => String(el.key ?? '').startsWith('banner-')).map(el => el.key)).toEqual(['banner-unsaved', 'banner-agents', 'banner-working', 'banner-you'])
+  expect(boxes.filter(el => String(el.key ?? '').startsWith('row-s-'))).toHaveLength(3)
 })
 
 // Preserve the original 12/14-row boundary checks, plus the taller grouped case.
