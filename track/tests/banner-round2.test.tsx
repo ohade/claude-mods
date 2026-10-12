@@ -80,12 +80,14 @@ test('a wide agents row names the delegated step and the task count apart', asyn
   expect(at40).toContain('tasks 2')
 })
 
-test('four banner rows collapse once they would hide a third step', async ($, on) => {
+test('four banner rows collapse when grouped headings would hide a third step', async ($, on) => {
   const ui = await mount(
     $, on,
     [step(1, 'waiting'), step(2, 'in_progress'), step(3, 'in_progress', { delegated: true })],
     { ...IDLE, isWorking: true },
-    { unsaved: true, reason: 'quota exhausted', rows: 11 },
+    // Two ACTIVE tasks and one WAITING task need five rows with headings.
+    // Fixed rows take ten with stacked banners, leaving only four here.
+    { unsaved: true, reason: 'quota exhausted', rows: 14 },
   )
   const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
   expect(rows.map(row => row.key)).toEqual(['banner-line'])
@@ -99,9 +101,19 @@ test('four banner rows collapse once they would hide a third step', async ($, on
   expect(line).toContain('S2')
   expect(line).toContain('S3')
   expect(line.length).toBeLessThanOrEqual(80)
+  const boxes = await ui.findAll({ type: 'Box' })
+  expect(boxes.filter(row => String(row.key ?? '').startsWith('row-s-'))).toHaveLength(3)
+  const stepRows = Number((boxes.find(row => row.key === 'steps')?.props as { height?: number })?.height ?? 0)
+  expect(boxes.filter(row => String(row.key ?? '').startsWith('step-group-')).map(row => row.text)).toEqual(['ACTIVE', 'WAITING ON YOU'])
+  // Four banners need three more rows than the collapsed line, leaving too
+  // little room for three tasks and their two distinct headings.
+  expect(stepRows - 3).toBeLessThan(5)
+  expect(stepRows).toBeGreaterThanOrEqual(5)
 })
 
-for (const rows of [12, 14]) for (const count of [1, 2, 3]) {
+// 12 + summary + heading = 14. 14 + those two crosses the roomy threshold,
+// which adds three spacing rows: 19. These heights freeze before RED.
+for (const rows of [14, 19]) for (const count of [1, 2, 3]) {
   test(`${count} visible steps keep two separate banner rows in a ${rows}-row pane`, async ($, on) => {
     const ui = await mount($, on,
       Array.from({ length: count }, (_, i) => step(i + 1, 'in_progress')),
