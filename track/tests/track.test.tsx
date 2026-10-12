@@ -586,9 +586,9 @@ test('question and step rows are indented the same under their headers', async (
   expect([margin('row-q-1'), margin('row-s-plan:1')]).toEqual([2, 2])
 })
 
-// Show the whole question; a long one wraps, and its next lines align with
-// the text, not under the dot.
-test('a long question is shown whole, its dot in a column of its own', async ($, on) => {
+// TRACK-14: the closed Text must describe the painted preview, not hidden full
+// words. Selecting the title opens the full head in a wrapping Text.
+test('a long question is shortened when closed and shown whole when selected', async ($, on) => {
   const head = 'Why did the build fetch the cache when only the lint step was asked for in the brief?'
   const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
@@ -596,8 +596,29 @@ test('a long question is shown whole, its dot in a column of its own', async ($,
   const ui = await $.ui.mount(pane('dock'))
 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts).toContain(`Q1. ${head}`)
+  expect(texts.some(text => text.includes(head))).toBe(false)
+  const preview = texts.find(text => text.startsWith('Q1. ')) ?? ''
+  expect(preview.endsWith('…')).toBe(true)
+  expect(preview.length).toBeLessThan(head.length)
   expect(texts).toContain('●')
+  await ui.press({ key: 'title-q-4' })
+  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === head && text.props.wrap === 'wrap')).toBe(true)
+  await ui.press({ key: 'title-q-4' })
+  expect((await ui.findAll({ type: 'Text' })).some(text => String(text.text ?? '').includes(head))).toBe(false)
+})
+
+test('a long step is shortened when closed and shown whole when selected', async ($, on) => {
+  const subject = 'Inspect the original folded bracket drawing and record every alignment mark before accepting the assembled connection'
+  const long = { ...BOTH, steps: [{ ...BOTH.steps[0], subject }] }
+  on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
+  const ui = await $.ui.mount(pane('dock'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
+  expect(texts.some(text => text.includes(subject))).toBe(false)
+  expect(texts.find(text => text.startsWith('S1. '))?.endsWith('…')).toBe(true)
+  await ui.press({ key: `title-s-${BOTH.steps[0].id}` })
+  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === subject && text.props.wrap === 'wrap')).toBe(true)
+  await ui.press({ key: `title-s-${BOTH.steps[0].id}` })
+  expect((await ui.findAll({ type: 'Text' })).some(text => String(text.text ?? '').includes(subject))).toBe(false)
 })
 
 // Regression: the pane opened by itself at session start, then closed. Every
