@@ -3359,11 +3359,8 @@ export const register: Register = on => {
       await publishGate($)
       await saveLedger($)
     }
-    // The steps' two clear controls, above the steps and again below them. Both sit outside the
-    // scrolling region, so a scroll never moves them. The copies share hotkeys: the engine lets the
-    // later one win, and both do the same thing. Each is an item of its own, so a narrow pane wraps
-    // between them instead of cutting one.
-    // A header or bar item keeps its width; the header wraps between items.
+    // One footer owns each clear action. Whole items wrap between Buttons;
+    // labels carry no padding and the native Button owns focus handling.
     const item = (key: string, child: RenderElement) => (
       <Box key={key} flexShrink={0}>
         {child}
@@ -3371,13 +3368,19 @@ export const register: Register = on => {
     )
     const allLabel = compact ? 'all' : 'clear all'
     const doneLabel = compact ? 'done' : 'clear completed'
-    const clearButtons = (suffix: '' | '-bottom') => [
+    const clearButtons = () => [
       ...(l.steps.length > 0
-        ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label={allLabel} onPress={() => clearSteps($)} />)]
+        ? [item('item-clear-steps', <Button key="clear-steps" plain dimColor hotkey="s" label={allLabel} onPress={() => clearSteps($)} />)]
         : []),
-      item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
+      item('item-clear-completed', <Button key="clear-completed" plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
     ]
-    const clearWidths = [l.steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)]
+    const clearWidths = [...(l.steps.length > 0 ? [buttonWidth('s', allLabel)] : []), buttonWidth('c', doneLabel)]
+    const footerQuestionWord = compact ? 'Q' : 'Questions'
+    const footerStepWord = compact ? 'S' : 'Steps'
+    const footerWidths = [
+      ...(l.questions.length > 0 ? [footerQuestionWord.length, buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []),
+      footerStepWord.length, ...clearWidths,
+    ]
     const hints = compact
       ? [{ key: 'hint-hide', text: '/track hide' }, ...(!shortCompact ? [{ key: 'hint-close', text: 'ctrl+x x close' }] : [])]
       : [{ key: 'hint', text: HINT }]
@@ -3482,11 +3485,9 @@ export const register: Register = on => {
     // Short narrow panes keep totals in their section headers and spend the
     // summary row on task content. Footer spacing is always zero.
     const preferredSummaryRows = shortCompact ? 0 : 1
-    const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
+    const bottomRows = flowRows([...footerWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
     const briefHints = [{ key: 'hint-hide', text: '/track hide' }]
-    const briefBottomRows = flowRows([...clearWidths, ...briefHints.map(hint => hint.text.length)], width, HEADER_GAP)
-    const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
-    const sButtons = l.steps.length > 0 ? clearWidths : []
+    const briefBottomRows = flowRows([...footerWidths, ...briefHints.map(hint => hint.text.length)], width, HEADER_GAP)
     // Fixed indicator seats keep scrolling from changing header height.
     const arrowWidth = (count: number) => {
       if (count === 0) return 0
@@ -3500,9 +3501,9 @@ export const register: Register = on => {
     // counts, when a short 17-column pane cannot fit the complete header.
     const questionWord = shortCompact && width < 24 ? 'Q' : 'Questions'
     const stepWord = shortCompact && width < 24 ? 'S' : 'Steps'
-    const headerWidths = (word: string, count: string, empty: string | undefined, controls: number[], indicatorWidth: number) => [
+    const headerWidths = (word: string, count: string, empty: string | undefined, indicatorWidth: number) => [
       word.length, count.length, ...(empty === undefined ? [] : [empty.trim().length]),
-      ...(shortCompact ? [indicatorWidth] : []), ...controls, ...(!shortCompact ? [indicatorWidth] : []),
+      indicatorWidth,
     ]
     // Include the largest position label, an ellipsis and a cell for trimming
     // trailing space. Metadata must not consume the readable subject width.
@@ -3520,10 +3521,6 @@ export const register: Register = on => {
     const lifecycleOf = (s: Step): string | undefined =>
       s.status === 'paused' && s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
     const qControlsRows = questionCompact ? 1 : 0
-    // Scrolling changes the viewport, not the ledger. Keep existing previews
-    // for all eligible rows, but compute a new one only when its row is drawn.
-    for (const q of questions) paneLayout.retainPreview(displayTitle(questionLabel(q.id), q.head), qWidth)
-    for (let i = 0; i < steps.length; i++) paneLayout.retainPreview(displayTitle(`S${i + 1}`, steps[i]!.subject), stepWidth)
     const revealedText = (q: Question): string | undefined => {
       const side = opened[String(q.id)]
       if (side === 'q' && q.head.trim() !== '') return q.head
@@ -3553,14 +3550,14 @@ export const register: Register = on => {
       const qPosition = anchored ? null : at.questions
       const sPosition = anchored ? null : at.steps
       const key = JSON.stringify([width, bodyRows, preferredSummaryRows, bottomRows, briefBottomRows, qRing, sRing,
-        qButtons, sButtons, maxQArrowWidth, maxSArrowWidth, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, qPosition, sPosition, anchored,
+        maxQArrowWidth, maxSArrowWidth, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, qPosition, sPosition, anchored,
         qControlsRows, revealOpen, qHeaderOnly, sHeaderOnly, qEmpty, sEmpty, bannerCount])
       return paneLayout.layout(key, () => {
         const fit = (qArrowWidth: number, sArrowWidth: number, summaryRows: number, briefFooter: boolean, contentAnchors = false) => {
           const titleRows = 1 + summaryRows
           const footerRows = briefFooter ? briefBottomRows : bottomRows
-          const qHead = flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qButtons, qArrowWidth), width, HEADER_GAP)
-          const sHead = flowRows(headerWidths(stepWord, sRing, sHeaderOnly ? sEmpty : undefined, sButtons, sArrowWidth), width, HEADER_GAP)
+          const qHead = flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qArrowWidth), width, HEADER_GAP)
+          const sHead = flowRows(headerWidths(stepWord, sRing, sHeaderOnly ? sEmpty : undefined, sArrowWidth), width, HEADER_GAP)
           const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + footerRows + bannerCount))
           // A compact question needs a text line plus its Q/A controls even in a short pane.
           const minQRows = questions.length > 0 ? 1 + qControlsRows : qHeaderOnly ? 0 : 1
@@ -3651,14 +3648,38 @@ export const register: Register = on => {
     const qArrowWidth = fitted.qArrowWidth ?? 0
     const sArrowWidth = fitted.sArrowWidth ?? 0
     const shownHints = fitted.briefFooter ? briefHints : hints
+    const footerRows = fitted.briefFooter ? briefBottomRows : bottomRows
+    const spareRows = bodyRows - (titleRows + qHead + qRows + 1 + sHead + sRows + footerRows + bannerRows.length)
+    // Borders use only spare space after both complete lists have been fitted.
+    // Their narrower interiors must keep the same one-line headers and row
+    // layouts. Expanded or lifecycle text uses the full unframed section.
+    const framed = width >= 60 && bodyRows >= 16 && spareRows >= 4 &&
+      qStart === 0 && qEnd === questions.length && sStart === 0 && sEnd === steps.length &&
+      !revealOpen && !sDetails.some(Boolean) &&
+      steps.every(s => lifecycleOf(s) === undefined && s.followUp !== true) &&
+      // A clocked row keeps its time at the pane edge, so it never sits inside a frame.
+      // startedAt, not the clock text, decides: a tick never toggles the frame.
+      steps.every(s => s.startedAt === undefined) &&
+      !questionCompact && !metaBelow &&
+      wideQuestionWidth - 2 >= minimumQuestionWidth && inlineStepWidth - 2 >= minimumStepWidth &&
+      flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qArrowWidth), width - 2, HEADER_GAP) === qHead &&
+      flowRows(headerWidths(stepWord, sRing, sHeaderOnly ? sEmpty : undefined, sArrowWidth), width - 2, HEADER_GAP) === sHead
+    const borderRows = framed ? 2 : 0
+    const sectionWidth = width - (framed ? 2 : 0)
+    const drawQWidth = qWidth - (framed ? 2 : 0)
+    const drawStepWidth = stepWidth - (framed ? 2 : 0)
+    // Retain the actual drawing widths, including border interiors, across
+    // scroll. Only the drawn rows compute a preview on a cache miss.
+    for (const q of questions) paneLayout.retainPreview(displayTitle(questionLabel(q.id), q.head), drawQWidth)
+    for (let i = 0; i < steps.length; i++) paneLayout.retainPreview(displayTitle(`S${i + 1}`, steps[i]!.subject), drawStepWidth)
     const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
     const qIndicator = qArrowWidth > 0 && <Box key="questions-hidden" width={qArrowWidth} flexShrink={0}><Text dimColor>{qHidden}</Text></Box>
     const sIndicator = sArrowWidth > 0 && <Box key="steps-hidden" width={sArrowWidth} flexShrink={0}><Text dimColor>{sHidden}</Text></Box>
     Object.assign(regions, {
-      qTop: titleRows,
-      qBottom: titleRows + qHead + qRows,
-      sTop: titleRows + qHead + qRows,
-      sBottom: titleRows + qHead + qRows + 1 + sHead + sRows,
+      qTop: titleRows + Number(framed),
+      qBottom: titleRows + Number(framed) + qHead + qRows,
+      sTop: titleRows + qHead + qRows + borderRows,
+      sBottom: titleRows + qHead + qRows + borderRows + 1 + Number(framed) + sHead + sRows,
       qStart,
       sStart,
       qLast,
@@ -3675,17 +3696,15 @@ export const register: Register = on => {
           <Text dimColor>{'─'.repeat(Math.max(0, width - titleLabel.length - titleSide))}</Text>
         </Box>
         {summaryRows > 0 && <Box key="state-summary" height={summaryRows} flexShrink={0} overflow="hidden"><Text dimColor wrap="truncate-end">{summary}</Text></Box>}
-        <Box key="questions-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
+        <Box key="questions-frame" width={width} height={qHead + qRows + borderRows} flexShrink={0} flexDirection="column" borderStyle={framed ? 'round' : undefined} borderDimColor={framed ? true : undefined}>
+        <Box key="questions-header" width={sectionWidth} height={qHead} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('questions-word', <Text bold>{questionWord}</Text>)}
           {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
           {qHeaderOnly && item('questions-empty', <Text dimColor>{qEmpty.trim()}</Text>)}
           {shortCompact && qIndicator}
-          {/* The engine draws "q: label", so the gap is the header's, not padding in the label. */}
-          {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />)}
-          {l.questions.length > 0 && item('questions-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />)}
           {!shortCompact && qIndicator}
         </Box>
-        <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
+        <Box key="questions" width={sectionWidth} flexShrink={0} flexDirection="column" height={qRows} overflow="hidden">
         {questions.length === 0 && !qHeaderOnly && (
           <Text dimColor wrap="wrap">
             {qEmpty}
@@ -3752,13 +3771,13 @@ export const register: Register = on => {
           // A closed Text carries exactly its display line. Full saved words
           // appear only after selection, in the wrapping detail below it.
           const head = displayTitle(questionLabel(q.id), q.head)
-          const headShown = paneLayout.preview(head, qWidth, () => fitLines(head, qWidth, 1))
+          const headShown = paneLayout.preview(head, drawQWidth, () => fitLines(head, drawQWidth, 1))
           const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
           // A short region still draws one cut line. An empty press is not an answer.
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - 1)
           const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
           const text = (
-            <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={qWidth}>
+            <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={drawQWidth}>
               <Box height={1} overflow="hidden"><Text color={color} dimColor={q.status === 'deferred'} wrap="truncate-end">
                 {headShown}
               </Text></Box>
@@ -3781,16 +3800,17 @@ export const register: Register = on => {
           )
         })}
         </Box>
+        </Box>
         <Text dimColor>{'─'.repeat(width)}</Text>
-        <Box key="steps-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
+        <Box key="steps-frame" width={width} height={sHead + sRows + borderRows} flexShrink={0} flexDirection="column" borderStyle={framed ? 'round' : undefined} borderDimColor={framed ? true : undefined}>
+        <Box key="steps-header" width={sectionWidth} height={sHead} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('steps-word', <Text bold>{stepWord}</Text>)}
           {item('steps-ring', <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{sRing}</Text>)}
           {sHeaderOnly && item('steps-empty', <Text dimColor>{sEmpty.trim()}</Text>)}
           {shortCompact && sIndicator}
-          {l.steps.length > 0 && clearButtons('')}
           {!shortCompact && sIndicator}
         </Box>
-        <Box key="steps" flexDirection="column" height={sRows} overflow="hidden">
+        <Box key="steps" width={sectionWidth} flexShrink={0} flexDirection="column" height={sRows} overflow="hidden">
         {steps.length === 0 && !sHeaderOnly && (
           <Text dimColor wrap="wrap">
             {sEmpty}
@@ -3828,9 +3848,9 @@ export const register: Register = on => {
             <Text color={look.glyphColor}>{look.glyph}</Text>
           </Box>
           const subject = displayTitle(`S${number}`, s.subject)
-          const subjectShown = paneLayout.preview(subject, stepWidth, () => fitLines(subject, stepWidth, 1))
+          const subjectShown = paneLayout.preview(subject, drawStepWidth, () => fitLines(subject, drawStepWidth, 1))
           const text = (
-            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={stepWidth} height={1} overflow="hidden">
+            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={drawStepWidth} height={1} overflow="hidden">
               <Text color={look.textColor} wrap="truncate-end">
                 {subjectShown}
               </Text>
@@ -3866,9 +3886,16 @@ export const register: Register = on => {
           )
         })}
         </Box>
+        </Box>
         <Box flexGrow={1} />
-        <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={0}>
-          {clearButtons('-bottom')}
+        <Box key="bottom-bar" width={width} height={footerRows} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={0}>
+          {l.questions.length > 0 && [
+            item('item-footer-questions', <Box key="footer-question-word"><Text dimColor>{footerQuestionWord}</Text></Box>),
+            item('item-clear-questions', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />),
+            item('item-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />),
+          ]}
+          {item('item-footer-steps', <Box key="footer-step-word"><Text dimColor>{footerStepWord}</Text></Box>)}
+          {clearButtons()}
           {shownHints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
         </Box>
         {/* One row per active state. The wrapper keeps the old banner seat; only the amber glyph pulses. */}
