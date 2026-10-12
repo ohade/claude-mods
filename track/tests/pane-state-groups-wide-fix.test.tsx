@@ -49,7 +49,8 @@ test('60x14 with three steps draws all three without a blank arrow seat stealing
   const ui = await $.ui.mount(pane('dock', 60, 14))
   const boxes = await ui.findAll({ type: 'Box' })
   expect(boxes.filter(row => String(row.key ?? '').startsWith('row-s-')).map(row => row.key)).toEqual(['row-s-plan:2', 'row-s-plan:1', 'row-s-plan:3'])
-  // Nothing in the region is cut off: it holds every task row and every heading drawn.
+  // Headings are hidden at this size by design when they would displace a
+  // fitting task. Every task row and any heading actually drawn fit the region.
   const headings = boxes.filter(row => String(row.key ?? '').startsWith('step-group-')).length
   expect((await ui.find({ key: 'steps' }))?.props.height).toBeGreaterThanOrEqual(3 + headings)
   expect(String((await ui.find({ key: 'steps-hidden' }))?.text ?? '')).toBe('')
