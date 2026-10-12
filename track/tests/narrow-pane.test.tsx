@@ -41,10 +41,17 @@ test('title, footer controls and banner respect the actual 17-column body', asyn
   const close = await ui.find({ key: 'hint-close' })
   expect(hint?.text).toBe('/track hide')
   expect(close?.text).toBe('ctrl+x x close')
-  for (const key of ['clear-steps-bottom', 'clear-completed-bottom']) {
+  const all = await ui.findAll({})
+  const footer = all.findIndex(el => el.key === 'bottom-bar')
+  const banner = all.findIndex(el => el.key === 'banner')
+  for (const key of ['clear-steps', 'clear-completed']) {
     const button = await ui.find({ key })
+    expect(all.filter(el => el.key === key)).toHaveLength(1)
+    expect(all.findIndex(el => el.key === key)).toBeGreaterThan(footer)
+    expect(all.findIndex(el => el.key === key)).toBeLessThan(banner)
     expect(String(button?.props.label).length + 3).toBeLessThanOrEqual(17)
   }
+  expect(all.some(el => /clear-(steps|completed)-bottom/.test(String(el.key ?? '')))).toBe(false)
 })
 
 test('narrow questions put readable text above the unchanged Q/A controls', async ($, on) => {
