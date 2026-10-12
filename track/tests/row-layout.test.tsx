@@ -18,14 +18,16 @@ test('wide question controls and title are siblings on the same horizontal row',
   expect(children.some(child => child.props?.key === 'del-1')).toBe(true)
 })
 
-test('four short steps use four horizontal rows, with a fixed status column', async ($, on) => {
+test('four short steps keep horizontal rows and fixed status columns under PAUSED and DONE headings', async ($, on) => {
   atomStore(on, 'ledger', { ...EMPTY, steps: Array.from({ length: 4 }, (_, i) => ({
     id: `plan:${i + 1}`, source: 'plan', subject: `Work item ${i + 1}`, status: i < 3 ? 'completed' : 'paused',
   })) })
   atomStore(on, 'activity', IDLE)
   mock.clock(on)
   const ui = await $.ui.mount(pane('dock', 80, 40))
-  expect((await ui.find({ key: 'steps' }))?.props.height).toBe(4)
+  expect((await ui.find({ key: 'steps' }))?.props.height).toBe(6)
+  expect((await ui.findAll({ type: 'Box' })).filter(row => String(row.key ?? '').startsWith('step-group-')).map(row => row.text)).toEqual(['PAUSED', 'DONE'])
+  expect((await ui.findAll({ type: 'Box' })).filter(row => String(row.key ?? '').startsWith('row-s-'))).toHaveLength(4)
   for (let i = 1; i <= 4; i++) {
     const row = await ui.find({ key: `row-s-plan:${i}` })
     const children = row?.children as Array<{ props?: { key?: string; width?: number; flexShrink?: number } }>
