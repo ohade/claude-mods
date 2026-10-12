@@ -227,6 +227,8 @@ const QUESTION_SHARE = 0.35
 const QUESTION_CHROME = 18
 // Columns between the items of a header or bar; a narrow pane wraps between items, never inside one.
 const HEADER_GAP = 2
+// Reserve through 99h 59m. Longer labels stay whole and turn frames off.
+const FRAME_CLOCK_COLUMNS = 7
 // Below this width the Q/A columns crowd out the question; place them on the next line.
 const COMPACT_COLUMNS = 40
 // Part 3c: leave a useful subject after the position label and ellipsis.
@@ -3368,22 +3370,30 @@ export const register: Register = on => {
     )
     const allLabel = compact ? 'all' : 'clear all'
     const doneLabel = compact ? 'done' : 'clear completed'
-    const clearButtons = () => [
-      ...(l.steps.length > 0
-        ? [item('item-clear-steps', <Button key="clear-steps" plain dimColor hotkey="s" label={allLabel} onPress={() => clearSteps($)} />)]
-        : []),
-      item('item-clear-completed', <Button key="clear-completed" plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
-    ]
     const clearWidths = [...(l.steps.length > 0 ? [buttonWidth('s', allLabel)] : []), buttonWidth('c', doneLabel)]
-    const footerQuestionWord = compact ? 'Q' : 'Questions'
-    const footerStepWord = compact ? 'S' : 'Steps'
-    const footerWidths = [
-      ...(l.questions.length > 0 ? [footerQuestionWord.length, buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []),
-      footerStepWord.length, ...clearWidths,
-    ]
     const hints = compact
       ? [{ key: 'hint-hide', text: '/track hide' }, ...(!shortCompact ? [{ key: 'hint-close', text: 'ctrl+x x close' }] : [])]
       : [{ key: 'hint', text: HINT }]
+    const briefHints = [{ key: 'hint-hide', text: '/track hide' }]
+    // Fold in order: section words, hint, then action labels. A section word
+    // and its first Button are one wrapping item in measurement and drawing.
+    const footerModes = [
+      { questionWord: compact ? 'Q' : 'Questions', stepWord: compact ? 'S' : 'Steps', allLabel, doneLabel, hints, gap: HEADER_GAP },
+      { questionWord: 'Q', stepWord: 'S', allLabel, doneLabel, hints, gap: HEADER_GAP },
+      { questionWord: 'Q', stepWord: 'S', allLabel, doneLabel, hints: briefHints, gap: HEADER_GAP },
+      { questionWord: 'Q', stepWord: 'S', allLabel: 'all', doneLabel: 'done', hints: briefHints, gap: 1 },
+    ].map(mode => {
+      const widths = [
+        ...(l.questions.length > 0 ? [mode.questionWord.length + mode.gap + buttonWidth('q', mode.allLabel), buttonWidth('a', mode.doneLabel)] : []),
+        mode.stepWord.length + mode.gap + buttonWidth(l.steps.length > 0 ? 's' : 'c', l.steps.length > 0 ? mode.allLabel : mode.doneLabel),
+        ...(l.steps.length > 0 ? [buttonWidth('c', mode.doneLabel)] : []),
+        ...mode.hints.map(hint => hint.text.length),
+      ]
+      return { ...mode, rows: flowRows(widths, width, mode.gap) }
+    })
+    // Restore the replaced Steps-only footer seat budget before shortening
+    // more information than needed. Roomy content keeps the full footer.
+    const replacedFooterRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
 
     const work = workState(l, now)
     const numbered = steps.map((s, i) => ({ step: s, n: i + 1 }))
@@ -3485,9 +3495,6 @@ export const register: Register = on => {
     // Short narrow panes keep totals in their section headers and spend the
     // summary row on task content. Footer spacing is always zero.
     const preferredSummaryRows = shortCompact ? 0 : 1
-    const bottomRows = flowRows([...footerWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
-    const briefHints = [{ key: 'hint-hide', text: '/track hide' }]
-    const briefBottomRows = flowRows([...footerWidths, ...briefHints.map(hint => hint.text.length)], width, HEADER_GAP)
     // Fixed indicator seats keep scrolling from changing header height.
     const arrowWidth = (count: number) => {
       if (count === 0) return 0
@@ -3513,7 +3520,7 @@ export const register: Register = on => {
     const questionCompact = compact || wideQuestionWidth < minimumQuestionWidth
     const qWidth = questionCompact ? Math.max(1, width - rowIndent - 2) : wideQuestionWidth
     const ownerWidth = 5
-    const clockWidth = Math.max(5, ...steps.filter(hasClock).map(s => clockOf(s).length))
+    const clockWidth = Math.max(FRAME_CLOCK_COLUMNS, ...steps.filter(hasClock).map(s => clockOf(s).length))
     const inlineStepWidth = Math.max(1, width - rowIndent - 2 - 1 - ownerWidth - clockWidth - 4)
     const metaBelow = compact || inlineStepWidth < minimumStepWidth
     const stepWidth = metaBelow ? Math.max(1, width - rowIndent - 3) : inlineStepWidth
@@ -3540,9 +3547,9 @@ export const register: Register = on => {
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : qHeaderOnly ? 0 : paneLayout.lines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : sHeaderOnly ? 0 : paneLayout.lines(sEmpty, width)
     const atWork = stepRows.findIndex(row => row.step.status !== 'completed')
-    // Headings label groups; they must not cost tasks. They show when the list
-    // fits whole with them, or when the window at the work anchor still holds
-    // min(3, the tasks it holds without them). Content decides, never the scroll.
+    const minimumTaskWindow = Math.min(3, steps.length)
+    // A fixed task threshold avoids showing a one-task heading then hiding
+    // it when two tasks fit. Content anchors, never scroll offsets, decide.
     const linesFit = (lines: number[], rows: number) => lines.reduce((a, b) => a + b, 0) <= rows
     const tasksShown = (lines: number[], rows: number) => {
       const last = lastStart(lines, rows)
@@ -3551,18 +3558,18 @@ export const register: Register = on => {
     }
     const canShowHeadings = (rows: number) =>
       rows > 1 + Number(metaBelow) && (linesFit(sLines, rows) ||
-        tasksShown(sLines, rows) >= Math.min(3, tasksShown(sLinesWithoutHeadings, rows)))
+        tasksShown(sLines, rows) >= minimumTaskWindow)
     const revealOpen = questions.some(q => revealedText(q) !== undefined)
     const layoutFor = (bannerCount: number, anchored = false) => {
       const qPosition = anchored ? null : at.questions
       const sPosition = anchored ? null : at.steps
-      const key = JSON.stringify([width, bodyRows, preferredSummaryRows, bottomRows, briefBottomRows, qRing, sRing,
+      const key = JSON.stringify([width, bodyRows, preferredSummaryRows, footerModes.map(mode => mode.rows), replacedFooterRows, qRing, sRing,
         maxQArrowWidth, maxSArrowWidth, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, qPosition, sPosition, anchored,
         qControlsRows, revealOpen, qHeaderOnly, sHeaderOnly, qEmpty, sEmpty, bannerCount])
       return paneLayout.layout(key, () => {
-        const fit = (qArrowWidth: number, sArrowWidth: number, summaryRows: number, briefFooter: boolean, contentAnchors = false) => {
+        const fit = (qArrowWidth: number, sArrowWidth: number, summaryRows: number, footerMode: number, contentAnchors = false) => {
           const titleRows = 1 + summaryRows
-          const footerRows = briefFooter ? briefBottomRows : bottomRows
+          const footerRows = footerModes[footerMode]!.rows
           const qHead = flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qArrowWidth), width, HEADER_GAP)
           const sHead = flowRows(headerWidths(stepWord, sRing, sHeaderOnly ? sEmpty : undefined, sArrowWidth), width, HEADER_GAP)
           const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + footerRows + bannerCount))
@@ -3584,10 +3591,11 @@ export const register: Register = on => {
           }
           // Grouping places active work first; scrolling still indexes task rows.
           const stepWindow = (rows: number, position = contentAnchors ? null : sPosition) => {
-            const lines = canShowHeadings(rows) ? sLines : sLinesWithoutHeadings
+            const showHeadings = canShowHeadings(rows)
+            const lines = showHeadings ? sLines : sLinesWithoutHeadings
             const last = lastStart(lines, rows)
             const [start, end] = windowOf(lines, rows, Math.min(position ?? (atWork < 0 ? last : atWork), last))
-            return { last, start, end }
+            return { last, start, end, showHeadings }
           }
           // Headings cost rows, not tasks. When both lists are crowded, yield
           // spare question space until Steps again has the larger task window.
@@ -3607,16 +3615,16 @@ export const register: Register = on => {
           const [qStart, qEnd] = windowOf(qLines, qRows, Math.min((contentAnchors ? null : qPosition) ?? qLast, qLast))
           const { start: sStart, end: sEnd } = shown
 
-          return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, summaryRows, qArrowWidth, sArrowWidth, briefFooter }
+          return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, summaryRows, qArrowWidth, sArrowWidth, footerMode, showHeadings: shown.showHeadings }
         }
         // Seat decisions use a fit without seats at the content anchors. A
         // fully fitting list pays nothing for an empty indicator. Otherwise
         // reserve its largest indicator so wheel offsets cannot move headers.
-        const withSeats = (summaryRows: number, briefFooter: boolean) => {
-          const bare = fit(0, 0, summaryRows, briefFooter, true)
+        const withSeats = (summaryRows: number, footerMode: number) => {
+          const bare = fit(0, 0, summaryRows, footerMode, true)
           let qSeat = bare.qStart > 0 || bare.qEnd < questions.length ? maxQArrowWidth : 0
           let sSeat = bare.sStart > 0 || bare.sEnd < steps.length ? maxSArrowWidth : 0
-          let seated = fit(qSeat, sSeat, summaryRows, briefFooter, true)
+          let seated = fit(qSeat, sSeat, summaryRows, footerMode, true)
           // Adding one seat can make the other section overflow. Each seat
           // turns on at most once; both decisions still use content anchors.
           for (let pass = 0; pass < 2; pass++) {
@@ -3625,37 +3633,58 @@ export const register: Register = on => {
             if (qNext === qSeat && sNext === sSeat) break
             qSeat = qNext
             sSeat = sNext
-            seated = fit(qSeat, sSeat, summaryRows, briefFooter, true)
+            seated = fit(qSeat, sSeat, summaryRows, footerMode, true)
           }
           return seated
         }
-        let chosen = withSeats(preferredSummaryRows, false)
+        const folded = (summaryRows: number) => {
+          const full = withSeats(summaryRows, 0)
+          if (footerModes[0]!.rows <= 1) return full
+          const improves = (candidate: typeof full, current: typeof full) => {
+            const candidateTasks = candidate.sEnd - candidate.sStart
+            const currentTasks = current.sEnd - current.sStart
+            const candidateQuestions = candidate.qEnd - candidate.qStart
+            const currentQuestions = current.qEnd - current.qStart
+            return steps.length > 0 && candidateTasks !== currentTasks
+              ? candidateTasks > currentTasks && candidateQuestions >= Math.min(1, currentQuestions)
+              : candidateQuestions > currentQuestions
+          }
+          let best = full
+          for (let mode = 1; mode < footerModes.length; mode++) {
+            const candidate = withSeats(summaryRows, mode)
+            if (improves(candidate, best)) best = candidate
+            const meetsMinimum = steps.length === 0 || candidate.sEnd - candidate.sStart >= minimumTaskWindow
+            if (meetsMinimum && footerModes[mode]!.rows <= replacedFooterRows && improves(candidate, full)) break
+          }
+          return best
+        }
+        let chosen = folded(preferredSummaryRows)
         const tooFewTasks = () => steps.length > 0 && (anchored
           ? chosen.sRows === 0
-          : chosen.sEnd - chosen.sStart < Math.min(3, steps.length))
+          : chosen.sEnd - chosen.sStart < minimumTaskWindow)
         // Fold optional information before losing task rows, at every width.
         // Keep the established summary in taller panes and fully fitting lists.
-        if (bodyRows < 16 && preferredSummaryRows > 0 && tooFewTasks()) chosen = withSeats(0, false)
-        if (bodyRows < 16 && tooFewTasks()) chosen = withSeats(0, true)
-        return fit(chosen.qArrowWidth, chosen.sArrowWidth, chosen.summaryRows, chosen.briefFooter)
+        if (bodyRows < 16 && preferredSummaryRows > 0 && tooFewTasks()) chosen = folded(0)
+        return fit(chosen.qArrowWidth, chosen.sArrowWidth, chosen.summaryRows, chosen.footerMode)
       })
     }
     // Collapse when the stacked rows would leave fewer than min(3, steps) whole steps in view; a
     // wrapped step takes several lines, so lines are not the measure.
     if (openRows.length > 1 && steps.length > 0) {
       const stacked = layoutFor(openRows.length, true)
-      if (stacked.sEnd - stacked.sStart < Math.min(3, steps.length)) {
+      if (stacked.sEnd - stacked.sStart < minimumTaskWindow) {
         bannerRows = [collapseLine(openRows, width)]
       }
     }
     const fitted = layoutFor(bannerRows.length)
     const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
+    const showHeadings = fitted.showHeadings === true
     const summaryRows = fitted.summaryRows ?? preferredSummaryRows
     const titleRows = 1 + summaryRows
     const qArrowWidth = fitted.qArrowWidth ?? 0
     const sArrowWidth = fitted.sArrowWidth ?? 0
-    const shownHints = fitted.briefFooter ? briefHints : hints
-    const footerRows = fitted.briefFooter ? briefBottomRows : bottomRows
+    const footer = footerModes[fitted.footerMode ?? 0]!
+    const footerRows = footer.rows
     const spareRows = bodyRows - (titleRows + qHead + qRows + 1 + sHead + sRows + footerRows + bannerRows.length)
     // Borders use only spare space after both complete lists have been fitted.
     // Their narrower interiors must keep the same one-line headers and row
@@ -3664,9 +3693,9 @@ export const register: Register = on => {
       qStart === 0 && qEnd === questions.length && sStart === 0 && sEnd === steps.length &&
       !revealOpen && !sDetails.some(Boolean) &&
       steps.every(s => lifecycleOf(s) === undefined && s.followUp !== true) &&
-      // A clocked row keeps its time at the pane edge, so it never sits inside a frame.
-      // startedAt, not the clock text, decides: a tick never toggles the frame.
-      steps.every(s => s.startedAt === undefined) &&
+      // At 100h the complete label exceeds this stable reserve and removes
+      // the frame once. Unframed clocks keep the original pane edge.
+      clockWidth <= FRAME_CLOCK_COLUMNS &&
       !questionCompact && !metaBelow &&
       wideQuestionWidth - 2 >= minimumQuestionWidth && inlineStepWidth - 2 >= minimumStepWidth &&
       flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qArrowWidth), width - 2, HEADER_GAP) === qHead &&
@@ -3881,11 +3910,11 @@ export const register: Register = on => {
           const titleRow = metaBelow ? [dot, text] : [dot, text, titleToggle, owner, clock]
           return (
             <Box key={`grouped-step-${s.id}`} flexDirection="column" flexShrink={0}>
-              {heading !== undefined && canShowHeadings(sRows) && <Box key={`step-group-${s.status}`} height={1} flexShrink={0}><Text bold dimColor>{heading}</Text></Box>}
+              {heading !== undefined && showHeadings && <Box key={`step-group-${s.status}`} height={1} flexShrink={0}><Text bold dimColor>{heading}</Text></Box>}
               <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
                 {stackedRow ? <Box flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
                 {metaBelow && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
-                {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - Number(metaBelow) - Number(heading !== undefined && canShowHeadings(sRows)))}</Text></Box>}
+                {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - Number(metaBelow) - Number(heading !== undefined && showHeadings))}</Text></Box>}
                 {reason}
                 {follow}
               </Box>
@@ -3895,15 +3924,22 @@ export const register: Register = on => {
         </Box>
         </Box>
         <Box flexGrow={1} />
-        <Box key="bottom-bar" width={width} height={footerRows} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={0}>
+        <Box key="bottom-bar" width={width} height={footerRows} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={footer.gap} marginTop={0}>
           {l.questions.length > 0 && [
-            item('item-footer-questions', <Box key="footer-question-word"><Text dimColor>{footerQuestionWord}</Text></Box>),
-            item('item-clear-questions', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />),
-            item('item-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />),
+            <Box key="footer-questions-first" flexDirection="row" flexShrink={0} columnGap={footer.gap}>
+              {item('footer-question-word', <Text dimColor>{footer.questionWord}</Text>)}
+              {item('item-clear-questions', <Button key="clear-questions" plain dimColor hotkey="q" label={footer.allLabel} onPress={() => clearQuestions($)} />)}
+            </Box>,
+            item('item-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={footer.doneLabel} onPress={clearAnsweredQuestions} />),
           ]}
-          {item('item-footer-steps', <Box key="footer-step-word"><Text dimColor>{footerStepWord}</Text></Box>)}
-          {clearButtons()}
-          {shownHints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
+          <Box key="footer-steps-first" flexDirection="row" flexShrink={0} columnGap={footer.gap}>
+            {item('footer-step-word', <Text dimColor>{footer.stepWord}</Text>)}
+            {l.steps.length > 0
+              ? item('item-clear-steps', <Button key="clear-steps" plain dimColor hotkey="s" label={footer.allLabel} onPress={() => clearSteps($)} />)
+              : item('item-clear-completed', <Button key="clear-completed" plain dimColor hotkey="c" label={footer.doneLabel} onPress={clearCompletedSteps} />)}
+          </Box>
+          {l.steps.length > 0 && item('item-clear-completed', <Button key="clear-completed" plain dimColor hotkey="c" label={footer.doneLabel} onPress={clearCompletedSteps} />)}
+          {footer.hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
         </Box>
         {/* One row per active state. The wrapper keeps the old banner seat; only the amber glyph pulses. */}
         <Box key="banner" width={width} flexDirection="column" justifyContent="center" backgroundColor={bannerRows.at(-1)?.background ?? 'success'}>

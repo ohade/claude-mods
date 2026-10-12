@@ -2,6 +2,8 @@ export type RegionLayout = {
   qHead: number; sHead: number; qRows: number; sRows: number
   qLast: number; sLast: number; qStart: number; qEnd: number; sStart: number; sEnd: number
   summaryRows?: number; qArrowWidth?: number; sArrowWidth?: number; briefFooter?: boolean
+  footerMode?: number
+  showHeadings?: boolean
 }
 
 // Heights and layouts follow the current drawing; previews may also belong to
