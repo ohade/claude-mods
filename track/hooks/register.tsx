@@ -663,8 +663,8 @@ const isPulsing = (l: Ledger, now: Activity): boolean => {
 // The host knows about tab selection and placement; pane.isOpen alone does not.
 // Older hosts cannot report it. Keep their existing animation rather than fail
 // the pane's render; unknown visibility does not prove that animation stopped.
-const VISIBILITY_WAIT_MS = 5
-const paneVisibility: { warned: boolean; pending?: Promise<boolean> } = { warned: false }
+const VISIBILITY_WAIT_MS = 50
+const paneVisibility: { warned: boolean; pending?: { generation: number; value: Promise<boolean> } } = { warned: false }
 const paneAnimation: { generation: number; renderRevision: number; isOpen: boolean; monitor?: Timer } = {
   generation: 0, renderRevision: 0, isOpen: false,
 }
@@ -678,21 +678,33 @@ const visibilityFallback = ($: EngineInterface, error: unknown): boolean => {
 // Never wait on host visibility in rendering. Timer callers share one bounded
 // lookup; a hung host cannot accumulate a new request on every pulse.
 const paneCanAnimate = ($: EngineInterface): Promise<boolean> => {
-  if (paneVisibility.pending !== undefined) return paneVisibility.pending
+  const existing = paneVisibility.pending
+  if (existing !== undefined) {
+    // Keep the raw request across lifecycles, but never apply an old generation's
+    // visibility answer to replacement timers. Unknown retains legacy animation.
+    return existing.generation === paneAnimation.generation
+      ? existing.value
+      : Promise.resolve(visibilityFallback($, 'previous lookup still pending'))
+  }
   let finish!: (shown: boolean) => void
   const pending = new Promise<boolean>(resolve => { finish = resolve })
-  paneVisibility.pending = pending
-  const deadline = $.clock.after(VISIBILITY_WAIT_MS, () => finish(visibilityFallback($, 'lookup timed out')))
+  const lookup = { generation: paneAnimation.generation, value: pending }
+  let timedOut = false
+  const deadline = $.clock.after(VISIBILITY_WAIT_MS, () => {
+    timedOut = true
+    finish(visibilityFallback($, 'lookup timed out'))
+  })
+  paneVisibility.pending = lookup
   void (async () => {
     try {
       const panes = await $.ui.panes()
-      paneVisibility.warned = false
+      if (!timedOut && lookup.generation === paneAnimation.generation) paneVisibility.warned = false
       finish(panes.some(p => p.id === PANE && p.isShown && p.isPlaced))
     } catch (error) {
       finish(visibilityFallback($, error))
     } finally {
       deadline.cancel()
-      if (paneVisibility.pending === pending) paneVisibility.pending = undefined
+      if (paneVisibility.pending === lookup) paneVisibility.pending = undefined
     }
   })()
   return pending
@@ -705,7 +717,6 @@ const stopVisibilityMonitor = (): void => {
 
 const stopPaneTimers = (): void => {
   paneAnimation.generation++
-  paneVisibility.pending = undefined
   stopVisibilityMonitor()
   pulsing.timer?.cancel()
   ticking.timer?.cancel()
