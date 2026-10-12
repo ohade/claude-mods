@@ -617,6 +617,34 @@ const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 // Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
 const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | undefined>)
 const detailAnchors = atom({ plugin: 'track', key: 'detailAnchors' } as const, {} as Record<string, { source: string; offset: number } | undefined>)
+// Status, clocks and notes describe the same source. Replacement provenance
+// and title changes identify a different row even when its local id is reused.
+const questionSource = (q: Question): string => JSON.stringify([q.id, q.head, q.at, q.turnId, q.trackedBy, q.sourceId, q.restoredFrom, q.restoredBy])
+const stepSource = (s: Step): string => JSON.stringify([s.id, s.source, s.subject, s.sourceId, s.createdRequestId])
+const prunePresentation = async ($: EngineInterface, before: Ledger, after: Ledger, resetSteps?: 'plan' | 'all'): Promise<void> => {
+  const previousQuestions = new Map(before.questions.map(q => [String(q.id), questionSource(q)]))
+  const previousSteps = new Map(before.steps.map(s => [s.id, stepSource(s)]))
+  const questions = new Map(after.questions.filter(q => q.cleared !== true).map(q => [String(q.id), q]))
+  const steps = new Map(visibleSteps(after.steps).map(s => [s.id, s]))
+  const keep = (key: string, anchor = false): boolean => {
+    if (key.startsWith('step:')) {
+      const id = key.slice(5)
+      const row = steps.get(id)
+      return row !== undefined && resetSteps !== 'all' && !(resetSteps === 'plan' && row.source === 'plan') && previousSteps.get(id) === stepSource(row)
+    }
+    const id = anchor ? key.startsWith('q:') ? key.slice(2) : '' : key
+    const row = questions.get(id)
+    return row !== undefined && previousQuestions.get(id) === questionSource(row)
+  }
+  const selected = await read($, reveal)
+  if (Object.keys(selected).some(key => selected[key] === undefined || !keep(key))) {
+    await update($, reveal, cur => Object.fromEntries(Object.entries(cur).filter(([key, side]) => side !== undefined && keep(key))))
+  }
+  const anchors = await read($, detailAnchors)
+  if (Object.keys(anchors).some(key => anchors[key] === undefined || !keep(key, true))) {
+    await update($, detailAnchors, cur => Object.fromEntries(Object.entries(cur).filter(([key, value]) => value !== undefined && keep(key, true))))
+  }
+}
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
@@ -1017,7 +1045,8 @@ const dropRewound = async ($: EngineInterface): Promise<boolean> => {
 // ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
 // model not to answer it. The Stop gate stops holding the turn for it, as it is gone.
 const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
-  const q = (await read($, ledger)).questions.find(one => one.id === id)
+  const before = await read($, ledger)
+  const q = before.questions.find(one => one.id === id)
   if (q === undefined) {
     return
   }
@@ -1026,6 +1055,7 @@ const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
     questions: cur.questions.filter(one => one.id !== id),
     withdrawn: [...(cur.withdrawn ?? []), { id, head: q.head }],
   }))
+  await prunePresentation($, before, await read($, ledger))
   await publishGate($)
   await saveLedger($)
   $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
@@ -1845,6 +1875,7 @@ const savedLedger = (raw: unknown, owner?: string): Ledger | undefined => {
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
 // counting up, so a later Q<n> never reuses one the model saw.
 const clearQuestions = async ($: EngineInterface): Promise<void> => {
+  const before = await read($, ledger)
   await update<Ledger>($, ledger, cur => ({
     ...cur,
     questions: [],
@@ -1853,13 +1884,16 @@ const clearQuestions = async ($: EngineInterface): Promise<void> => {
       ...cur.questions.filter(q => q.status !== 'answered').map(q => ({ id: q.id, head: q.head })),
     ],
   }))
+  await prunePresentation($, before, await read($, ledger))
   await publishGate($)
   await saveLedger($)
   $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
 }
 
 const clearSteps = async ($: EngineInterface): Promise<void> => {
+  const before = await read($, ledger)
   await update<Ledger>($, ledger, cur => ({ ...cur, steps: [] }))
+  await prunePresentation($, before, await read($, ledger))
   await saveLedger($)
   $.ui.toast('track: steps cleared.')
 }
@@ -2058,11 +2092,14 @@ export const register: Register = on => {
       await applyCancel($, owners, ran)
       return ran
     }
-    const before = JSON.stringify(await read($, ledger))
+    const before = await read($, ledger)
     const ran = await next(e)
     await applyCancel($, owners, ran)
-    if (ran.deny !== undefined || ran.isError === true || before === JSON.stringify(await read($, ledger))) return ran
+    if (ran.deny !== undefined || ran.isError === true) return ran
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
+    const after = await read($, ledger)
+    if (sameValue(before, after)) return ran
+    await prunePresentation($, before, after)
     await publishGate($)
     if (await saveLedger($)) return ran
     const warning = `track: unsaved — ${persistence.failure}`
@@ -2878,7 +2915,10 @@ export const register: Register = on => {
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
+    const before = await read($, ledger)
     await update<Ledger>($, ledger, cur => ({ ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
+    // This is a replacement even when every id and title remains identical.
+    await prunePresentation($, before, await read($, ledger), 'plan')
     await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
@@ -3050,6 +3090,8 @@ export const register: Register = on => {
     const listed = restored.map(q => `\nQ${q.id} ${q.status} ${q.head}`).join('')
 
     const applied = await read($, ledger)
+    // A questions-only restore leaves the existing Steps presentation alone.
+    await prunePresentation($, before, applied, replace && steps.length > 0 ? 'all' : undefined)
     const openSteps = openStepsOf(applied.steps)
     return { result: checkpoint === undefined ? `Restored ${restoreStepCount({ by: '', from, steps: steps.length, visibleSteps: visibleStepCount, questions: restored })} and ${counted(restored.length, 'question')} from session ${from}. ${where}${listed}\nOpen steps: ${JSON.stringify(openSteps)}` : JSON.stringify({ ...checkpoint, destination_session: destination, applied_checksum: await appliedChecksum(source!, applied, from, destination!), open_steps: openSteps }) }
     } catch (error) {
@@ -3371,6 +3413,9 @@ export const register: Register = on => {
     // Opening brings that row into view once. Later wheel, key, and track_question
     // writes to scrollAt.questions win; the open row does not pin the window.
     const toggleReveal = async (id: number, side: 'q' | 'a', index: number, pageTitle = false) => {
+      const displayed = questions[index]
+      const current = (await read($, ledger)).questions.find(q => q.id === id && q.cleared !== true)
+      if (displayed === undefined || current === undefined || questionSource(displayed) !== questionSource(current)) return
       let opening = false
       await update($, reveal, cur => {
         const next = cur[String(id)] === side ? undefined : side
@@ -3385,6 +3430,9 @@ export const register: Register = on => {
     // Selection is local presentation state. Keep at most one step detail open,
     // without changing the saved subject, status or the question/answer selection.
     const toggleStepTitle = async (id: string, index: number) => {
+      const displayed = stepRows[index]?.step
+      const current = visibleSteps((await read($, ledger)).steps).find(s => s.id === id)
+      if (displayed === undefined || current === undefined || stepSource(displayed) !== stepSource(current)) return
       let opening = false
       await update($, reveal, cur => {
         opening = cur[`step:${id}`] !== 'q'
@@ -3397,18 +3445,22 @@ export const register: Register = on => {
     }
     const sDone = steps.filter(s => s.status === 'completed').length
     const clearAnsweredQuestions = async () => {
+      const before = await read($, ledger)
       await update($, ledger, cur => ({
         ...cur,
         questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
       }))
+      await prunePresentation($, before, await read($, ledger))
       await publishGate($)
       await saveLedger($)
     }
     const clearCompletedSteps = async () => {
+      const before = await read($, ledger)
       await update($, ledger, cur => ({
         ...cur,
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
+      await prunePresentation($, before, await read($, ledger))
       await publishGate($)
       await saveLedger($)
     }
