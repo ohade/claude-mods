@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import { atomStore, pane, pluginStore, SESSION } from './kit'
+import { collectTitlePages } from './pane-detail-assertions'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -586,7 +587,7 @@ test('question and step rows are indented the same under their headers', async (
 })
 
 // TRACK-14: the closed Text must describe the painted preview, not hidden full
-// words. Selecting the title opens the full head in a wrapping Text.
+// words. Selecting the title replaces the preview with complete source pages.
 test('a long question is shortened when closed and shown whole when selected', async ($, on) => {
   const head = 'Why did the build fetch the cache when only the lint step was asked for in the brief?'
   const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
@@ -601,7 +602,9 @@ test('a long question is shortened when closed and shown whole when selected', a
   expect(preview.length).toBeLessThan(head.length)
   expect(texts).toContain('●')
   await ui.press({ key: 'title-q-4' })
-  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === head && text.props.wrap === 'wrap')).toBe(true)
+  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === preview)).toBe(false)
+  await collectTitlePages(ui, 'q', 4, 'Q1', head)
+  expect(long.questions[0].head).toBe(head)
   await ui.press({ key: 'title-q-4' })
   expect((await ui.findAll({ type: 'Text' })).some(text => String(text.text ?? '').includes(head))).toBe(false)
 })
@@ -613,9 +616,12 @@ test('a long step is shortened when closed and shown whole when selected', async
   const ui = await $.ui.mount(pane('dock'))
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(texts.some(text => text.includes(subject))).toBe(false)
-  expect(texts.find(text => text.startsWith('S1. '))?.endsWith('…')).toBe(true)
+  const preview = texts.find(text => text.startsWith('S1. '))
+  expect(preview?.endsWith('…')).toBe(true)
   await ui.press({ key: `title-s-${BOTH.steps[0].id}` })
-  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === subject && text.props.wrap === 'wrap')).toBe(true)
+  expect((await ui.findAll({ type: 'Text' })).some(text => text.text === preview)).toBe(false)
+  await collectTitlePages(ui, 's', BOTH.steps[0].id, 'S1', subject)
+  expect(long.steps[0].subject).toBe(subject)
   await ui.press({ key: `title-s-${BOTH.steps[0].id}` })
   expect((await ui.findAll({ type: 'Text' })).some(text => String(text.text ?? '').includes(subject))).toBe(false)
 })
