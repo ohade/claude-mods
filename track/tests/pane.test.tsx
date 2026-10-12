@@ -142,6 +142,30 @@ test('at the steps cap, a done step goes, not an unfinished one', async ($, on) 
 type Box = { key?: string; type?: string; text?: string; props: unknown }
 const heightOf = (all: Box[], key: string) => (all.find(el => el.key === key)?.props as { height?: number } | undefined)?.height ?? 0
 
+// Independent packing from the native footer's real child tree. Grouped
+// labels and their first Button count as one indivisible row item.
+type FooterNode = { type?: string; props?: { width?: number; flexDirection?: string; columnGap?: number; label?: string; hotkey?: string }; children?: Array<FooterNode | string> }
+const footerItemWidth = (node: FooterNode | string): number => {
+  if (typeof node === 'string') return node.length
+  if (typeof node.props?.width === 'number') return node.props.width
+  if (node.type === 'Button') return String(node.props?.label ?? '').length + (node.props?.hotkey ? node.props.hotkey.length + 2 : 0)
+  const widths = (node.children ?? []).map(footerItemWidth)
+  return node.props?.flexDirection === 'row'
+    ? widths.reduce((a, b) => a + b, 0) + Math.max(0, widths.length - 1) * Number(node.props.columnGap ?? 0)
+    : Math.max(0, ...widths)
+}
+const footerTreeRows = (footer: FooterNode, width: number): number => {
+  const gap = Number(footer.props?.columnGap ?? 0)
+  const itemWidths = (footer.children ?? []).map(footerItemWidth).filter(n => n > 0)
+  let rows = 1
+  let occupied = 0
+  for (const itemWidth of itemWidths) {
+    if (occupied > 0 && occupied + gap + itemWidth > width) { rows++; occupied = itemWidth }
+    else occupied += (occupied > 0 ? gap : 0) + itemWidth
+  }
+  return rows
+}
+
 const layout = async ($: Engine, on: On, ledger: unknown, columns: number, rows = 30) => {
   atomStore(on, 'ledger', ledger)
   atomStore(on, 'activity', IDLE)
@@ -165,10 +189,13 @@ test('the canonical footer wraps whole items and reserves their measured rows', 
   const narrow = await layout($, on, { ...EMPTY, steps }, 46)
   const footer = narrow.find(el => el.key === 'bottom-bar')
   expect((footer?.props as { flexWrap?: string } | undefined)?.flexWrap).toBe('wrap')
+  const header = narrow.find(el => el.key === 'steps-header')
+  expect((header?.props as { flexWrap?: string } | undefined)?.flexWrap).toBe('wrap')
+  expect((narrow.find(el => el.key === 'steps-word')?.props as { flexShrink?: number } | undefined)?.flexShrink).toBe(0)
   for (const key of ['item-clear-steps', 'item-clear-completed']) {
     expect((narrow.find(el => el.key === key)?.props as { flexShrink?: number } | undefined)?.flexShrink).toBe(0)
   }
-  expect(heightOf(narrow, 'bottom-bar')).toBeGreaterThanOrEqual(2)
+  expect(heightOf(narrow, 'bottom-bar')).toBe(footerTreeRows(footer as FooterNode, 46))
 })
 
 test('allocated rows account exactly for measured footer and section chrome at each width', async ($, on) => {
