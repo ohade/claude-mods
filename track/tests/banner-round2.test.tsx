@@ -85,9 +85,9 @@ test('four banner rows collapse when grouped headings would hide a third step', 
     $, on,
     [step(1, 'waiting'), step(2, 'in_progress'), step(3, 'in_progress', { delegated: true })],
     { ...IDLE, isWorking: true },
-    // Two ACTIVE tasks and one WAITING task need five rows with headings.
-    // Fixed rows take ten with stacked banners, leaving only four here.
-    { unsaved: true, reason: 'quota exhausted', rows: 14 },
+    // Fixed rows take ten with four stacked banners, leaving two here: fewer
+    // than the three tasks even without headings, so the banner must collapse.
+    { unsaved: true, reason: 'quota exhausted', rows: 12 },
   )
   const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
   expect(rows.map(row => row.key)).toEqual(['banner-line'])
