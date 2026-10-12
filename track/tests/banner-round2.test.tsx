@@ -111,9 +111,9 @@ test('four banner rows collapse when grouped headings would hide a third step', 
   expect(stepRows).toBeGreaterThanOrEqual(5)
 })
 
-// 12 + summary + heading = 14. 14 + those two crosses the roomy threshold,
-// which adds three spacing rows: 19. These heights freeze before RED.
-for (const rows of [14, 19]) for (const count of [1, 2, 3]) {
+// Preserve the original 12/14-row boundary checks, plus the taller grouped case.
+// All tasks must remain visible without collapsing the two distinct banners.
+for (const rows of [12, 14, 19]) for (const count of [1, 2, 3]) {
   test(`${count} visible steps keep two separate banner rows in a ${rows}-row pane`, async ($, on) => {
     const ui = await mount($, on,
       Array.from({ length: count }, (_, i) => step(i + 1, 'in_progress')),
