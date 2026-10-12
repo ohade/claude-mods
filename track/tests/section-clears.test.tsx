@@ -26,17 +26,20 @@ const setup = (on: On) => {
 }
 
 for (const width of [17, 80]) {
-  for (const key of ['clear-completed', 'clear-completed-bottom']) {
-    test(`Steps ${key} at ${width} columns saves only completed-step clears`, async ($, on) => {
+    test(`Steps canonical completed clear at ${width} columns is unique and saves only completed-step clears`, async ($, on) => {
       const { l, store } = setup(on)
       const ui = await $.ui.mount(pane('dock', width, 30))
+      const controls = (await ui.findAll({ type: 'Button' })).filter(button => String(button.key ?? '').startsWith('clear-completed'))
+      expect(controls).toHaveLength(1)
+      expect(controls[0]?.key).toBe('clear-completed')
+      expect(controls[0]?.props.hotkey).toBe('c')
+      expect(controls[0]?.props.label).toBe(width < 40 ? 'done' : 'clear completed')
       expect(store.held.size).toBe(0)
-      await ui.press({ key })
+      await ui.press({ key: 'clear-completed' })
       expect(l.value.questions).toEqual(QUESTIONS.map(row => ({ ...row, session_id: SESSION })))
       expect(l.value.steps).toEqual(STEPS.map(s => ({ ...(s.status === 'completed' ? { ...s, cleared: true } : s), session_id: SESSION })))
       expect((store.held.get(`s:${SESSION}`) as any).ledger).toEqual(l.value)
     })
-  }
 
   test(`Questions has its own completed-clear control at ${width} columns and preserves every step`, async ($, on) => {
     const { l, store } = setup(on)
