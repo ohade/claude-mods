@@ -71,9 +71,10 @@ test('narrow counts fit on one item and clocks sit below step text', async ($, o
   const step = all.find(el => el.key?.startsWith('row-s-'))
   expect(step?.props.flexDirection).toBe('column')
   const id = String(step?.key ?? '').slice('row-s-'.length)
-  const children = step?.children as Array<{ props?: { flexDirection?: string }; children?: Array<{ props?: { key?: string } }> }>
+  const children = step?.children as Array<{ props?: { flexDirection?: string; width?: number }; children?: Array<{ props?: { key?: string } }> }>
   const metadata = children.at(-1)
   expect(metadata?.props?.flexDirection).toBe('row')
+  expect(metadata?.props?.width).toBe(17)
   expect(metadata?.children?.at(-1)?.props?.key).toBe(`s-time-slot-${id}`)
   expect(all.find(el => el.key === `s-time-slot-${id}`)?.props).toMatchObject({ justifyContent: 'flex-end', flexShrink: 0 })
 })

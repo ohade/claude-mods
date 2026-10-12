@@ -36,10 +36,18 @@ for (const width of [25, 60]) {
       const row = await ui.find({ key: 'row-s-plan:1' })
       const owner = await ui.find({ key: 's-owner-plan:1' })
       const slot = await ui.find({ key: 's-time-slot-plan:1' })
-      const children = row?.children as Array<{ props?: { key?: string; width?: number } }>
-      expect(Number(text?.props.width) + Number(owner?.props.width) + Number(slot?.props.width)
-        + 2 + 1 + 4 * Number(row?.props.columnGap) + Number(row?.props.marginLeft)).toBe(width)
-      expect(children.at(-1)?.props?.key).toBe('s-time-slot-plan:1')
+      const children = row?.children as Array<{ props?: { key?: string; width?: number; flexDirection?: string }; children?: Array<{ props?: { key?: string } }> }>
+      if (width === 25) {
+        expect(row?.props.flexDirection).toBe('column')
+        const metadata = children.at(-1)
+        expect(metadata?.props?.flexDirection).toBe('row')
+        expect(metadata?.props?.width).toBe(width - Number(row?.props.marginLeft))
+        expect(metadata?.children?.at(-1)?.props?.key).toBe('s-time-slot-plan:1')
+      } else {
+        expect(Number(text?.props.width) + Number(owner?.props.width) + Number(slot?.props.width)
+          + 2 + 1 + 4 * Number(row?.props.columnGap) + Number(row?.props.marginLeft)).toBe(width)
+        expect(children.at(-1)?.props?.key).toBe('s-time-slot-plan:1')
+      }
       expect(slot?.props).toMatchObject({ justifyContent: 'flex-end', flexShrink: 0 })
       expect(Number(slot?.props.width)).toBeGreaterThanOrEqual(expected.length)
     })
