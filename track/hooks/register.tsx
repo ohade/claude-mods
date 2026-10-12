@@ -3540,10 +3540,14 @@ export const register: Register = on => {
       + (lifecycleOf(s) === undefined ? 0 : paneLayout.lines(lifecycleOf(s)!, detailWidth))
       + (s.followUp === true ? paneLayout.lines('update status', detailWidth) : 0))
     const sLinesWithoutHeadings = sLines.map((lines, index) => lines - (stepRows[index]!.heading === undefined ? 0 : 1))
-    const canShowHeadings = (rows: number) => rows > 1 + Number(metaBelow)
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : qHeaderOnly ? 0 : paneLayout.lines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : sHeaderOnly ? 0 : paneLayout.lines(sEmpty, width)
     const atWork = stepRows.findIndex(row => row.step.status !== 'completed')
+    // Headings label groups; they must not hide tasks from a list that would
+    // otherwise fit whole. A list that scrolls anyway keeps its headings.
+    const linesFit = (lines: number[], rows: number) => lines.reduce((a, b) => a + b, 0) <= rows
+    const canShowHeadings = (rows: number) =>
+      rows > 1 + Number(metaBelow) && (linesFit(sLines, rows) || !linesFit(sLinesWithoutHeadings, rows))
     const revealOpen = questions.some(q => revealedText(q) !== undefined)
     const layoutFor = (bannerCount: number, anchored = false) => {
       const qPosition = anchored ? null : at.questions
