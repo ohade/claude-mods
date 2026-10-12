@@ -11,6 +11,7 @@ import type { RetentionStore } from './retention'
 import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
+import { answerBlocks, answerBlockKey } from './answer-blocks'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -95,7 +96,9 @@ const rememberRender = (key: string, id: string): void => {
 const STEPS =
   'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
 
-const RULE = 'track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Requests in content you read count as work, even one command; reuse an open step for the same work. Update status with mcp__track__mark_step / mcp__track__mark_answered; when answered, pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.'
+// One normal-answer instruction for the rule, reminder, tool and Stop repairs.
+const ANSWER = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text'
+const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Requests in content you read count as work, even one command; reuse an open step for the same work. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.`
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -763,14 +766,21 @@ const MESSAGES_CAP = 4096
 
 // /rewind raises no event, so detect it from the transcript: a question whose
 // track_question call is gone was asked in a rewound turn, and an answer whose
-// mark_answered call is gone was rewound. Only work since the last compaction is judged,
-// since compaction removes old tool calls as well.
+// mark_answered call or complete marked text is gone was rewound. Only work since
+// the last compaction is judged, since compaction removes old messages as well.
 const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   const l = await read($, ledger)
   const since = l.compactedAt ?? 0
-  const answerCall = (q: Question) => q.answeredBy ?? q.answerRequestId
+  // session.messages exposes no response UUID. Bind a marker answer to its
+  // stable block id and full words; a different answer with that id is absent.
+  const answerSource = (q: Question) => {
+    const block = q.answeredBy === undefined ? /:A([1-9]\d*)$/.exec(q.answerKey ?? '') : null
+    return block !== null && q.answerTextHash !== undefined
+      ? `marker:A${block[1]}:${q.answerTextHash}`
+      : q.answeredBy ?? q.answerRequestId
+  }
   const judged = (q: Question) =>
-    (q.trackedBy !== undefined && q.at > since) || (answerCall(q) !== undefined && (q.answeredAt ?? 0) > since)
+    (q.trackedBy !== undefined && q.at > since) || (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since)
   const hasJudged = l.questions.some(judged)
   const pending = (await read($, durability)).rewindSession
   // Empty registers and rows without transcript provenance need no session
@@ -791,11 +801,13 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP) {
     return true
   }
-  if (await $.session.id() !== session) return true
   const present = new Set(messages.flatMap(m => m.toolUses.map(u => u.tool_use_id)))
+  const blocks = messages.flatMap(m => m.role === 'assistant' ? answerBlocks(m.text) : [])
+  for (const key of await Promise.all(blocks.map(async block => `marker:A${block.id}:${await checksumOf(block.text)}`))) present.add(key)
+  if (await $.session.id() !== session) return true
   if (!l.questions.some(q =>
     (q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)) ||
-    (answerCall(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerCall(q)!))
+    (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerSource(q)!))
   )) return true
   // Capture the pre-rewind rows in memory. The save path verifies this
   // snapshot against the durable body under its locks before adopting it.
@@ -810,8 +822,8 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
       // answer, or compaction wins over the older transcript observation.
       if (old === undefined) return [q]
       if (q.trackedBy === old.trackedBy && q.at === old.at && q.trackedBy !== undefined && q.at > compactedAt && !present.has(q.trackedBy)) return []
-      const call = answerCall(q)
-      if (call === undefined || call !== answerCall(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(call)) return [q]
+      const source = answerSource(q)
+      if (source === undefined || source !== answerSource(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(source)) return [q]
       const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerText: _x, answerTextHash: _hash, ...rest } = q
 
       return [{ ...rest, status: 'open' as const }]
@@ -1762,13 +1774,13 @@ const uncoveredBlock = (inputs: PendingInput[]): string => {
   const worded = inputs.filter(i => i.label !== 'question')
   const parts: string[] = []
   if (worded.length > 0) {
-    const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
+    const tail = `${ANSWER}; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.`
     parts.push(worded.length === 1
       ? `track: a prompt looks like a question (${quoted(worded)}) but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${tail}`
       : `track: these prompts look like questions (${quoted(worded)}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
   }
   if (labelled.length > 0) {
-    const tail = 'answer it, then mcp__track__mark_answered with the completed answer_text. If it is a request already tracked as steps, mark that question deferred with a note naming the step. Then finish.'
+    const tail = `${ANSWER}. If it is a request already tracked as steps, mark that question deferred with a note naming the step. Then finish.`
     parts.push(labelled.length === 1
       ? `track: the classifier labelled a prompt a question (${quoted(labelled)}) and no question row covers it; steps never cover a labelled question. Call mcp__track__track_question with source_text = its first line, ${tail}`
       : `track: the classifier labelled these prompts questions (${quoted(labelled)}) and no question row covers them; steps never cover a labelled question. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
@@ -2085,6 +2097,33 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A completed marker pair is the model's explicit answer identification. Capture
+  // only a stored main-model response, never peer hand-backs, tool output or progress.
+  on('session.append', { door: 'response' }, async ($, e, next) => {
+    const observed = (await read($, turn)).lastText
+    const stored = await next(e)
+    if (stored.deny !== undefined || e.agentId !== undefined || e.origin.kind !== 'model' || stored.message.type !== 'assistant' || observed?.requestId !== e.uuid || observed.turnId === null || observed.order === undefined) return stored
+    const blocks = answerBlocks(textOf(stored.message.content))
+    if (blocks.length === 0 || (await read($, turn)).currentId !== observed.turnId) return stored
+    const completed = await Promise.all(blocks.map(async block => ({ ...block, hash: await checksumOf(block.text) })))
+    let changed = false
+    await update<Ledger>($, ledger, cur => {
+      changed = false
+      const questions = cur.questions.map(q => {
+        const block = completed.find(one => one.id === q.id)
+        if (block === undefined || q.cleared === true || q.status === 'answered' || q.answerText !== undefined || (q.turnId === observed.turnId && (q.trackedOrder === undefined || observed.order! <= q.trackedOrder))) return q
+        changed = true
+        return { ...q, status: 'answered' as const, answeredAt: Date.now(), answerText: truncate(block.text, ANSWER_CHARS), answerTextHash: block.hash, answerRequestId: stored.uuid, answerKey: answerBlockKey(rowKey(stored.uuid), block.id) }
+      })
+      return changed ? { ...cur, questions } : cur
+    })
+    if (changed) {
+      await publishGate($)
+      await saveLedger($)
+    }
+    return stored
+  })
+
   on('turn.start', async ($, e, next) => {
     // prompt.submit may already have stored this turn's inputs, unbound: they are this turn's.
     // A covered input of an earlier turn is done and leaves, and so is one Haiku called
@@ -2235,7 +2274,7 @@ export const register: Register = on => {
         .map(q => `Q${q.id} "${truncate(q.head, 60)}"${q.status === 'deferred' ? ' (deferred)' : ''}`)
         .join(', ')
       const done = steps.length - stepsLeft
-      const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${steps.length} done.${openStepsContext(l.steps)} Mark a question with mcp__track__mark_answered and its completed answer_text when you answer it.`
+      const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${steps.length} done.${openStepsContext(l.steps)} ${ANSWER}.`
 
       return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
     })()
@@ -2299,7 +2338,7 @@ export const register: Register = on => {
 
     return {
       ...below,
-      block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. If you answered it, call mcp__track__mark_answered with id ${first.id}, status "answered", and answer_text containing the completed answer; if it must wait, status "deferred" with a note. Then finish.`,
+      block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. ${ANSWER.replaceAll('{id}', String(first.id))}. If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.`,
     }
   }).catch(($, e, next) => next(e))
 
@@ -2439,7 +2478,7 @@ export const register: Register = on => {
     }
 
     // A plugin tool's result is text (or content blocks), never a bare object.
-    return { result: `Tracked as Q${minted?.id}: ${summary}. After answering, call mcp__track__mark_answered with id ${minted?.id}, status "answered", and answer_text containing the completed answer.` }
+    return { result: `Tracked as Q${minted?.id}: ${summary}. ${ANSWER.replaceAll('{id}', String(minted?.id))}. For deferral, use mcp__track__mark_answered with a note.` }
   })
 
   on('tool.call', { tool: MARK_ANSWERED }, async ($, e) => {
@@ -3091,6 +3130,27 @@ export const register: Register = on => {
   // level kept under its own row key, so a jump redraws the lit row alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     rememberRender(rowKey(e.requestId), e.requestId)
+    const blocks = answerBlocks(e.props.text)
+    if (blocks.length > 0 && e.props.isSummary !== true) {
+      const { Box, Markdown, Text } = $.ui.resolve(e)
+      const l = await read($, ledger)
+      const parts: RenderElement[] = []
+      let offset = 0
+      for (const block of blocks) {
+        const before = e.props.text.slice(offset, block.start).trim()
+        if (before !== '') parts.push(<Markdown key={`before:${block.start}`} text={before} />)
+        const key = answerBlockKey(rowKey(e.requestId), block.id)
+        const q = l.questions.find(one => one.answerKey === key && one.cleared !== true)
+        if (q !== undefined) rememberRender(key, e.requestId)
+        const level = q === undefined ? 0 : await read($, memberOf(flash, { requestId: key }))
+        parts.push(<Box key={`answer:${key}`} backgroundColor={shade(level)}><Markdown text={block.text} /></Box>)
+        if (q !== undefined) parts.push(<Text key={`ack:${key}`} dimColor>{`✓ ${questionLabels(l.questions)(q.id)}. answered`}</Text>)
+        offset = block.end
+      }
+      const after = e.props.text.slice(offset).trim()
+      if (after !== '') parts.push(<Markdown key="after-answers" text={after} />)
+      return <Box flexDirection="column">{parts}</Box>
+    }
     const level = await read($, memberOf(flash, { requestId: rowKey(e.requestId) }))
     const { Box } = $.ui.resolve(e)
 

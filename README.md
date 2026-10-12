@@ -85,9 +85,16 @@ and meaningful work. Claude decides what to register from any sender, including 
 running turn. Doorbells and informational notifications alone need no row. Track has no transport-specific workflow.
 
 - **Questions.** The model sends each question to the pane with `track_question` and closes it
-  with `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
+  with a completed answer block or `mark_answered` (answered or deferred); a standing rule in the system prompt asks it to.
   A question with a verified user source links to that source. Otherwise its tracking call is the
-  visible source. To mark it answered, Claude supplies the completed `answer_text`, or explicitly
+  visible source. For a normal answer, Claude writes its formatted Markdown once between
+  standalone `<!-- A15:start -->` and `<!-- A15:end -->` lines, replacing `15` with the stable
+  numeric id returned by `track_question`. Track captures the completed main-model response,
+  hides the markers and shows the answer once. Its dim acknowledgement sits outside the answer.
+  Each `[ A ]` highlights only its own block, leaving other answers and status footers unlit.
+  Incomplete, empty, nested, duplicate or mismatched markers never complete a question;
+  code examples, block quotes, peer hand-backs and subagent responses cannot supply an answer.
+  Unknown and withdrawn ids remain unchanged. For tool/file-only answers, Claude supplies the completed `answer_text`, or explicitly
   identifies the latest verified native response with `answer_request_id`. A bare answered status
   is refused without changing the ledger; latest progress text cannot supply an answer.
   The update draws one dim `✓ Q<n>. answered` line. If the explicit text has no verified native
@@ -211,9 +218,12 @@ running turn. Doorbells and informational notifications alone need no row. Track
   turn saves the register, and native session startup loads it for `/resume`. Rewind observations
   are coalesced and fenced to their session; compaction and capped transcript reads do not imply
   that older calls were rewound. A refused rewind save holds the prompt until the save can succeed.
+  Marker answers remain answered while their stable block id and full completed words remain
+  in the main transcript; removing that block reopens its question. The transcript API has no
+  response UUID, so rewind checks use the full answer fingerprint rather than the jump target.
   Answer jumps use event order within the question's actual tracking turn. Text before the tracking
   call cannot become its answer, even when wall-clock timestamps are equal. A later turn may answer
-  an older question. A mark before a response must provide completed `answer_text`. A later response
+  an older question. For the tool/file-only fallback, a mark before a response must provide completed `answer_text`. A later response
   can reanchor it only when the full completed words match exactly and only one eligible question matches.
   Unidentified future text never supplies missing answer words.
   An explicit `answer_request_id` must match the latest host-observed response; unknown sources

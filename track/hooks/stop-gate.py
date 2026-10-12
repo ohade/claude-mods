@@ -25,8 +25,11 @@ def decision(payload, snapshot):
         return {}
     return {"decision": "block", "reason": (
         f'track: Q{first["id"]} "{first["head"]}" from this turn is still open. '
-        f'Call mcp__track__mark_answered({{ id: {first["id"]}, status: "answered" }}) '
-        'after answering, or status "deferred" with a note if it must wait. Then finish.'
+        f'Write the formatted answer once between standalone <!-- A{first["id"]}:start --> '
+        f'and <!-- A{first["id"]}:end --> lines; Track captures it automatically. '
+        'Do not also send answer_text. For a tool/file-only answer, call '
+        'mcp__track__mark_answered with the completed answer_text. '
+        'If it must wait, use status "deferred" with a note. Then finish.'
     )}
 
 
