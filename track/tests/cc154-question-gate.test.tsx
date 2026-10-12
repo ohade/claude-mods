@@ -75,3 +75,12 @@ test('a task notification does not block', async ($, on) => {
   await ask($, '<task-notification><task-id>ag1</task-id></task-notification> why?', { kind: 'task-notification' })
   expect((await stop($)).block).toBeUndefined()
 })
+
+// A subagent hand-back reaches the prompt door under the peer origin, in the shape Claude Code
+// delivers it. It is model output, not the person's question, so it never blocks Stop.
+test('a subagent hand-back does not block', async ($, on) => {
+  prepare(on)
+  const handback = 'Another Claude session sent a message:\n<agent-message from="a1">\n[Subagent hand-back] Did the build pass? Yes.\n</agent-message>'
+  await ask($, handback, { kind: 'peer' })
+  expect((await stop($)).block).toBeUndefined()
+})
