@@ -3,6 +3,7 @@
 // FIXTURE: native descriptions/dispatch, not terminal pixels or physical keys.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore, pane } from './kit'
+import { collectTitlePages } from './pane-detail-assertions'
 
 const IDLE = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
 const states = ['waiting', 'in_progress', 'pending', 'paused', 'completed']
@@ -67,8 +68,8 @@ for (const width of [17, 30]) for (const questionCount of [0, 5]) for (const inp
   })
 }
 
-// ASCII words only: this measures actual emitted detail lines, not hidden raw
-// source text. A missing visible ellipsis must not pass on tree containment.
+// ASCII words only: measure emitted continuation lines, separate from the
+// first row and the pager. Hidden full source cannot establish a fitting page.
 const wordLines = (text: string, width: number): number => {
   let lines = 1
   let used = 0
@@ -78,7 +79,7 @@ const wordLines = (text: string, width: number): number => {
   }
   return lines
 }
-test('a short opened step detail budgets its heading and leaves the ellipsis inside the region', async ($, on) => {
+test('a short opened step detail budgets its heading and pager without permanently clipping source', async ($, on) => {
   mock.clock(on)
   const subject = 'Inspect the source connection and record the visible alignment before continuing. '.repeat(6).trim()
   const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [{ id: 'plan:1', source: 'plan', subject, status: 'in_progress' }] })
@@ -86,14 +87,13 @@ test('a short opened step detail budgets its heading and leaves the ellipsis ins
   const ui = await $.ui.mount(pane('dock', 60, 12))
   await ui.press({ key: 'title-s-plan:1' })
   const heading = await ui.find({ key: 'step-group-in_progress' })
-  expect(heading).toBeDefined()
-  const row = await ui.find({ key: 'row-s-plan:1' })
-  const children = row?.children as Array<Element>
-  const detail = children.find(child => child.props?.marginLeft === 3)
-  const text = (detail?.children?.[0] as Element)?.children?.join('') ?? ''
-  expect(text.endsWith('…')).toBe(true)
+  const detail = await ui.find({ key: 'detail-s-plan:1' })
+  const text = String(detail?.text ?? '')
+  const pager = await ui.find({ key: 'detail-controls-s-plan:1' })
+  expect(pager?.props.height).toBe(1)
   const regionRows = Number((await ui.find({ key: 'steps' }))?.props.height ?? 0)
-  expect(Number(heading?.props.height) + 1 + wordLines(text, Number(detail?.props?.width))).toBeLessThanOrEqual(regionRows)
+  expect(Number(heading?.props.height ?? 0) + 1 + (text === '' ? 0 : wordLines(text, Number(detail?.props?.width))) + 1).toBeLessThanOrEqual(regionRows)
+  await collectTitlePages(ui, 's', 'plan:1', 'S1', subject)
   expect(ledger.value.steps[0].subject).toBe(subject)
   expect(ledger.writes).toHaveLength(0)
 })
