@@ -3425,21 +3425,24 @@ export const register: Register = on => {
       await prunePresentation($, before, after)
       return true
     }
-    const toggleReveal = async (id: number, side: 'q' | 'a', index: number, pageTitle = false) => {
+    // Q always pages its title in place; A shows the saved answer below it.
+    const toggleReveal = async (id: number, side: 'q' | 'a', index: number) => {
       const displayed = questions[index]
       const before = await read($, ledger)
       const current = before.questions.find(q => q.id === id && q.cleared !== true)
       if (displayed === undefined || current === undefined || questionSource(displayed) !== questionSource(current)) return
-      const paged = pageTitle && side === 'q'
+      const paged = side === 'q'
+      // A stored 'q' without its source anchor draws closed, so a press opens it.
+      const anchoredBefore = (await read($, detailAnchors))[`q:${id}`]?.source === displayed.head
       if (paged) await update($, detailAnchors, cur => ({ ...cur, [`q:${id}`]: { source: displayed.head, offset: 0 } }))
       let opening = false
       await update($, reveal, cur => {
-        const next = cur[String(id)] === side ? undefined : side
-        opening = next !== undefined
-        return { ...cur, [String(id)]: next }
+        const shown = cur[String(id)] === side && (!paged || anchoredBefore)
+        opening = !shown
+        return { ...cur, [String(id)]: shown ? undefined : side }
       })
       if (!(opening && paged)) await update($, detailAnchors, cur => ({ ...cur, [`q:${id}`]: undefined }))
-      const sourceOf = (l: Ledger) => { const q = l.questions.find(q => q.id === id && q.cleared !== true); return q === undefined ? undefined : questionSource(q) }
+      const sourceOf = (l: Ledger) => { const row = l.questions.find(q => q.id === id && q.cleared !== true); return row === undefined ? undefined : questionSource(row) }
       if (await pruneIfReplaced(before, sourceOf)) return
       if (opening) await update($, scrollAt, cur => ({ ...cur, questions: index }))
     }
@@ -3451,15 +3454,17 @@ export const register: Register = on => {
       const before = await read($, ledger)
       const current = visibleSteps(before.steps).find(s => s.id === id)
       if (displayed === undefined || current === undefined || stepSource(displayed) !== stepSource(current)) return
+      // Decide from what is drawn: a stored 'q' without its source anchor is closed.
+      const anchoredBefore = (await read($, detailAnchors))[`step:${id}`]?.source === displayed.subject
       await update($, detailAnchors, cur => ({ ...cur, [`step:${id}`]: { source: displayed.subject, offset: 0 } }))
       let opening = false
       await update($, reveal, cur => {
-        opening = cur[`step:${id}`] !== 'q'
+        opening = !(cur[`step:${id}`] === 'q' && anchoredBefore)
         const next = Object.fromEntries(Object.entries(cur).filter(([key]) => !key.startsWith('step:')))
         return opening ? { ...next, [`step:${id}`]: 'q' as const } : next
       })
       if (!opening) await update($, detailAnchors, cur => ({ ...cur, [`step:${id}`]: undefined }))
-      const sourceOf = (l: Ledger) => { const s = visibleSteps(l.steps).find(s => s.id === id); return s === undefined ? undefined : stepSource(s) }
+      const sourceOf = (l: Ledger) => { const row = visibleSteps(l.steps).find(s => s.id === id); return row === undefined ? undefined : stepSource(row) }
       if (await pruneIfReplaced(before, sourceOf)) return
       if (opening) await update($, scrollAt, cur => ({ ...cur, steps: index }))
     }
@@ -3649,18 +3654,20 @@ export const register: Register = on => {
     const stepWidth = metaBelow ? Math.max(1, width - rowIndent - 3) : inlineStepWidth
     const detailWidth = Math.max(1, width - rowIndent - 3)
     // An opened title moves owner and clock below it when they leave no room
-    // for its label and one source grapheme; the toggle stays on the title line.
+    // for its label and six source graphemes; the toggle stays on the title line.
     const detailMetaBelow = (number: number) =>
-      width - rowIndent - 2 - 1 - ownerWidth - clockWidth - 4 < columnsOf(displayTitle(`S${number}`, '')) + 1
+      width - rowIndent - 2 - 1 - ownerWidth - clockWidth - 4 < columnsOf(displayTitle(`S${number}`, '')) + 6
     const stackedTitleWidth = Math.max(1, width - rowIndent - 5)
     // Question continuation spans the row; only the first line shares controls.
     const qDetailWidth = Math.max(1, width - rowIndent)
     const lifecycleOf = (s: Step): string | undefined =>
       s.status === 'paused' && s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
     const qControlsRows = questionCompact ? 1 : 0
+    // A question title opens only the source it was selected on, as steps do.
+    const qTitleOpen = (q: Question) => opened[String(q.id)] === 'q' && anchors[`q:${q.id}`]?.source === q.head && q.head.trim() !== ''
     const revealedText = (q: Question): string | undefined => {
       const side = opened[String(q.id)]
-      if (side === 'q' && q.head.trim() !== '') return q.head
+      if (qTitleOpen(q)) return q.head
       if (side === 'a' && q.answerKey === undefined && (q.answerText?.trim().length ?? 0) > 0) return q.answerText
       return undefined
     }
@@ -3675,7 +3682,7 @@ export const register: Register = on => {
     const qLines = questions.map(q => {
       const extra = revealedText(q)
       if (extra === undefined) return 1 + qControlsRows
-      if (anchors[`q:${q.id}`]?.source !== q.head) return 1 + qControlsRows + paneLayout.lines(extra, qWidth)
+      if (!qTitleOpen(q)) return 1 + qControlsRows + paneLayout.lines(extra, qWidth)
       const rest = restAfterFirst(q.head, Math.max(1, qWidth - columnsOf(displayTitle(questionLabel(q.id), ''))))
       return 2 + qControlsRows + (rest === '' ? 0 : paneLayout.lines(rest, qDetailWidth))
     })
@@ -3734,11 +3741,11 @@ export const register: Register = on => {
           }
           // Grouping places active work first; scrolling still indexes task rows.
           const stepWindow = (rows: number, position = contentAnchors ? null : sPosition) => {
-            const showHeadings = canShowHeadings(rows)
-            const lines = showHeadings ? sLines : sLinesWithoutHeadings
+            const headingsShown = canShowHeadings(rows)
+            const lines = headingsShown ? sLines : sLinesWithoutHeadings
             const last = lastStart(lines, rows)
             const [start, end] = windowOf(lines, rows, Math.min(position ?? (atWork < 0 ? last : atWork), last))
-            return { last, start, end, showHeadings }
+            return { last, start, end, showHeadings: headingsShown }
           }
           // Headings cost rows, not tasks. When both lists are crowded, yield
           // spare question space until Steps again has the larger task window.
@@ -3823,7 +3830,7 @@ export const register: Register = on => {
     let { qHead, sHead, qRows, sRows, qStart, qEnd, sStart, sEnd } = fitted
     const { qLast, sLast } = fitted
     const openStep = sDetails.indexOf(true)
-    const openQuestion = questions.findIndex(q => opened[String(q.id)] === 'q' && anchors[`q:${q.id}`]?.source === q.head && q.head.trim() !== '')
+    const openQuestion = questions.findIndex(qTitleOpen)
     const stepHeadingRows = Number(fitted.showHeadings === true && openStep >= 0 && stepRows[openStep]?.heading !== undefined)
     const openStepMetaRows = openStep >= 0 ? Number(detailMetaBelow(stepRows[openStep]!.number)) : 0
     const detailPane = openStep >= 0 && sRows < 2 + stepHeadingRows + openStepMetaRows ? 's' : openQuestion >= 0 && qRows < 2 + qControlsRows ? 'q' : undefined
@@ -3980,7 +3987,7 @@ export const register: Register = on => {
                 {restoredOnly && !savedQuestion
                   ? <Button key={`q-${q.id}`} dimColor label="Q" onPress={() => undefined} />
                   : restoredOnly
-                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q', index, true)} />
+                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q', index)} />
                     : askedAt === undefined
                       ? <Text dimColor>[ Q ]</Text>
                       : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
@@ -4000,11 +4007,11 @@ export const register: Register = on => {
           // appear only after selection, in the wrapping detail below it.
           const head = displayTitle(questionLabel(q.id), q.head)
           const headShown = paneLayout.preview(head, drawQWidth, () => fitLines(head, drawQWidth, 1))
-          const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
+          const revealRaw = opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
           // A short region still draws one cut line. An empty press is not an answer.
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - 1)
           const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
-          const titleDetail = opened[String(q.id)] === 'q' && savedQuestion && anchors[`q:${q.id}`]?.source === q.head
+          const titleDetail = qTitleOpen(q)
             ? pageOf('q', q.id, q.head, questionLabel(q.id), drawQWidth, qDetailWidth,
               (detailPane === 'q' ? qRows : Math.min(qRows, qLines[index]!)) - qControlsRows) : undefined
           const text = (
@@ -4018,7 +4025,7 @@ export const register: Register = on => {
             </Box>
           )
           const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
-          const titleToggle = <Button key={`title-q-${q.id}`} plain dimColor label="…" onPress={() => toggleReveal(q.id, 'q', index, true)} />
+          const titleToggle = <Button key={`title-q-${q.id}`} plain dimColor label="…" onPress={() => toggleReveal(q.id, 'q', index)} />
 
           // The text gets the pane's width when its fixed jump column would crowd it out.
           // Both layouts use the same controls and sources; the extra row is budgeted above.
@@ -4119,6 +4126,7 @@ export const register: Register = on => {
             <Box key={`grouped-step-${s.id}`} flexDirection="column" flexShrink={0}>
               {heading !== undefined && showHeadings && <Box key={`step-group-${s.status}`} height={1} flexShrink={0}><Text bold dimColor>{heading}</Text></Box>}
               <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
+                {/* key and height=1 name the stacked first line; the 17-column width pin measures it. */}
                 {stackedRow ? <Box key={`s-first-line-${s.id}`} height={1} flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
                 {metaUnder && <Box key={`s-detail-meta-${s.id}`} width={Math.max(1, width - rowIndent)} height={1} flexDirection="row" columnGap={1} justifyContent="flex-end">{owner}{clock}</Box>}
                 {metaBelow && titleDetail === undefined && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
