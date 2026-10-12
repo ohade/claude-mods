@@ -21,6 +21,7 @@ for (const [width, height, q, s, floor] of floors) test(`${width}x${height} q${q
   const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith(prefix))
   console.log('TRACK14_FOOTER_FLOOR ' + JSON.stringify({ width, height, questions: q, steps: s, actual: rows.length, expected: floor }))
   expect(rows.length).toBeGreaterThanOrEqual(floor)
+  if (q > 0) expect((await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('row-q-')).length).toBeGreaterThanOrEqual(1)
   expect(ledger.writes).toHaveLength(0)
 })
 
@@ -61,19 +62,28 @@ for (const [before, after, framedAfter] of [[3_599_000, 3_600_000, true], [359_9
   expect(ledger.writes).toHaveLength(0)
 })
 
-test('measured heading visibility at 40 columns is monotone from 8 through 24 rows', async ($, on) => {
+test('heading visibility is monotone except where the whole list fits only without headings', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, steps: stepsOf(3) })
   atomStore(on, 'activity', IDLE)
-  const samples: Array<{ height: number; headings: boolean; tasks: number }> = []
+  const samples: Array<{ height: number; headings: boolean; tasks: number; wholeOnly: boolean }> = []
   for (let height = 8; height <= 24; height++) {
     const ui = await $.ui.mount(pane('dock', 40, height))
     const boxes = await ui.findAll({ type: 'Box' })
-    samples.push({ height, headings: boxes.some(el => String(el.key ?? '').startsWith('step-group-')), tasks: boxes.filter(el => String(el.key ?? '').startsWith('row-s-')).length })
+    const rows = Number(boxes.find(el => el.key === 'steps')?.props.height ?? 0)
+    const bareRows = 3 * (1 + Number(boxes.some(el => String(el.key ?? '').startsWith('s-metadata-'))))
+    const wholeOnly = rows >= bareRows && rows < bareRows + 3
+    const sample = { height, headings: boxes.some(el => String(el.key ?? '').startsWith('step-group-')), tasks: boxes.filter(el => String(el.key ?? '').startsWith('row-s-')).length, wholeOnly }
+    if (wholeOnly) {
+      expect(sample.headings).toBe(false)
+      expect(sample.tasks).toBe(3)
+    }
+    samples.push(sample)
     await ui.unmount()
   }
   console.log('TRACK14_HEADING_BAND ' + JSON.stringify(samples))
-  const first = samples.findIndex(sample => sample.headings)
+  const outsideBand = samples.filter(sample => !sample.wholeOnly)
+  const first = outsideBand.findIndex(sample => sample.headings)
   expect(first).toBeGreaterThanOrEqual(0)
-  expect(samples.slice(first).every(sample => sample.headings)).toBe(true)
+  expect(outsideBand.slice(first).every(sample => sample.headings)).toBe(true)
 })
