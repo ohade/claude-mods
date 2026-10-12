@@ -3540,11 +3540,18 @@ export const register: Register = on => {
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : qHeaderOnly ? 0 : paneLayout.lines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : sHeaderOnly ? 0 : paneLayout.lines(sEmpty, width)
     const atWork = stepRows.findIndex(row => row.step.status !== 'completed')
-    // Headings label groups; they must not hide tasks from a list that would
-    // otherwise fit whole. A list that scrolls anyway keeps its headings.
+    // Headings label groups; they must not cost tasks. They show when the list
+    // fits whole with them, or when the window at the work anchor still holds
+    // min(3, the tasks it holds without them). Content decides, never the scroll.
     const linesFit = (lines: number[], rows: number) => lines.reduce((a, b) => a + b, 0) <= rows
+    const tasksShown = (lines: number[], rows: number) => {
+      const last = lastStart(lines, rows)
+      const [start, end] = windowOf(lines, rows, Math.min(atWork < 0 ? last : atWork, last))
+      return end - start
+    }
     const canShowHeadings = (rows: number) =>
-      rows > 1 + Number(metaBelow) && (linesFit(sLines, rows) || !linesFit(sLinesWithoutHeadings, rows))
+      rows > 1 + Number(metaBelow) && (linesFit(sLines, rows) ||
+        tasksShown(sLines, rows) >= Math.min(3, tasksShown(sLinesWithoutHeadings, rows)))
     const revealOpen = questions.some(q => revealedText(q) !== undefined)
     const layoutFor = (bannerCount: number, anchored = false) => {
       const qPosition = anchored ? null : at.questions
