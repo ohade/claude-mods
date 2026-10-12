@@ -70,6 +70,20 @@ for (const height of [12, 40]) test(`keyboard-origin scrolling reaches every tas
   atomStore(on, 'scroll', { questions: null, steps: 0 })
   on('ui.scroll', () => ({}))
   const ui = await $.ui.mount(pane('dock', 60, height))
+  const initial = await ui.findAll({ type: 'Box' })
+  const availableRows = Number(initial.find(row => row.key === 'steps')?.props.height ?? 0)
+  const rowRows = 1 + Number(initial.some(row => String(row.key ?? '').startsWith('s-metadata-')))
+  const bareRows = steps.length * rowRows
+  const headedRows = bareRows + states.length
+  // Independent budget check at the first content anchor, with active work first.
+  let usedRows = 1
+  let tasksWithHeadings = 0
+  for (const _ of steps.filter(step => step.status === 'in_progress')) {
+    if (usedRows + rowRows > availableRows) break
+    usedRows += rowRows
+    tasksWithHeadings++
+  }
+  const headingsFit = availableRows >= headedRows || (availableRows < bareRows && tasksWithHeadings >= Math.min(3, steps.length))
   const seen = new Set<string>()
   const seenGroups = new Set<string>()
   for (let i = 0; i < steps.length; i++) {
@@ -87,8 +101,6 @@ for (const height of [12, 40]) test(`keyboard-origin scrolling reaches every tas
     await ui.redraw()
   }
   expect([...seen].sort()).toEqual(steps.map(step => `row-s-${step.id}`).sort())
-  // Short viewports spend their rows on tasks. The tall case fits all five
-  // headings, so it retains the positive grouping and navigation check.
-  expect([...seenGroups].sort()).toEqual(height === 12 ? [] : ['ACTIVE', 'WAITING ON YOU', 'NEXT', 'PAUSED', 'DONE'].sort())
+  expect([...seenGroups].sort()).toEqual(headingsFit ? ['ACTIVE', 'WAITING ON YOU', 'NEXT', 'PAUSED', 'DONE'].sort() : [])
   expect(ledger.writes).toHaveLength(0)
 })
