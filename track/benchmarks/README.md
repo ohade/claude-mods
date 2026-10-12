@@ -2,7 +2,9 @@
 
 TRACK-14 part 1 measures the unchanged pane from commit
 `4def77254c60a47d6c21a1450bccee25b79638e1` with Claude Code 2.1.296.
-The benchmark lives outside `tests/` so normal regression runs stay unchanged.
+Benchmark bodies use `.case.tsx`: native discovery is recursive, so putting a
+`.test.tsx` outside `tests/` does not exclude it. The preparers copy these bodies
+to scratch `.test.tsx` files for an explicit gate.
 
 From the repository root:
 
@@ -43,3 +45,53 @@ For comparisons, keep the engine, machine and terminal settings fixed. Run the
 baseline and candidate repeatedly in interleaved order, retain each receipt and
 compare matching cases. Render dispatch is a separate metric from the required
 key-to-paint acceptance gate.
+
+## Wrapping and visibility candidate
+
+`before-b856bc0.json` and `after-wrap-cache.json` retain a fresh comparison pair.
+Both are FIXTURE dispatch measurements. Their render trees match after removing
+only the engine's process-local `press.handle` identifiers. Keep the raw trees
+and identifiers for review; this comparison does not prove painted pixels.
+
+Run the deterministic wrapping check separately:
+
+```sh
+python3 scripts/prepare-track-wrap-check.py --output-tree <new-scratch-tree>
+claude plugin test <same-scratch-tree>
+bun test scripts/tests/pane-layout-cache.test.ts
+```
+
+The wrap preparer adds a counter and log to a scratch copy of the existing
+measurement function. This is **INSTRUMENTED FIXTURE** evidence. Refreshing the
+same tree refuses changed check bytes. The check requires reuse of an unchanged
+offscreen row, then remeasurement on resize and content change. It uses no timing
+threshold or patched global. Cache contract checks also cover removal of unused
+entries and reuse of both banner layouts.
+
+The normal regression suite includes four visibility checks: closed, hidden or
+not placed, reshown after redraw, and a host that cannot report visibility.
+Run the six additional lifecycle checks in a separate scratch tree prepared by
+the baseline command above:
+
+```sh
+cp track/benchmarks/pane-timer-order.case.tsx <scratch-tree>/tests/pane-timer-order.test.tsx
+cp track/benchmarks/pane-visibility.case.tsx <scratch-tree>/tests/pane-visibility.test.tsx
+claude plugin test <scratch-tree>
+```
+
+This runs 13 checks: seven unchanged dispatch benchmarks and six lifecycle
+checks. Do not feed this combined log to the seven-case benchmark parser.
+The lifecycle checks require resumption without a redraw, rendering and timer
+progress despite a hanging host, and zero writes or cancellations from an old
+callback after closing and reopening. Shown and hidden delayed responses are
+tested for both pulse and clock timers. Checks stay byte-identical across the
+recorded failing and passing runs; refresh only production hooks between them.
+
+Supported hosts stop hidden animation writes. A one-second visibility check
+restarts eligible timers while the pane stays open. Rendering never waits on
+visibility. A timer lookup that throws or exceeds five milliseconds logs a
+warning and keeps legacy animation; one unresolved lookup is shared to avoid
+accumulating requests on every pulse. The unchanged
+dispatch benchmark has no visibility host, so its closed-busy case still records
+legacy timer writes. It cannot prove hidden-stop in the real terminal. Native
+visibility acceptance, screenshots and key-to-paint remain open before landing.

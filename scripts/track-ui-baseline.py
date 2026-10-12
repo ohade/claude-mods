@@ -86,7 +86,7 @@ def prepare(source: Path, scratch_parent: Path, expected_digest: str) -> Path:
     tests = tree / "tests"
     tests.mkdir()
     shutil.copyfile(source / "tests" / "kit.ts", tests / "kit.ts")
-    benchmark = (source / "benchmarks" / "pane-render.test.tsx").read_text()
+    benchmark = (source / "benchmarks" / "pane-render.case.tsx").read_text()
     marker = "TRACK14_PREPARED_SOURCE_DIGEST"
     if benchmark.count(marker) != 1 or source_digest(tree) != expected_digest:
         raise ValueError("benchmark marker missing or copied production source changed")

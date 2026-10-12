@@ -6,6 +6,7 @@ import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, mat
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
+import { createPaneLayoutCache } from './pane-layout-cache'
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { RetentionStore } from './retention'
 import { indexedStore } from './size-index'
@@ -360,6 +361,8 @@ const wrappedLines = (text: string, width: number): number => {
   return lines
 }
 
+const paneLayout = createPaneLayoutCache(wrappedLines)
+
 // Rows a header or bar takes when its items wrap at `width`: each item stays whole, `gap` apart.
 const flowRows = (items: number[], width: number, gap: number): number => {
   let rows = 1
@@ -657,29 +660,139 @@ const isPulsing = (l: Ledger, now: Activity): boolean => {
   return now.background.length > 0 || (now.tasks ?? []).length > 0 || state === 'agents' || state === 'tasks' || (state === 'working' && l.steps.some(s => s.status === 'in_progress' && s.cleared !== true))
 }
 
+// The host knows about tab selection and placement; pane.isOpen alone does not.
+// Older hosts cannot report it. Keep their existing animation rather than fail
+// the pane's render; unknown visibility does not prove that animation stopped.
+const VISIBILITY_WAIT_MS = 5
+const paneVisibility: { warned: boolean; pending?: Promise<boolean> } = { warned: false }
+const paneAnimation: { generation: number; renderRevision: number; isOpen: boolean; monitor?: Timer } = {
+  generation: 0, renderRevision: 0, isOpen: false,
+}
+const visibilityFallback = ($: EngineInterface, error: unknown): boolean => {
+  if (!paneVisibility.warned) {
+    paneVisibility.warned = true
+    $.ui.log(`track: pane visibility unavailable; keeping existing animation: ${reason(error)}`, { to: 'debug' })
+  }
+  return true
+}
+// Never wait on host visibility in rendering. Timer callers share one bounded
+// lookup; a hung host cannot accumulate a new request on every pulse.
+const paneCanAnimate = ($: EngineInterface): Promise<boolean> => {
+  if (paneVisibility.pending !== undefined) return paneVisibility.pending
+  let finish!: (shown: boolean) => void
+  const pending = new Promise<boolean>(resolve => { finish = resolve })
+  paneVisibility.pending = pending
+  const deadline = $.clock.after(VISIBILITY_WAIT_MS, () => finish(visibilityFallback($, 'lookup timed out')))
+  void (async () => {
+    try {
+      const panes = await $.ui.panes()
+      paneVisibility.warned = false
+      finish(panes.some(p => p.id === PANE && p.isShown && p.isPlaced))
+    } catch (error) {
+      finish(visibilityFallback($, error))
+    } finally {
+      deadline.cancel()
+      if (paneVisibility.pending === pending) paneVisibility.pending = undefined
+    }
+  })()
+  return pending
+}
+
+const stopVisibilityMonitor = (): void => {
+  paneAnimation.monitor?.cancel()
+  paneAnimation.monitor = undefined
+}
+
+const stopPaneTimers = (): void => {
+  paneAnimation.generation++
+  paneVisibility.pending = undefined
+  stopVisibilityMonitor()
+  pulsing.timer?.cancel()
+  ticking.timer?.cancel()
+  pulsing.timer = undefined
+  ticking.timer = undefined
+}
+
+// Tab selection need not redraw this pane. While hidden, check once per second
+// without writing animation state; closing cancels this check too.
+const watchForVisiblePane = ($: EngineInterface): void => {
+  const generation = paneAnimation.generation
+  const timer = $.clock.every(TICK_MS, () => {
+    void (async () => {
+      const shown = await paneCanAnimate($)
+      if (generation !== paneAnimation.generation || paneAnimation.monitor !== timer || !paneAnimation.isOpen) return
+      const l = await read($, ledger)
+      const now = await read($, activity)
+      if (generation !== paneAnimation.generation || paneAnimation.monitor !== timer) return
+      const pulses = isPulsing(l, now)
+      const clocks = runningClocks(l).length > 0
+      if (!pulses && !clocks) stopVisibilityMonitor()
+      if (!shown) return
+      stopVisibilityMonitor()
+      if (pulses && pulsing.timer === undefined) startPulse($)
+      if (clocks && ticking.timer === undefined) startTick($)
+    })().catch(error => $.ui.log(`track: visibility recheck failed: ${reason(error)}`, { to: 'debug' }))
+  })
+  paneAnimation.monitor = timer
+}
+
+const suspendPaneTimers = ($: EngineInterface): void => {
+  stopPaneTimers()
+  if (paneAnimation.isOpen) watchForVisiblePane($)
+}
+const cancelledAnimation = Symbol('cancelled pane animation')
+const timerFailure = ($: EngineInterface, kind: string, error: unknown): void => {
+  if (error !== cancelledAnimation) $.ui.log(`track: ${kind} tick failed: ${reason(error)}`, { to: 'debug' })
+}
+
 // Started from the pane's drawing when a step should pulse; each tick stops it once nothing does.
 const startPulse = ($: EngineInterface): void => {
-  pulsing.timer = $.clock.every(PULSE_MS, () => {
+  const generation = paneAnimation.generation
+  const current = () => generation === paneAnimation.generation && pulsing.timer === timer
+  const timer = $.clock.every(PULSE_MS, () => {
     void (async () => {
-      if (!isPulsing(await read($, ledger), await read($, activity))) {
-        pulsing.timer?.cancel()
+      const revision = paneAnimation.renderRevision
+      const shown = await paneCanAnimate($)
+      if (!current()) return
+      if (!shown) {
+        if (revision === paneAnimation.renderRevision) suspendPaneTimers($)
+        return
+      }
+      const pulses = isPulsing(await read($, ledger), await read($, activity))
+      if (!current()) return
+      if (!pulses) {
+        timer.cancel()
         pulsing.timer = undefined
 
         return
       }
-      await update($, pulse, n => (n + 1) % PULSE_PHASES)
-    })().catch(error => $.ui.log(`track: pulse tick failed: ${reason(error)}`, { to: 'debug' }))
+      await update($, pulse, n => {
+        if (!current()) throw cancelledAnimation
+        return (n + 1) % PULSE_PHASES
+      })
+    })().catch(error => timerFailure($, 'pulse', error))
   })
+  pulsing.timer = timer
 }
 
 // Started from the pane's drawing while a step's clock runs; each tick stops it once none does.
 // Past an hour every running clock shows minutes, so a tick writes only when the minute turns.
 const startTick = ($: EngineInterface): void => {
-  ticking.timer = $.clock.every(TICK_MS, () => {
+  const generation = paneAnimation.generation
+  const current = () => generation === paneAnimation.generation && ticking.timer === timer
+  const timer = $.clock.every(TICK_MS, () => {
     void (async () => {
+      const revision = paneAnimation.renderRevision
+      const shown = await paneCanAnimate($)
+      if (!current()) return
+      if (!shown) {
+        if (revision === paneAnimation.renderRevision) suspendPaneTimers($)
+        return
+      }
       const running = runningClocks(await read($, ledger))
+      if (!current()) return
       if (running.length === 0) {
-        ticking.timer?.cancel()
+        timer.cancel()
         ticking.timer = undefined
 
         return
@@ -690,9 +803,13 @@ const startTick = ($: EngineInterface): void => {
       if (everyMinute && Math.floor(now / 60_000) === Math.floor(last / 60_000)) {
         return
       }
-      await update($, tick, () => now)
-    })().catch(error => $.ui.log(`track: clock tick failed: ${reason(error)}`, { to: 'debug' }))
+      await update($, tick, () => {
+        if (!current()) throw cancelledAnimation
+        return now
+      })
+    })().catch(error => timerFailure($, 'clock', error))
   })
+  ticking.timer = timer
 }
 
 // Runs a flash or lit write after every write queued before it.
@@ -2942,6 +3059,8 @@ export const register: Register = on => {
   on('ui.close', async ($, e, next) => {
     const closed = await next(e)
     if (closed.deny === undefined && e.id === PANE) {
+      paneAnimation.isOpen = false
+      stopPaneTimers()
       const byPerson = e.origin.kind === 'person'
       await update($, pane, cur => ({ ...cur, isOpen: false, closedByPerson: cur.closedByPerson || byPerson }))
       if (byPerson) {
@@ -3141,6 +3260,10 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const generation = paneAnimation.generation
+    paneAnimation.renderRevision++
+    paneAnimation.isOpen = true
+    stopVisibilityMonitor()
     const { Box, Button, Text } = $.ui.resolve(e)
     const l = await read($, ledger)
     const now = await read($, activity)
@@ -3148,14 +3271,14 @@ export const register: Register = on => {
     const isUnsaved = saved.isUnsaved
     const unsavedReason = saved.reason
     const phase = await read($, pulse)
-    if (pulsing.timer === undefined && isPulsing(l, now)) {
+    if (generation === paneAnimation.generation && pulsing.timer === undefined && isPulsing(l, now)) {
       startPulse($)
     }
     // The tick is read so each one redraws the pane; the time itself is the clock's.
     await read($, tick)
     const opened = await read($, reveal)
     const clockRuns = runningClocks(l).length > 0
-    if (ticking.timer === undefined && clockRuns) {
+    if (generation === paneAnimation.generation && ticking.timer === undefined && clockRuns) {
       startTick($)
     }
     const nowMs = clockRuns ? await $.clock.now() : 0
@@ -3167,6 +3290,7 @@ export const register: Register = on => {
     const rowIndent = compact ? 0 : ROW_INDENT
     const bodyRows = Math.max(8, e.props.scroll.bodyRows)
     const at = await read($, scrollAt)
+    paneLayout.begin(width)
     const titleLabel = fitLines(width < TITLE.length + 4 ? ' TRACK ' : ` ${TITLE.toUpperCase()} `, width, 1)
     const titleSide = Math.max(0, Math.floor((width - titleLabel.length) / 2))
     // Every uncleared row is listed in both placements; the pane body scrolls, so older rows
@@ -3335,51 +3459,56 @@ export const register: Register = on => {
     }
     const qLines = questions.map(q => {
       const extra = revealedText(q)
-      return wrappedLines(`${questionLabel(q.id)}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
+      return paneLayout.lines(`${questionLabel(q.id)}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : paneLayout.lines(extra, qWidth))
     })
     const clockRows = (s: Step) => compact && hasClock(s) ? 1 : 0
     const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
-    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepWidth(s)) + clockRows(s))
-    const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
-    const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
+    const sLines = steps.map((s, i) => paneLayout.lines(`S${i + 1}. ${s.subject}`, stepWidth(s)) + clockRows(s))
+    const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : paneLayout.lines(qEmpty, width)
+    const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : paneLayout.lines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
+    const revealOpen = questions.some(q => revealedText(q) !== undefined)
     const layoutFor = (bannerCount: number) => {
-      const fit = (qArrows: string, sArrows: string) => {
-        const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
-        const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
-        const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerCount))
-        // A compact question needs a text line plus its Q/A controls even in a short pane.
-        const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
-        let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
-        let sRows = Math.max(0, room - qRows)
-        if (needS < sRows) {
-          qRows = Math.min(needQ, qRows + sRows - needS)
-          sRows = needS
-        }
-        // An open reveal needs one line of its own. Take it from the steps region,
-        // and never from the last step row.
-        const revealOpen = questions.some(q => revealedText(q) !== undefined)
-        const minSRows = steps.length > 0 ? 1 : 0
-        if (revealOpen && qRows < minQRows + 1 && sRows > minSRows) {
-          const give = Math.min(minQRows + 1 - qRows, sRows - minSRows)
-          qRows += give
-          sRows -= give
-        }
-        // Where each region starts: the newest questions, the step at work with one done row above.
-        const qLast = lastStart(qLines, qRows)
-        const sLast = lastStart(sLines, sRows)
-        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
-        const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
+      const key = JSON.stringify([width, bodyRows, titleRows, bottomRows, qRing, sRing,
+        qButtons, sButtons, qLines, sLines, needQ, needS, atWork, at.questions, at.steps,
+        qControlsRows, revealOpen, bannerCount])
+      return paneLayout.layout(key, () => {
+        const fit = (qArrows: string, sArrows: string) => {
+          const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
+          const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
+          const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerCount))
+          // A compact question needs a text line plus its Q/A controls even in a short pane.
+          const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
+          let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
+          let sRows = Math.max(0, room - qRows)
+          if (needS < sRows) {
+            qRows = Math.min(needQ, qRows + sRows - needS)
+            sRows = needS
+          }
+          // An open reveal needs one line of its own. Take it from the steps region,
+          // and never from the last step row.
+          const minSRows = steps.length > 0 ? 1 : 0
+          if (revealOpen && qRows < minQRows + 1 && sRows > minSRows) {
+            const give = Math.min(minQRows + 1 - qRows, sRows - minSRows)
+            qRows += give
+            sRows -= give
+          }
+          // Where each region starts: the newest questions, the step at work with one done row above.
+          const qLast = lastStart(qLines, qRows)
+          const sLast = lastStart(sLines, sRows)
+          const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
+          const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
 
-        return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
-      }
-      // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
-      // row, which takes a row from the regions, so the layout is fitted again with them.
-      const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
-      const first = fit('', '')
-      const [qFirst, sFirst] = arrowsOf(first)
+          return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
+        }
+        // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
+        // row, which takes a row from the regions, so the layout is fitted again with them.
+        const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
+        const first = fit('', '')
+        const [qFirst, sFirst] = arrowsOf(first)
 
-      return qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
+        return qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
+      })
     }
     // Collapse when the stacked rows would leave fewer than min(3, steps) whole steps in view; a
     // wrapped step takes several lines, so lines are not the measure.
@@ -3402,6 +3531,7 @@ export const register: Register = on => {
       qLast,
       sLast,
     })
+    paneLayout.finish()
     return (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
         {/* The title as a centered header bar, rules filling the width. */}
