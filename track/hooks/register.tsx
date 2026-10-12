@@ -419,12 +419,13 @@ const MAX_INPUTS = 50
 // How long Stop waits for a Haiku label already in flight.
 const STOP_JOIN_MS = 2000
 // A main prompt the gate may judge, trimmed, or absent for a slash command, a doorbell, terminal
-// input or a notification.
+// input, a notification or a peer's message. A subagent hand-back comes in under the peer origin
+// and is model output, not the person's question; recordPrompt skips it for the same reason.
 const gateable = (text: string, originKind: string | undefined): string | undefined => {
   const trimmed = text.trim()
   if (trimmed === '' || trimmed.startsWith('/') || trimmed.startsWith(': AMQ doorbell')) return undefined
   if (trimmed.startsWith('<bash-') || trimmed.startsWith('<local-command') || trimmed.startsWith('<task-notification')) return undefined
-  if (originKind === 'task-notification') return undefined
+  if (originKind === 'task-notification' || originKind === 'peer') return undefined
   return trimmed
 }
 // The CC-154 wording check: a question mark, or a question word first. It misses Hebrew and
