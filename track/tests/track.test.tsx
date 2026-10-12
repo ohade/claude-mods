@@ -569,10 +569,10 @@ test('step rows are annotated like question rows', async ($, on) => {
   // The dot is its own column, so a wrapped line
   // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts.filter(t => /^S\d\. /.test(t))).toEqual(['S1. Write', 'S2. Print', 'S3. Count'])
+  expect(texts.filter(t => /^S\d\. /.test(t))).toEqual(['S2. Print', 'S3. Count', 'S1. Write'])
   // Without current runtime activity, an in-progress row holds a neutral glyph.
   // It does not imply that the person must act.
-  expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◐', '○'])
+  expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['◐', '○', '●'])
 })
 
 // Rows sit one step in under their header, in both sections alike.
@@ -1395,9 +1395,12 @@ test('a wheel tick over the questions scrolls the questions alone', async ($, on
   })
   // The engine beneath moves the body; the hook passes the tick on with the body pinned at 0.
   on('ui.scroll', () => ({}))
-  await $.ui.mount(pane('dock'))
+  const ui = await $.ui.mount(pane('dock'))
+  const title = await ui.find({ key: 'title' })
+  const summary = await ui.find({ key: 'state-summary' })
+  const questionTop = 1 + Number(title?.props.marginBottom ?? 0) + Number(summary?.props.height ?? 0)
 
-  await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: -1, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 3, column: 5 } } as never)
+  await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: -1, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: questionTop + 1, column: 5 } } as never)
   await clock.advance(100)
 
   expect(at.questions).not.toBeNull()
@@ -1480,9 +1483,14 @@ test('scrolling past the end and back up moves the window up at once', async ($,
     return { value: { isSet: true as const, version: 2 } }
   })
   on('ui.scroll', () => ({}))
-  await $.ui.mount(pane('dock'))
+  const ui = await $.ui.mount(pane('dock'))
+  const title = await ui.find({ key: 'title' })
+  const summary = await ui.find({ key: 'state-summary' })
+  const questions = await ui.find({ key: 'questions' })
+  // The fixture has one-line headers and a one-line separator.
+  const stepTop = 1 + Number(title?.props.marginBottom ?? 0) + Number(summary?.props.height ?? 0) + 1 + Number(questions?.props.height ?? 0) + 1 + 1
   const tick = (by: number) =>
-    $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 14, column: 5 } } as never)
+    $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: stepTop, column: 5 } } as never)
 
   for (let i = 0; i < 10; i++) await tick(12)
   await clock.advance(100)
