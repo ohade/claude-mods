@@ -369,6 +369,50 @@ const wrappedLines = (text: string, width: number): number => {
 
 const paneLayout = createPaneLayoutCache(wrappedLines)
 
+type TitlePage = { start: number; first: string; rest: string }
+const titlePageCache = new Map<string, TitlePage[]>()
+// Each page owns contiguous source graphemes. The first line reserves the
+// status/owner/clock columns; continuation lines use the section text width.
+const titlePages = (source: string, firstColumns: number, restColumns: number, restRows: number): TitlePage[] => {
+  const key = JSON.stringify([source, firstColumns, restColumns, restRows])
+  const cached = titlePageCache.get(key)
+  if (cached !== undefined) return cached
+  const clusters = graphemesOf(source)
+  const pages: TitlePage[] = []
+  let cursor = 0
+  let offset = 0
+  do {
+    const start = offset
+    let used = 0
+    const firstStart = cursor
+    while (cursor < clusters.length && used + columnsOf(clusters[cursor]!) <= firstColumns) {
+      used += columnsOf(clusters[cursor]!)
+      cursor++
+    }
+    // A pane narrower than a single grapheme still advances without splitting it.
+    if (cursor === firstStart && cursor < clusters.length) cursor++
+    const first = clusters.slice(firstStart, cursor).join('')
+    const restStart = cursor
+    if (restRows > 0) {
+      let low = cursor
+      let high = clusters.length
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2)
+        if (wrappedLines(clusters.slice(restStart, middle).join(''), restColumns) <= restRows) low = middle
+        else high = middle - 1
+      }
+      cursor = low
+    }
+    const rest = clusters.slice(restStart, cursor).join('')
+    pages.push({ start, first, rest })
+    offset += first.length + rest.length
+  } while (cursor < clusters.length)
+  // Bound retained source text even when plans and pane sizes keep changing.
+  if (titlePageCache.size >= 12) titlePageCache.delete(titlePageCache.keys().next().value!)
+  titlePageCache.set(key, pages)
+  return pages
+}
+
 // Rows a header or bar takes when its items wrap at `width`: each item stays whole, `gap` apart.
 const flowRows = (items: number[], width: number, gap: number): number => {
   let rows = 1
@@ -572,6 +616,7 @@ const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], backgro
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 // Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
 const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | undefined>)
+const detailAnchors = atom({ plugin: 'track', key: 'detailAnchors' } as const, {} as Record<string, { source: string; offset: number } | undefined>)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
@@ -3295,6 +3340,8 @@ export const register: Register = on => {
     // The tick is read so each one redraws the pane; the time itself is the clock's.
     await read($, tick)
     const opened = await read($, reveal)
+    // Closed rows subscribe to no paging state and do no page-cache work.
+    const anchors = Object.values(opened).includes('q') ? await read($, detailAnchors) : {}
     const clockRuns = runningClocks(l).length > 0
     if (generation === paneAnimation.generation && ticking.timer === undefined && clockRuns) {
       startTick($)
@@ -3323,13 +3370,15 @@ export const register: Register = on => {
     const questionLabel = questionLabels(l.questions)
     // Opening brings that row into view once. Later wheel, key, and track_question
     // writes to scrollAt.questions win; the open row does not pin the window.
-    const toggleReveal = async (id: number, side: 'q' | 'a', index: number) => {
+    const toggleReveal = async (id: number, side: 'q' | 'a', index: number, pageTitle = false) => {
       let opening = false
       await update($, reveal, cur => {
         const next = cur[String(id)] === side ? undefined : side
         opening = next !== undefined
         return { ...cur, [String(id)]: next }
       })
+      await update($, detailAnchors, cur => ({ ...cur, [`q:${id}`]: opening && pageTitle && side === 'q'
+        ? { source: questions[index]!.head, offset: 0 } : undefined }))
       if (opening) await update($, scrollAt, cur => ({ ...cur, questions: index }))
     }
     const qDone = questions.filter(q => q.status === 'answered').length
@@ -3342,6 +3391,8 @@ export const register: Register = on => {
         const next = Object.fromEntries(Object.entries(cur).filter(([key]) => !key.startsWith('step:')))
         return opening ? { ...next, [`step:${id}`]: 'q' as const } : next
       })
+      await update($, detailAnchors, cur => ({ ...cur, [`step:${id}`]: opening
+        ? { source: stepRows[index]!.step.subject, offset: 0 } : undefined }))
       if (opening) await update($, scrollAt, cur => ({ ...cur, steps: index }))
     }
     const sDone = steps.filter(s => s.status === 'completed').length
@@ -3536,11 +3587,11 @@ export const register: Register = on => {
     }
     const qLines = questions.map(q => {
       const extra = revealedText(q)
-      return 1 + qControlsRows + (extra === undefined ? 0 : paneLayout.lines(extra, qWidth))
+      return 1 + qControlsRows + (extra === undefined ? 0 : paneLayout.lines(extra, qWidth) + Number(anchors[`q:${q.id}`]?.source === q.head))
     })
     const sDetails = stepRows.map(({ step }) => opened[`step:${step.id}`] === 'q')
-    const sLines = stepRows.map(({ step: s, heading }, i) => 1 + (heading === undefined ? 0 : 1) + (metaBelow ? 1 : 0)
-      + (sDetails[i] ? paneLayout.lines(s.subject, detailWidth) : 0)
+    const sLines = stepRows.map(({ step: s, heading }, i) => 1 + (heading === undefined ? 0 : 1) + (metaBelow && !sDetails[i] ? 1 : 0)
+      + (sDetails[i] ? 1 + paneLayout.lines(s.subject, detailWidth) : 0)
       + (lifecycleOf(s) === undefined ? 0 : paneLayout.lines(lifecycleOf(s)!, detailWidth))
       + (s.followUp === true ? paneLayout.lines('update status', detailWidth) : 0))
     const sLinesWithoutHeadings = sLines.map((lines, index) => lines - (stepRows[index]!.heading === undefined ? 0 : 1))
@@ -3677,19 +3728,35 @@ export const register: Register = on => {
       }
     }
     const fitted = layoutFor(bannerRows.length)
-    const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
-    const showHeadings = fitted.showHeadings === true
+    let { qHead, sHead, qRows, sRows, qStart, qEnd, sStart, sEnd } = fitted
+    const { qLast, sLast } = fitted
+    const openStep = sDetails.indexOf(true)
+    const openQuestion = questions.findIndex(q => opened[String(q.id)] === 'q' && anchors[`q:${q.id}`]?.source === q.head && q.head.trim() !== '')
+    const stepHeadingRows = Number(fitted.showHeadings === true && openStep >= 0 && stepRows[openStep]?.heading !== undefined)
+    const detailPane = openStep >= 0 && sRows < 2 + stepHeadingRows ? 's' : openQuestion >= 0 && qRows < 2 + qControlsRows ? 'q' : undefined
+    const showHeadings = detailPane === undefined && fitted.showHeadings === true
     const summaryRows = fitted.summaryRows ?? preferredSummaryRows
     const titleRows = 1 + summaryRows
     const qArrowWidth = fitted.qArrowWidth ?? 0
     const sArrowWidth = fitted.sArrowWidth ?? 0
     const footer = footerModes[fitted.footerMode ?? 0]!
     const footerRows = footer.rows
-    const spareRows = bodyRows - (titleRows + qHead + qRows + 1 + sHead + sRows + footerRows + bannerRows.length)
+    if (detailPane !== undefined) {
+      const room = Math.max(2 + (detailPane === 'q' ? qControlsRows : 0), bodyRows - titleRows - footerRows - bannerRows.length)
+      qHead = 0
+      sHead = 0
+      qRows = detailPane === 'q' ? room : 0
+      sRows = detailPane === 's' ? room : 0
+      qStart = detailPane === 'q' ? openQuestion : 0
+      qEnd = detailPane === 'q' ? openQuestion + 1 : 0
+      sStart = detailPane === 's' ? openStep : 0
+      sEnd = detailPane === 's' ? openStep + 1 : 0
+    }
+    const spareRows = bodyRows - (titleRows + qHead + qRows + Number(detailPane === undefined) + sHead + sRows + footerRows + bannerRows.length)
     // Borders use only spare space after both complete lists have been fitted.
     // Their narrower interiors must keep the same one-line headers and row
     // layouts. Expanded or lifecycle text uses the full unframed section.
-    const framed = width >= 60 && bodyRows >= 16 && spareRows >= 4 &&
+    const framed = detailPane === undefined && width >= 60 && bodyRows >= 16 && spareRows >= 4 &&
       qStart === 0 && qEnd === questions.length && sStart === 0 && sEnd === steps.length &&
       !revealOpen && !sDetails.some(Boolean) &&
       steps.every(s => lifecycleOf(s) === undefined && s.followUp !== true) &&
@@ -3711,6 +3778,33 @@ export const register: Register = on => {
     const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
     const qIndicator = qArrowWidth > 0 && <Box key="questions-hidden" width={qArrowWidth} flexShrink={0}><Text dimColor>{qHidden}</Text></Box>
     const sIndicator = sArrowWidth > 0 && <Box key="steps-hidden" width={sArrowWidth} flexShrink={0}><Text dimColor>{sHidden}</Text></Box>
+    const pageOf = (kind: 'q' | 's', id: string | number, source: string, label: string, firstWidth: number, restWidth: number, rows: number) => {
+      const stateKey = kind === 'q' ? `q:${id}` : `step:${id}`
+      const pages = titlePages(source, Math.max(1, firstWidth - columnsOf(`${label}. `)), restWidth, Math.max(0, rows - 2))
+      const savedAnchor = anchors[stateKey]
+      const offset = savedAnchor?.source === source ? savedAnchor.offset : 0
+      let index = pages.findIndex((page, i) => page.start <= offset && (pages[i + 1]?.start ?? source.length + 1) > offset)
+      if (index < 0) index = 0
+      const selected = pages[index]!
+      const move = async (by: number) => {
+        const next = pages[index + by]
+        if (next === undefined) return
+        await update($, detailAnchors, cur => ({ ...cur, [stateKey]: { source, offset: next.start } }))
+      }
+      const close = async () => {
+        const revealKey = kind === 'q' ? String(id) : `step:${id}`
+        await update($, reveal, cur => ({ ...cur, [revealKey]: undefined }))
+        await update($, detailAnchors, cur => ({ ...cur, [stateKey]: undefined }))
+      }
+      const continuation = <Box key={`detail-${kind}-${id}`} width={restWidth} height={selected.rest === '' ? 0 : paneLayout.lines(selected.rest, restWidth)} flexShrink={0}><Text wrap="wrap">{selected.rest}</Text></Box>
+      const controls = <Box key={`detail-controls-${kind}-${id}`} height={1} flexShrink={0} flexDirection="row" columnGap={1}>
+        <Button key={`detail-prev-${kind}-${id}`} plain dimColor={index === 0} label="Prev" onPress={() => move(-1)} />
+        <Box key={`detail-page-${kind}-${id}`} flexShrink={0}><Text dimColor>{`${index + 1}/${pages.length}`}</Text></Box>
+        <Button key={`detail-next-${kind}-${id}`} plain dimColor={index === pages.length - 1} label="Next" onPress={() => move(1)} />
+        <Button key={`detail-close-${kind}-${id}`} plain label="Close" onPress={close} />
+      </Box>
+      return { first: `${label}. ${selected.first}`, continuation, controls }
+    }
     Object.assign(regions, {
       qTop: titleRows + Number(framed),
       qBottom: titleRows + Number(framed) + qHead + qRows,
@@ -3732,16 +3826,18 @@ export const register: Register = on => {
           <Text dimColor>{'─'.repeat(Math.max(0, width - titleLabel.length - titleSide))}</Text>
         </Box>
         {summaryRows > 0 && <Box key="state-summary" height={summaryRows} flexShrink={0} overflow="hidden"><Text dimColor wrap="truncate-end">{summary}</Text></Box>}
+        {(() => {
+          const sections = [
         <Box key="questions-frame" width={width} height={qHead + qRows + borderRows} flexShrink={0} flexDirection="column" borderStyle={framed ? 'round' : undefined} borderDimColor={framed ? true : undefined}>
-        <Box key="questions-header" width={sectionWidth} height={qHead} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
+        {detailPane === undefined && <Box key="questions-header" width={sectionWidth} height={qHead} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('questions-word', <Text bold>{questionWord}</Text>)}
           {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
           {qHeaderOnly && item('questions-empty', <Text dimColor>{qEmpty.trim()}</Text>)}
           {shortCompact && qIndicator}
           {!shortCompact && qIndicator}
-        </Box>
+        </Box>}
         <Box key="questions" width={sectionWidth} flexShrink={0} flexDirection="column" height={qRows} overflow="hidden">
-        {questions.length === 0 && !qHeaderOnly && (
+        {detailPane === undefined && questions.length === 0 && !qHeaderOnly && (
           <Text dimColor wrap="wrap">
             {qEmpty}
           </Text>
@@ -3812,42 +3908,49 @@ export const register: Register = on => {
           // A short region still draws one cut line. An empty press is not an answer.
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - 1)
           const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
+          const titleDetail = opened[String(q.id)] === 'q' && savedQuestion && anchors[`q:${q.id}`]?.source === q.head
+            ? pageOf('q', q.id, q.head, questionLabel(q.id), drawQWidth, qWidth,
+              (detailPane === 'q' ? qRows : Math.min(qRows, qLines[index]!)) - qControlsRows) : undefined
           const text = (
             <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={drawQWidth}>
               <Box height={1} overflow="hidden"><Text color={color} dimColor={q.status === 'deferred'} wrap="truncate-end">
-                {headShown}
+                {titleDetail?.first ?? headShown}
               </Text></Box>
-              {revealShown !== undefined && <Box key={`reveal-${opened[String(q.id)]}-${q.id}`}><Text wrap="wrap">{revealShown}</Text></Box>}
+              {titleDetail === undefined && revealShown !== undefined && <Box key={`reveal-${opened[String(q.id)]}-${q.id}`}><Text wrap="wrap">{revealShown}</Text></Box>}
             </Box>
           )
           const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
-          const titleToggle = <Button key={`title-q-${q.id}`} plain dimColor label="…" onPress={() => toggleReveal(q.id, 'q', index)} />
+          const titleToggle = <Button key={`title-q-${q.id}`} plain dimColor label="…" onPress={() => toggleReveal(q.id, 'q', index, true)} />
 
           // The text gets the pane's width when its fixed jump column would crowd it out.
           // Both layouts use the same controls and sources; the extra row is budgeted above.
           return (
-            <Box key={`row-q-${q.id}`} flexDirection={questionCompact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
+            <Box key={`row-q-${q.id}`} flexDirection={questionCompact || titleDetail !== undefined ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
               {/* Native Fragment is a column Box, so arrays keep row children flat. */}
               {questionCompact ? [
                 <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>,
                 <Box flexDirection="row" columnGap={1}>{markers}{titleToggle}{remove}</Box>,
-              ] : [dot, markers, text, titleToggle, remove]}
+              ] : titleDetail === undefined ? [dot, markers, text, titleToggle, remove]
+                : <Box flexDirection="row" columnGap={1}>{dot}{markers}{text}{titleToggle}{remove}</Box>}
+              {titleDetail?.continuation}
+              {titleDetail?.controls}
             </Box>
           )
         })}
         </Box>
         </Box>
-        <Text dimColor>{'─'.repeat(width)}</Text>
+        ,
+        detailPane === undefined && <Text dimColor>{'─'.repeat(width)}</Text>,
         <Box key="steps-frame" width={width} height={sHead + sRows + borderRows} flexShrink={0} flexDirection="column" borderStyle={framed ? 'round' : undefined} borderDimColor={framed ? true : undefined}>
-        <Box key="steps-header" width={sectionWidth} height={sHead} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
+        {detailPane === undefined && <Box key="steps-header" width={sectionWidth} height={sHead} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('steps-word', <Text bold>{stepWord}</Text>)}
           {item('steps-ring', <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{sRing}</Text>)}
           {sHeaderOnly && item('steps-empty', <Text dimColor>{sEmpty.trim()}</Text>)}
           {shortCompact && sIndicator}
           {!shortCompact && sIndicator}
-        </Box>
+        </Box>}
         <Box key="steps" width={sectionWidth} flexShrink={0} flexDirection="column" height={sRows} overflow="hidden">
-        {steps.length === 0 && !sHeaderOnly && (
+        {detailPane === undefined && steps.length === 0 && !sHeaderOnly && (
           <Text dimColor wrap="wrap">
             {sEmpty}
           </Text>
@@ -3885,10 +3988,14 @@ export const register: Register = on => {
           </Box>
           const subject = displayTitle(`S${number}`, s.subject)
           const subjectShown = paneLayout.preview(subject, drawStepWidth, () => fitLines(subject, drawStepWidth, 1))
+          const titleDetail = sDetails[index]
+            ? pageOf('s', s.id, s.subject, `S${number}`, inlineStepWidth, detailWidth,
+              (detailPane === 's' ? sRows : Math.min(sRows, sLines[index]! - Number(heading !== undefined && !showHeadings)))
+              - Number(heading !== undefined && showHeadings) - (lifecycle === undefined ? 0 : paneLayout.lines(lifecycle, detailWidth)) - Number(s.followUp === true)) : undefined
           const text = (
-            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={drawStepWidth} height={1} overflow="hidden">
+            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={titleDetail === undefined ? drawStepWidth : inlineStepWidth} height={1} overflow="hidden">
               <Text color={look.textColor} wrap="truncate-end">
-                {subjectShown}
+                {titleDetail?.first ?? subjectShown}
               </Text>
             </Box>
           )
@@ -3907,14 +4014,15 @@ export const register: Register = on => {
           const reason = lifecycle !== undefined && <Text key={`s-reason-${s.id}`} dimColor>{lifecycle}</Text>
           const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
           const stackedRow = metaBelow || sDetails[index] || lifecycle !== undefined || s.followUp === true
-          const titleRow = metaBelow ? [dot, text] : [dot, text, titleToggle, owner, clock]
+          const titleRow = metaBelow && titleDetail === undefined ? [dot, text] : [dot, text, titleToggle, owner, clock]
           return (
             <Box key={`grouped-step-${s.id}`} flexDirection="column" flexShrink={0}>
               {heading !== undefined && showHeadings && <Box key={`step-group-${s.status}`} height={1} flexShrink={0}><Text bold dimColor>{heading}</Text></Box>}
               <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
-                {stackedRow ? <Box flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
-                {metaBelow && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
-                {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - Number(metaBelow) - Number(heading !== undefined && showHeadings))}</Text></Box>}
+                {stackedRow ? <Box key={`s-first-line-${s.id}`} height={1} flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
+                {metaBelow && titleDetail === undefined && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
+                {titleDetail?.continuation}
+                {titleDetail?.controls}
                 {reason}
                 {follow}
               </Box>
@@ -3923,6 +4031,9 @@ export const register: Register = on => {
         })}
         </Box>
         </Box>
+          ]
+          return detailPane === undefined ? sections : <Box key="detail-pane" flexDirection="column" flexShrink={0}>{sections}</Box>
+        })()}
         <Box flexGrow={1} />
         <Box key="bottom-bar" width={width} height={footerRows} flexShrink={0} flexDirection="row" flexWrap="wrap" columnGap={footer.gap} marginTop={0}>
           {l.questions.length > 0 && [
