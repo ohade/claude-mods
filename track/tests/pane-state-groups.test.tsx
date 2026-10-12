@@ -61,7 +61,7 @@ test('empty groups take no rows and status changes regroup without renumbering',
   expect(ledger.writes).toHaveLength(0)
 })
 
-test('keyboard-origin scrolling reaches every group without a heading-only viewport', async ($, on) => {
+for (const height of [12, 40]) test(`keyboard-origin scrolling reaches every task without a heading-only viewport at 60x${height}`, async ($, on) => {
   const clock = mock.clock(on)
   const states = ['completed', 'paused', 'pending', 'waiting', 'in_progress']
   const steps = Array.from({ length: 20 }, (_, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject: `Work ${i + 1}`, status: states[i % 5] }))
@@ -69,7 +69,7 @@ test('keyboard-origin scrolling reaches every group without a heading-only viewp
   atomStore(on, 'activity', IDLE)
   atomStore(on, 'scroll', { questions: null, steps: 0 })
   on('ui.scroll', () => ({}))
-  const ui = await $.ui.mount(pane('dock', 60, 12))
+  const ui = await $.ui.mount(pane('dock', 60, height))
   const seen = new Set<string>()
   const seenGroups = new Set<string>()
   for (let i = 0; i < steps.length; i++) {
@@ -82,11 +82,13 @@ test('keyboard-origin scrolling reaches every group without a heading-only viewp
       const status = String(group.key).slice('step-group-'.length)
       expect(rows.some(row => steps.find(step => `row-s-${step.id}` === row.key)?.status === status)).toBe(true)
     }
-    await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: 1, bodyRows: 12, contentRows: 12, origin: { kind: 'person' } } as never)
+    await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: 1, bodyRows: height, contentRows: height, origin: { kind: 'person' } } as never)
     await clock.advance(100)
     await ui.redraw()
   }
   expect([...seen].sort()).toEqual(steps.map(step => `row-s-${step.id}`).sort())
-  expect([...seenGroups].sort()).toEqual(['ACTIVE', 'WAITING ON YOU', 'NEXT', 'PAUSED', 'DONE'].sort())
+  // Short viewports spend their rows on tasks. The tall case fits all five
+  // headings, so it retains the positive grouping and navigation check.
+  expect([...seenGroups].sort()).toEqual(height === 12 ? [] : ['ACTIVE', 'WAITING ON YOU', 'NEXT', 'PAUSED', 'DONE'].sort())
   expect(ledger.writes).toHaveLength(0)
 })
