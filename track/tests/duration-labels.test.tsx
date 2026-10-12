@@ -44,8 +44,11 @@ for (const width of [25, 60]) {
         expect(metadata?.props?.width).toBe(width - Number(row?.props.marginLeft))
         expect(metadata?.children?.at(-1)?.props?.key).toBe('s-time-slot-plan:1')
       } else {
+        const framed = (await ui.find({ key: 'steps-frame' }))?.props.borderStyle === 'round'
+        // Approved TRACK-14 4ab premise: a framed clock ends at its inner
+        // edge; unframed rows still end at the exact original pane edge.
         expect(Number(text?.props.width) + Number(owner?.props.width) + Number(slot?.props.width)
-          + 2 + 1 + 4 * Number(row?.props.columnGap) + Number(row?.props.marginLeft)).toBe(width)
+          + 2 + 1 + 4 * Number(row?.props.columnGap) + Number(row?.props.marginLeft)).toBe(framed ? width - 2 : width)
         expect(children.at(-1)?.props?.key).toBe('s-time-slot-plan:1')
       }
       expect(slot?.props).toMatchObject({ justifyContent: 'flex-end', flexShrink: 0 })
