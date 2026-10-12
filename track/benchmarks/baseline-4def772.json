@@ -1,0 +1,5799 @@
+{
+  "schema_version": 1,
+  "proof_class": "FIXTURE",
+  "engine_version": "2.1.296",
+  "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+  "receipt_sha256": "d3f76ba7ba8c93b63aad9002ac9c41b676bf625c5b29d039c73b38da7c8f09ab",
+  "percentile_method": "nearest rank",
+  "key_to_paint_ms": null,
+  "key_to_paint_status": "UNRESOLVED",
+  "scenarios": [
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "empty",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 0,
+      "questions": 0,
+      "busy": false,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        1.1385000000000218,
+        1.1034579999999892,
+        1.1118749999999977,
+        1.12987499999997,
+        1.072416999999973,
+        1.063874999999996,
+        1.0458750000000236,
+        1.079499999999996,
+        1.0365830000000074,
+        1.055749999999989,
+        1.0749169999999708,
+        1.056416000000013,
+        1.0470840000000408,
+        1.04849999999999,
+        1.0651660000000334,
+        1.3551669999999945,
+        1.186916999999994,
+        1.0284169999999904,
+        1.021000000000015,
+        0.9850000000000136,
+        1.0206249999999955,
+        0.97037499999999,
+        0.9479580000000283,
+        0.9915839999999889,
+        0.9665840000000117,
+        0.9763750000000186,
+        0.9706250000000409,
+        1.5007920000000468,
+        0.9790830000000028,
+        0.9536669999999958,
+        2.2102910000000406,
+        5.540541999999959,
+        1.1091659999999592,
+        1.078125,
+        0.9440000000000168,
+        1.2198339999999916,
+        1.1666660000000206,
+        1.0376249999999914,
+        0.9860419999999976,
+        0.9288339999999948
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 0,
+        "clock_state_writes": 0,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 0
+      },
+      "scroll_events": 0,
+      "resize_events": 0,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 30,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "─────────────────────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────────────────────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "○ —"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 1,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true,
+                  "wrap": "wrap"
+                },
+                "children": [
+                  "  None yet."
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "────────────────────────────────────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "○ —"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 1,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true,
+                  "wrap": "wrap"
+                },
+                "children": [
+                  "  None yet."
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433654762
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hides · ctrl+x x closes for good"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 60,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "success"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-idle",
+                  "width": 60,
+                  "justifyContent": "center",
+                  "backgroundColor": "success"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "Idle · Safe to close"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 40,
+        "p50": 1.04849999999999,
+        "p95": 1.5007920000000468,
+        "min": 0.9288339999999948,
+        "max": 5.540541999999959
+      },
+      "timer_render_dispatches_per_virtual_second": 0.0
+    },
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "steps-50",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 50,
+      "questions": 0,
+      "busy": false,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        2.72704200000004,
+        2.7172499999999786,
+        2.5812909999999647,
+        2.6080420000000117,
+        2.7629159999999615,
+        2.4207910000000084,
+        2.352792000000022,
+        2.368499999999983,
+        2.3184590000000185,
+        2.407332999999994,
+        2.3910419999999704,
+        2.344875000000002,
+        2.371084000000053,
+        2.253584000000046,
+        2.175375000000031,
+        2.9148329999999305,
+        2.6902919999999995,
+        2.5903749999999945,
+        2.3412920000000668,
+        2.3816249999999854,
+        2.4402500000001055,
+        2.258375000000001,
+        2.2435409999999365,
+        2.326791000000071,
+        2.583332999999925,
+        2.5051249999999072,
+        2.4043329999999514,
+        2.365167000000042,
+        2.7747079999999187,
+        2.754208999999946,
+        2.223875000000021,
+        2.1617919999999913,
+        2.3240420000000768,
+        2.2595839999999043,
+        2.1760000000000446,
+        2.388249999999971,
+        2.431959000000006,
+        2.3056249999999636,
+        2.145832999999925,
+        2.1965830000000324
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 0,
+        "clock_state_writes": 0,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 0
+      },
+      "scroll_events": 0,
+      "resize_events": 0,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 30,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "─────────────────────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────────────────────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "○ —"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 1,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true,
+                  "wrap": "wrap"
+                },
+                "children": [
+                  "  None yet."
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "────────────────────────────────────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 17 of 50 · 34%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433654943
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433654944
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↓41"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 19,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:1",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:1",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:1",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S1. FIXTURE step 1: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:2",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:2",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:2",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S2. FIXTURE step 2: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:3",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:3",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:3",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S3. FIXTURE step 3: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:4",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:4",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:4",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S4. FIXTURE step 4: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:5",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:5",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:5",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S5. FIXTURE step 5: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:6",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:6",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:6",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S6. FIXTURE step 6: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:7",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:7",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:7",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S7. FIXTURE step 7: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:8",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:8",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:8",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S8. FIXTURE step 8: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:9",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:9",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:9",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S9. FIXTURE step 9: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps-bottom",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433654945
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433654946
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hides · ctrl+x x closes for good"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 60,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "success"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-idle",
+                  "width": 60,
+                  "justifyContent": "center",
+                  "backgroundColor": "success"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "Idle · 33 pending"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 40,
+        "p50": 2.371084000000053,
+        "p95": 2.7629159999999615,
+        "min": 2.145832999999925,
+        "max": 2.9148329999999305
+      },
+      "timer_render_dispatches_per_virtual_second": 0.0
+    },
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "maximum",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 300,
+      "questions": 200,
+      "busy": false,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        15.136707999999999,
+        10.982708000000002,
+        11.750916999999959,
+        11.466999999999985,
+        10.850500000000011,
+        10.803417000000081,
+        11.960332999999991,
+        11.330125000000066,
+        11.134082999999919,
+        11.030292000000031,
+        10.249625000000037,
+        11.33725000000004,
+        11.121666000000005,
+        11.135625000000005,
+        10.861707999999908,
+        12.136166000000003,
+        11.60754200000008,
+        11.002874999999904,
+        11.109332999999992,
+        10.99954200000002,
+        11.480791999999951,
+        11.257792000000109,
+        11.084082999999964,
+        11.158625000000029,
+        10.756167000000005,
+        10.367665999999872,
+        11.587624999999889,
+        11.563041000000112,
+        11.005374999999958,
+        11.018583000000035,
+        10.67491599999994,
+        11.384207999999944,
+        10.956458999999995,
+        11.408915999999863,
+        16.195790999999872,
+        11.05012499999998,
+        11.802417000000105,
+        11.236750000000029,
+        11.994374999999991,
+        11.17858299999989
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 0,
+        "clock_state_writes": 0,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 0
+      },
+      "scroll_events": 0,
+      "resize_events": 0,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 30,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "─────────────────────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────────────────────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 67 of 200 · 34%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-clear",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-questions",
+                      "label": "clear all",
+                      "hotkey": "q",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655307
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-clear-answered",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-answered",
+                      "label": "clear completed",
+                      "hotkey": "a",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655308
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↑198"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 7,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-q-199",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "success",
+                      "dimColor": false
+                    },
+                    "children": [
+                      "●"
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-markers-199",
+                      "width": 13,
+                      "flexShrink": 0,
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-question-slot-199",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ Q ]"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-answer-slot-199",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "color": "subtle",
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ A ]"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-text-199",
+                      "flexDirection": "column",
+                      "flexShrink": 1,
+                      "width": 38
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "dimColor": false,
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "Q199. FIXTURE question 199: retain full question text across narrow and wide layouts"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "del-199",
+                      "label": "✕",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655309
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-q-200",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": false
+                    },
+                    "children": [
+                      "○"
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-markers-200",
+                      "width": 13,
+                      "flexShrink": 0,
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-question-slot-200",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ Q ]"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-answer-slot-200",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "color": "subtle",
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ A ]"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-text-200",
+                      "flexDirection": "column",
+                      "flexShrink": 1,
+                      "width": 38
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "dimColor": false,
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "Q200. FIXTURE question 200: retain full question text across narrow and wide layouts"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "del-200",
+                      "label": "✕",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655310
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "────────────────────────────────────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 100 of 300 · 33%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655311
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655312
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↓294"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 12,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:1",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:1",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:1",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S1. FIXTURE step 1: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:2",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:2",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:2",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S2. FIXTURE step 2: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:3",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:3",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:3",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S3. FIXTURE step 3: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:4",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:4",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:4",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S4. FIXTURE step 4: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:5",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:5",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:5",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S5. FIXTURE step 5: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:6",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:6",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:6",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S6. FIXTURE step 6: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps-bottom",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655313
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655314
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hides · ctrl+x x closes for good"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 60,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "warning"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-paused",
+                  "width": 60,
+                  "justifyContent": "center",
+                  "backgroundColor": "warning"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "Paused"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 40,
+        "p50": 11.135625000000005,
+        "p95": 12.136166000000003,
+        "min": 10.249625000000037,
+        "max": 16.195790999999872
+      },
+      "timer_render_dispatches_per_virtual_second": 0.0
+    },
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "busy",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 50,
+      "questions": 0,
+      "busy": true,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        2.612583000000086,
+        2.6696249999999964,
+        2.769999999999982,
+        2.3918749999998,
+        2.6431659999998374,
+        2.7652499999999236,
+        2.4632500000000164,
+        2.5207080000000133,
+        2.4714590000000953,
+        2.636207999999897,
+        2.407416999999896,
+        2.1687080000001515,
+        2.218832999999904,
+        3.2044590000000426,
+        2.6454999999998563,
+        2.510541000000103,
+        2.3557080000000497,
+        2.4213750000001255,
+        2.402042000000165,
+        2.275875000000042,
+        2.4002080000000205,
+        2.400165999999899,
+        2.0427499999998417,
+        2.139084000000139,
+        4.030999999999949,
+        2.582832999999937,
+        2.1572920000000977,
+        2.7076250000000073,
+        2.6938749999999345,
+        2.349290999999994,
+        2.7815409999998337,
+        2.5260420000001886,
+        2.363542000000052,
+        2.424250000000029,
+        2.318457999999964,
+        3.9889169999999012,
+        2.604082999999946,
+        2.091374999999971,
+        2.4513339999998607,
+        2.4986250000001746
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 15,
+        "clock_state_writes": 6,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 21
+      },
+      "scroll_events": 0,
+      "resize_events": 0,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 30,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "─────────────────────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────────────────────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "○ —"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 1,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true,
+                  "wrap": "wrap"
+                },
+                "children": [
+                  "  None yet."
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "────────────────────────────────────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 17 of 50 · 34%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655495
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655496
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↓41"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 19,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:1",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:1",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:1",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S1. FIXTURE step 1: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:2",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:2",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:2",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S2. FIXTURE step 2: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:3",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:3",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:3",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S3. FIXTURE step 3: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:4",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:4",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:4",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S4. FIXTURE step 4: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:5",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:5",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:5",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S5. FIXTURE step 5: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:6",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:6",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:6",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S6. FIXTURE step 6: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:7",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:7",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:7",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S7. FIXTURE step 7: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:8",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:8",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:8",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S8. FIXTURE step 8: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:9",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:9",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:9",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S9. FIXTURE step 9: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps-bottom",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655497
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433655498
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hides · ctrl+x x closes for good"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 60,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "#5f6670"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-working",
+                  "width": 60,
+                  "justifyContent": "center",
+                  "backgroundColor": "#5f6670"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "◐"
+                    ]
+                  },
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      " Working · S26"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 40,
+        "p50": 2.4632500000000164,
+        "p95": 3.2044590000000426,
+        "min": 2.0427499999998417,
+        "max": 4.030999999999949
+      },
+      "timer_render_dispatches_per_virtual_second": 3.5
+    },
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "rapid-scroll",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 300,
+      "questions": 200,
+      "busy": false,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        11.370249999999942,
+        13.377124999999978,
+        11.566375000000107,
+        13.072999999999865,
+        11.830208000000084,
+        13.788334000000077,
+        11.62233399999991,
+        14.197875000000067,
+        11.776665999999977,
+        13.999458000000004,
+        11.869750000000067,
+        12.867041999999856,
+        11.394457999999986,
+        12.990916999999854,
+        11.865790999999945,
+        11.887292000000116,
+        13.933708000000024,
+        11.47849999999994,
+        13.466250000000173,
+        11.559875000000147,
+        13.542834000000084,
+        11.447333999999955,
+        11.694582999999966,
+        11.36262499999998,
+        13.153250000000071,
+        11.360625000000255,
+        13.899374999999964,
+        11.768209000000297,
+        12.690416999999798,
+        11.420291000000361,
+        13.047500000000127,
+        11.80095799999981,
+        13.22570799999994,
+        12.425374999999804,
+        12.04300000000012,
+        13.95962499999996,
+        11.498041999999714,
+        12.396832999999788,
+        11.68158399999993,
+        13.3220409999999,
+        11.403083000000152,
+        13.599833000000217,
+        11.75112500000023,
+        13.277417000000241,
+        11.432166999999936,
+        11.5625,
+        12.171166999999969,
+        12.004915999999866,
+        18.150916999999936,
+        11.532125000000178,
+        14.390999999999622,
+        11.874249999999847,
+        13.061459000000013,
+        11.995249999999942,
+        12.78970900000013,
+        11.662250000000313,
+        11.903083000000152,
+        12.38979100000006,
+        12.301458999999795,
+        14.968459000000166,
+        12.297875000000204,
+        15.629209000000174,
+        12.269792000000052,
+        13.909749999999804,
+        12.309458000000177,
+        13.923457999999755,
+        12.146374999999807,
+        11.839167000000089,
+        13.853708000000097,
+        12.045834000000013,
+        13.472334000000046,
+        12.036708999999973,
+        13.728291999999783,
+        12.064915999999812,
+        13.309582999999748,
+        12.558958000000075,
+        14.274916999999732,
+        12.70266700000002,
+        12.570874999999887,
+        13.431624999999713
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 0,
+        "clock_state_writes": 0,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 0
+      },
+      "scroll_events": 40,
+      "resize_events": 0,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 30,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "─────────────────────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────────────────────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 67 of 200 · 34%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-clear",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-questions",
+                      "label": "clear all",
+                      "hotkey": "q",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656263
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-clear-answered",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-answered",
+                      "label": "clear completed",
+                      "hotkey": "a",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656264
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↑198"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 7,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-q-199",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "success",
+                      "dimColor": false
+                    },
+                    "children": [
+                      "●"
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-markers-199",
+                      "width": 13,
+                      "flexShrink": 0,
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-question-slot-199",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ Q ]"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-answer-slot-199",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "color": "subtle",
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ A ]"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-text-199",
+                      "flexDirection": "column",
+                      "flexShrink": 1,
+                      "width": 38
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "dimColor": false,
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "Q199. FIXTURE question 199: retain full question text across narrow and wide layouts"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "del-199",
+                      "label": "✕",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656265
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-q-200",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": false
+                    },
+                    "children": [
+                      "○"
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-markers-200",
+                      "width": 13,
+                      "flexShrink": 0,
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-question-slot-200",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ Q ]"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-answer-slot-200",
+                          "width": 6,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "color": "subtle",
+                              "dimColor": true
+                            },
+                            "children": [
+                              "[ A ]"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "q-text-200",
+                      "flexDirection": "column",
+                      "flexShrink": 1,
+                      "width": 38
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "dimColor": false,
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "Q200. FIXTURE question 200: retain full question text across narrow and wide layouts"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "del-200",
+                      "label": "✕",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656266
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "────────────────────────────────────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 100 of 300 · 33%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656267
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656268
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↑80 ↓214"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 12,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:81",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:81",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:81",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S81. FIXTURE step 81: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:82",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:82",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:82",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S82. FIXTURE step 82: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:83",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:83",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:83",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S83. FIXTURE step 83: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:84",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:84",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:84",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S84. FIXTURE step 84: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:85",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:85",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:85",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S85. FIXTURE step 85: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:86",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:86",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:86",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S86. FIXTURE step 86: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps-bottom",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656269
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656270
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hides · ctrl+x x closes for good"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 60,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "warning"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-paused",
+                  "width": 60,
+                  "justifyContent": "center",
+                  "backgroundColor": "warning"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "Paused"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 80,
+        "p50": 12.301458999999795,
+        "p95": 14.274916999999732,
+        "min": 11.360625000000255,
+        "max": 18.150916999999936
+      },
+      "timer_render_dispatches_per_virtual_second": 0.0
+    },
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "resize",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 300,
+      "questions": 200,
+      "busy": false,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        13.162125000000287,
+        11.512375000000247,
+        12.062041000000136,
+        12.263792000000194,
+        11.967666000000008,
+        12.848167000000103,
+        11.354667000000063,
+        13.273875000000317,
+        12.197624999999789,
+        13.851416999999856,
+        11.690250000000106,
+        11.65029100000038,
+        12.820166999999856,
+        11.210375000000113,
+        13.437167000000045,
+        11.885333000000173,
+        13.668542000000343,
+        11.897083000000293,
+        11.7990420000001,
+        13.455041000000165,
+        11.561624999999822,
+        13.614667000000281,
+        11.705332999999882,
+        13.460875000000215,
+        12.128917000000001,
+        11.644000000000233,
+        13.143375000000106,
+        11.700457999999799,
+        13.24416599999995,
+        11.816041999999925,
+        11.83929100000023,
+        11.889625000000251,
+        11.637624999999844,
+        12.525833000000148,
+        11.636666999999761,
+        13.206624999999804,
+        11.991750000000138,
+        11.394792000000052,
+        13.328624999999647,
+        11.458750000000236
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 0,
+        "clock_state_writes": 0,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 0
+      },
+      "scroll_events": 0,
+      "resize_events": 40,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 20,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "───────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 67/200"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-clear",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-questions",
+                      "label": "all",
+                      "hotkey": "q",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656612
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-clear-answered",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-answered",
+                      "label": "done",
+                      "hotkey": "a",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656613
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↑199"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 3,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-q-200",
+                  "flexDirection": "column",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 0
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "dimColor": false
+                        },
+                        "children": [
+                          "○"
+                        ]
+                      },
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-text-200",
+                          "flexDirection": "column",
+                          "flexShrink": 1,
+                          "width": 28
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "dimColor": false,
+                              "wrap": "wrap"
+                            },
+                            "children": [
+                              "Q200. FIXTURE question 200: retain full question text a…"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "q-markers-200",
+                          "width": 13,
+                          "flexShrink": 0,
+                          "flexDirection": "row",
+                          "columnGap": 1
+                        },
+                        "children": [
+                          {
+                            "type": "Box",
+                            "props": {
+                              "key": "q-question-slot-200",
+                              "width": 6,
+                              "flexShrink": 0
+                            },
+                            "children": [
+                              {
+                                "type": "Text",
+                                "props": {
+                                  "dimColor": true
+                                },
+                                "children": [
+                                  "[ Q ]"
+                                ]
+                              }
+                            ]
+                          },
+                          {
+                            "type": "Box",
+                            "props": {
+                              "key": "q-answer-slot-200",
+                              "width": 6,
+                              "flexShrink": 0
+                            },
+                            "children": [
+                              {
+                                "type": "Text",
+                                "props": {
+                                  "color": "subtle",
+                                  "dimColor": true
+                                },
+                                "children": [
+                                  "[ A ]"
+                                ]
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Button",
+                        "props": {
+                          "key": "del-200",
+                          "label": "✕",
+                          "plain": true,
+                          "dimColor": true
+                        },
+                        "press": {
+                          "plugin": "track",
+                          "handle": 433656614
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "──────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 100/300"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps",
+                      "label": "all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656615
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed",
+                      "label": "done",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656616
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↓299"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 6,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:1",
+                  "flexDirection": "column",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 0
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "flexDirection": "row",
+                      "columnGap": 1
+                    },
+                    "children": [
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "s-status-plan:1",
+                          "width": 2,
+                          "flexShrink": 0
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "color": "success"
+                            },
+                            "children": [
+                              "●"
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "Box",
+                        "props": {
+                          "key": "s-text-plan:1",
+                          "flexShrink": 1,
+                          "flexGrow": 1,
+                          "width": 27
+                        },
+                        "children": [
+                          {
+                            "type": "Text",
+                            "props": {
+                              "color": "success",
+                              "wrap": "wrap"
+                            },
+                            "children": [
+                              "S1. FIXTURE step 1: preserve the full long title while measuring the unchanged terminal pane"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps-bottom",
+                      "label": "all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656617
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "done",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656618
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint-hide",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hide"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint-close",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "ctrl+x x close"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 30,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "warning"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-paused",
+                  "width": 30,
+                  "justifyContent": "center",
+                  "backgroundColor": "warning"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "Paused"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 40,
+        "p50": 11.967666000000008,
+        "p95": 13.614667000000281,
+        "min": 11.210375000000113,
+        "max": 13.851416999999856
+      },
+      "timer_render_dispatches_per_virtual_second": 0.0
+    },
+    {
+      "schema_version": 1,
+      "proof_class": "FIXTURE",
+      "scenario": "closed-busy",
+      "production_source_digest": "8361b3c861a9e43438e490e13fac1b621423596087838a00ee0aaaa3a4145f29",
+      "steps": 50,
+      "questions": 0,
+      "busy": true,
+      "metric": "pane_render_dispatch_ms",
+      "warmup": 5,
+      "requested_samples": 40,
+      "samples_ms": [
+        2.2004579999997986,
+        7.959666999999627,
+        2.8064589999999043,
+        2.267749999999978,
+        2.3606669999999212,
+        2.4628750000001673,
+        2.2825419999999212,
+        2.1635419999997794,
+        2.2626250000002983,
+        2.730707999999595,
+        4.456040999999914,
+        2.7790829999999005,
+        2.4635840000000826,
+        2.302042000000256,
+        2.1241250000002765,
+        2.230916999999863,
+        2.307166000000052,
+        2.2260000000001128,
+        2.1134579999998095,
+        1.9573749999999563,
+        3.707542000000103,
+        2.5310410000001866,
+        2.338749999999891,
+        2.2593339999998534,
+        2.632166000000325,
+        2.3446670000002996,
+        2.0859999999997854,
+        2.6206670000001395,
+        2.5082500000003165,
+        2.2006249999999454,
+        5.321790999999848,
+        2.461583000000246,
+        2.1636250000001382,
+        2.718333000000257,
+        2.3232499999999163,
+        2.407791999999972,
+        2.398083999999926,
+        2.051166000000194,
+        2.2482920000002196,
+        2.231999999999971
+      ],
+      "timer_window": {
+        "virtual_ms": 6000,
+        "observation_ms": 100,
+        "pulse_state_writes": 15,
+        "clock_state_writes": 6,
+        "explicit_invalidation_calls": 0,
+        "observed_render_dispatches": 0
+      },
+      "scroll_events": 0,
+      "resize_events": 0,
+      "snapshot": {
+        "type": "Box",
+        "props": {
+          "flexDirection": "column",
+          "height": 30,
+          "overflow": "hidden"
+        },
+        "children": [
+          {
+            "type": "Box",
+            "props": {
+              "key": "title",
+              "flexDirection": "row",
+              "justifyContent": "center",
+              "marginBottom": 1
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "─────────────────────"
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "bold": true,
+                  "color": "claude"
+                },
+                "children": [
+                  " SESSION TRACKER "
+                ]
+              },
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true
+                },
+                "children": [
+                  "──────────────────────"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Questions"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "questions-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "○ —"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "questions",
+              "flexDirection": "column",
+              "height": 1,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Text",
+                "props": {
+                  "dimColor": true,
+                  "wrap": "wrap"
+                },
+                "children": [
+                  "  None yet."
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Text",
+            "props": {
+              "dimColor": true
+            },
+            "children": [
+              "────────────────────────────────────────────────────────────"
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps-header",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-word",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "bold": true
+                    },
+                    "children": [
+                      "Steps"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-ring",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "warning"
+                    },
+                    "children": [
+                      "◔ 17 of 50 · 34%"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656799
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656800
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "steps-hidden",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "↓41"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "steps",
+              "flexDirection": "column",
+              "height": 19,
+              "overflow": "hidden"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:1",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:1",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:1",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S1. FIXTURE step 1: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:2",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:2",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:2",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S2. FIXTURE step 2: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:3",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:3",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:3",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S3. FIXTURE step 3: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:4",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:4",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:4",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S4. FIXTURE step 4: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:5",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:5",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:5",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S5. FIXTURE step 5: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:6",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:6",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:6",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S6. FIXTURE step 6: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:7",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:7",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success"
+                        },
+                        "children": [
+                          "●"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:7",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "color": "success",
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S7. FIXTURE step 7: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:8",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:8",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:8",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S8. FIXTURE step 8: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "row-s-plan:9",
+                  "flexDirection": "row",
+                  "flexShrink": 0,
+                  "columnGap": 1,
+                  "marginLeft": 2
+                },
+                "children": [
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-status-plan:9",
+                      "width": 2,
+                      "flexShrink": 0
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "children": [
+                          "○"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "Box",
+                    "props": {
+                      "key": "s-text-plan:9",
+                      "flexShrink": 1,
+                      "flexGrow": 1,
+                      "width": 55
+                    },
+                    "children": [
+                      {
+                        "type": "Text",
+                        "props": {
+                          "wrap": "wrap"
+                        },
+                        "children": [
+                          "S9. FIXTURE step 9: preserve the full long title while measuring the unchanged terminal pane"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "flexGrow": 1
+            }
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "bottom-bar",
+              "flexDirection": "row",
+              "flexWrap": "wrap",
+              "columnGap": 2,
+              "marginTop": 1
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-steps-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-steps-bottom",
+                      "label": "clear all",
+                      "hotkey": "s",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656801
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "item-clear-completed-bottom",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Button",
+                    "props": {
+                      "key": "clear-completed-bottom",
+                      "label": "clear completed",
+                      "hotkey": "c",
+                      "plain": true,
+                      "dimColor": true
+                    },
+                    "press": {
+                      "plugin": "track",
+                      "handle": 433656802
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "Box",
+                "props": {
+                  "key": "hint",
+                  "flexShrink": 0
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "dimColor": true
+                    },
+                    "children": [
+                      "/track hides · ctrl+x x closes for good"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "Box",
+            "props": {
+              "key": "banner",
+              "width": 60,
+              "flexDirection": "column",
+              "justifyContent": "center",
+              "backgroundColor": "#5f6670"
+            },
+            "children": [
+              {
+                "type": "Box",
+                "props": {
+                  "key": "banner-working",
+                  "width": 60,
+                  "justifyContent": "center",
+                  "backgroundColor": "#5f6670"
+                },
+                "children": [
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      "◐"
+                    ]
+                  },
+                  {
+                    "type": "Text",
+                    "props": {
+                      "color": "inverseText",
+                      "bold": true
+                    },
+                    "children": [
+                      " Working · S26"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "limitations": [
+        "Engine/mod dispatch, not terminal paint",
+        "Mock-clock timer window, not painted frame rate",
+        "Timing samples use requested redraws; timer window only reads host drawings at 10 Hz",
+        "Key-to-paint latency is UNRESOLVED"
+      ],
+      "summary_ms": {
+        "n": 40,
+        "p50": 2.3232499999999163,
+        "p95": 4.456040999999914,
+        "min": 1.9573749999999563,
+        "max": 7.959666999999627
+      },
+      "timer_render_dispatches_per_virtual_second": 0.0
+    }
+  ]
+}
