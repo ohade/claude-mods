@@ -546,10 +546,9 @@ test('the clear-all buttons carry no padding in their labels', async ($, on) => 
 
   const ui = await $.ui.mount(pane('dock'))
 
-  const labels = (await ui.findAll({ type: 'Button' }))
-    .filter(b => b.key === 'clear-questions' || b.key === 'clear-steps')
-    .map(b => (b.props as { label?: string }).label)
-  expect(labels).toEqual(['clear all', 'clear all'])
+  for (const key of ['clear-questions', 'clear-steps']) {
+    expect((await ui.find({ key }))?.props.label).toBe('clear all')
+  }
 })
 
 // Steps read like questions — same dot glyphs, same left edge, numbered.
@@ -1502,31 +1501,34 @@ test('scrolling past the end and back up moves the window up at once', async ($,
   expect(at.steps).toBe(atEnd - 1)
 })
 
-// "s: clear all" at the bottom too, and "clear completed" at the top and the
-// bottom, both stuck in place while the steps scroll. One bar heads the steps, one sits under them.
+// TRACK-14 4b: one pinned footer replaces the duplicated Steps controls.
 const clearBar = (el: { key?: string; props: unknown }) => {
   const p = el.props as { hotkey?: string; label?: string }
 
   return `${p.hotkey}: ${p.label}`
 }
 
-test('clear all and clear completed sit above and below the steps, outside their scrolling region', async ($, on) => {
+test('one canonical clear pair sits in the footer after the steps, outside their scrolling region', async ($, on) => {
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
   on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: { questions: null, steps: 5 }, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
 
   const all = await ui.findAll({})
   const bars = all.filter(el => el.type === 'Button' && /^clear-(steps|completed)/.test(String(el.key ?? '')))
-  expect(bars.map(clearBar)).toEqual(['s: clear all', 'c: clear completed', 's: clear all', 'c: clear completed'])
+  expect(bars.map(clearBar)).toEqual(['s: clear all', 'c: clear completed'])
   const region = all.findIndex(el => el.key === 'steps')
   const lastRow = all.findLastIndex(el => String(el.key ?? '').startsWith('row-s-'))
   const at = bars.map(b => all.indexOf(b))
   expect(region).toBeGreaterThan(-1)
-  expect(at.slice(0, 2).every(i => i < region)).toBe(true)
-  expect(at.slice(2).every(i => i > lastRow)).toBe(true)
+  const footer = all.findIndex(el => el.key === 'bottom-bar')
+  const banner = all.findIndex(el => el.key === 'banner')
+  expect(footer).toBeGreaterThan(lastRow)
+  expect(at.every(i => i > footer && i < banner)).toBe(true)
+  expect(await ui.find({ key: 'clear-steps-bottom' })).toBeUndefined()
+  expect(await ui.find({ key: 'clear-completed-bottom' })).toBeUndefined()
 })
 
-test('scrolling the steps leaves the region the same height, so neither bar moves', async ($, on) => {
+test('scrolling the steps leaves the region the same height and the single footer pair pinned', async ($, on) => {
   let at: { questions: number | null; steps: number | null } = { questions: null, steps: 0 }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: MANY, version: 1 } }))
   on('state.get', { plugin: 'track', key: 'scroll' }, () => ({ value: { value: at, version: 1 } }))
@@ -1543,20 +1545,20 @@ test('scrolling the steps leaves the region the same height, so neither bar move
   await ui.redraw()
   const scrolled = await height()
 
-  expect(top.bars).toBe(4)
+  expect(top.bars).toBe(2)
   expect(scrolled).toEqual(top)
 })
 
-test('the bottom clear all empties the steps, like the one above them', async ($, on) => {
+test('the canonical footer clear all empties the steps and preserves the questions', async ($, on) => {
   const writes = captureLedger(on)
   const ui = await $.ui.mount(pane('dock'))
-  await ui.press({ key: 'clear-steps-bottom' })
+  await ui.press({ key: 'clear-steps' })
 
   expect(writes.at(-1)?.steps ?? ['not cleared']).toHaveLength(0)
   expect(writes.at(-1)?.questions.map(q => q.id)).toEqual([1, 2])
 })
 
-test('clear completed above the steps hides the done steps and keeps the rest', async ($, on) => {
+test('canonical footer clear completed hides the done steps and keeps the rest', async ($, on) => {
   const writes: Array<{ steps: Array<StepRow & { cleared?: true }> }> = []
   const mixed = { ...BOTH, steps: [{ id: 'plan:1', source: 'plan', subject: 'Done', status: 'completed' }, { id: 'plan:2', source: 'plan', subject: 'Next', status: 'pending' }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: mixed, version: 1 } }))
