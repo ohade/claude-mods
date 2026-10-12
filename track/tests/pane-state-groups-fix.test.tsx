@@ -87,6 +87,7 @@ test('a short opened step detail budgets its heading and pager without permanent
   const ui = await $.ui.mount(pane('dock', 60, 12))
   await ui.press({ key: 'title-s-plan:1' })
   const heading = await ui.find({ key: 'step-group-in_progress' })
+  expect(heading).toBeDefined()
   const detail = await ui.find({ key: 'detail-s-plan:1' })
   const text = String(detail?.text ?? '')
   const pager = await ui.find({ key: 'detail-controls-s-plan:1' })
