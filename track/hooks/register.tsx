@@ -228,6 +228,9 @@ const QUESTION_CHROME = 18
 const HEADER_GAP = 2
 // Below this width the Q/A columns crowd out the question; place them on the next line.
 const COMPACT_COLUMNS = 40
+// Part 3c: leave a useful subject after the position label and ellipsis.
+const MIN_SUBJECT_COLUMNS = 16
+const displayTitle = (label: string, title: string): string => `${label}. ${title}`
 const HINT = '/track hides · ctrl+x x closes for good'
 const NONE_YET = '  None yet.'
 const ALL_CLEARED = '  all cleared'
@@ -3474,21 +3477,26 @@ export const register: Register = on => {
     const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
     const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
     const sButtons = l.steps.length > 0 ? clearWidths : []
-    const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME + 2))
-    // At very narrow widths the metadata moves below the title. Otherwise all
-    // rows reserve the same owner and time columns, even without a clock.
-    const metaBelow = width < 24
+    // Include the largest position label, an ellipsis and a cell for trimming
+    // trailing space. Metadata must not consume the readable subject width.
+    const minimumStepWidth = displayTitle(`S${Math.max(steps.length, 1)}`, '').length + MIN_SUBJECT_COLUMNS + 2
+    const minimumQuestionWidth = displayTitle(`Q${Math.max(questions.length, 1)}`, '').length + MIN_SUBJECT_COLUMNS + 2
+    const wideQuestionWidth = Math.max(1, width - rowIndent - 2 - QUESTION_CHROME - 2)
+    const questionCompact = compact || wideQuestionWidth < minimumQuestionWidth
+    const qWidth = questionCompact ? Math.max(1, width - rowIndent - 2) : wideQuestionWidth
     const ownerWidth = 5
     const clockWidth = Math.max(5, ...steps.filter(hasClock).map(s => clockOf(s).length))
-    const stepWidth = Math.max(1, width - rowIndent - 2 - 1 - (metaBelow ? 2 : ownerWidth + clockWidth + 4))
+    const inlineStepWidth = Math.max(1, width - rowIndent - 2 - 1 - ownerWidth - clockWidth - 4)
+    const metaBelow = compact || inlineStepWidth < minimumStepWidth
+    const stepWidth = metaBelow ? Math.max(1, width - rowIndent - 3) : inlineStepWidth
     const detailWidth = Math.max(1, width - rowIndent - 3)
     const lifecycleOf = (s: Step): string | undefined =>
       s.status === 'paused' && s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
-    const qControlsRows = compact ? 1 : 0
+    const qControlsRows = questionCompact ? 1 : 0
     // Scrolling changes the viewport, not the ledger. Keep existing previews
     // for all eligible rows, but compute a new one only when its row is drawn.
-    for (const q of questions) paneLayout.retainPreview(`${questionLabel(q.id)}. ${q.head}`, qWidth)
-    for (let i = 0; i < steps.length; i++) paneLayout.retainPreview(`S${i + 1}. ${steps[i]!.subject}`, stepWidth)
+    for (const q of questions) paneLayout.retainPreview(displayTitle(questionLabel(q.id), q.head), qWidth)
+    for (let i = 0; i < steps.length; i++) paneLayout.retainPreview(displayTitle(`S${i + 1}`, steps[i]!.subject), stepWidth)
     const revealedText = (q: Question): string | undefined => {
       const side = opened[String(q.id)]
       if (side === 'q' && q.head.trim() !== '') return q.head
@@ -3656,7 +3664,7 @@ export const register: Register = on => {
           )
           // A closed Text carries exactly its display line. Full saved words
           // appear only after selection, in the wrapping detail below it.
-          const head = `${questionLabel(q.id)}. ${q.head}`
+          const head = displayTitle(questionLabel(q.id), q.head)
           const headShown = paneLayout.preview(head, qWidth, () => fitLines(head, qWidth, 1))
           const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
           // A short region still draws one cut line. An empty press is not an answer.
@@ -3676,9 +3684,9 @@ export const register: Register = on => {
           // The text gets the pane's width when its fixed jump column would crowd it out.
           // Both layouts use the same controls and sources; the extra row is budgeted above.
           return (
-            <Box key={`row-q-${q.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
+            <Box key={`row-q-${q.id}`} flexDirection={questionCompact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
               {/* Native Fragment is a column Box, so arrays keep row children flat. */}
-              {compact ? [
+              {questionCompact ? [
                 <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>,
                 <Box flexDirection="row" columnGap={1}>{markers}{titleToggle}{remove}</Box>,
               ] : [dot, markers, text, titleToggle, remove]}
@@ -3726,7 +3734,7 @@ export const register: Register = on => {
                           : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
-          const subject = `S${index + 1}. ${s.subject}`
+          const subject = displayTitle(`S${index + 1}`, s.subject)
           const subjectShown = paneLayout.preview(subject, stepWidth, () => fitLines(subject, stepWidth, 1))
           const text = (
             <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={stepWidth} height={1} overflow="hidden">
@@ -3750,11 +3758,11 @@ export const register: Register = on => {
           const reason = lifecycle !== undefined && <Text key={`s-reason-${s.id}`} dimColor>{lifecycle}</Text>
           const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
           const stackedRow = metaBelow || sDetails[index] || lifecycle !== undefined || s.followUp === true
-          const titleRow = metaBelow ? [dot, text, titleToggle] : [dot, text, titleToggle, owner, clock]
+          const titleRow = metaBelow ? [dot, text] : [dot, text, titleToggle, owner, clock]
           return (
             <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
               {stackedRow ? <Box flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
-              {metaBelow && <Box flexDirection="row" columnGap={1} justifyContent="flex-end">{owner}{clock}</Box>}
+              {metaBelow && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
               {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - (metaBelow ? 1 : 0))}</Text></Box>}
               {reason}
               {follow}
