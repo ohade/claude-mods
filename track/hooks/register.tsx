@@ -3464,7 +3464,7 @@ export const register: Register = on => {
     const countLabel = (done: number, total: number) => {
       const full = ring(done, total)
 
-      if (shortCompact) return `${done}/${total}`
+      if (shortCompact && total > 0) return `${done}/${total}`
       return compact && total > 0 ? `${full.split(' ')[0]} ${done}/${total}` : full
     }
     const qRing = countLabel(qDone, questions.length)
@@ -3481,15 +3481,21 @@ export const register: Register = on => {
     // room left, measured in wrapped lines.
     // Short narrow panes keep totals in their section headers and spend the
     // summary row on task content. Footer spacing is always zero.
-    const summaryRows = shortCompact ? 0 : 1
-    const titleRows = 1 + summaryRows
+    const preferredSummaryRows = shortCompact ? 0 : 1
     const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
+    const briefHints = [{ key: 'hint-hide', text: '/track hide' }]
+    const briefBottomRows = flowRows([...clearWidths, ...briefHints.map(hint => hint.text.length)], width, HEADER_GAP)
     const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
     const sButtons = l.steps.length > 0 ? clearWidths : []
     // Fixed indicator seats keep scrolling from changing header height.
-    const arrowWidth = (count: number) => count <= 1 ? 0 : hidden(count - 1, count - 1).length
-    const qArrowWidth = arrowWidth(questions.length)
-    const sArrowWidth = arrowWidth(steps.length)
+    const arrowWidth = (count: number) => {
+      if (count === 0) return 0
+      const half = Math.floor(count / 2)
+      const decade = 10 ** Math.floor(Math.log10(count))
+      return Math.max(hidden(0, count).length, hidden(half, count - half).length, hidden(decade, count - decade).length)
+    }
+    const maxQArrowWidth = arrowWidth(questions.length)
+    const maxSArrowWidth = arrowWidth(steps.length)
     // Q/S match the row prefixes. Abbreviate words, never totals or hidden
     // counts, when a short 17-column pane cannot fit the complete header.
     const questionWord = shortCompact && width < 24 ? 'Q' : 'Questions'
@@ -3542,17 +3548,19 @@ export const register: Register = on => {
     const layoutFor = (bannerCount: number, anchored = false) => {
       const qPosition = anchored ? null : at.questions
       const sPosition = anchored ? null : at.steps
-      const key = JSON.stringify([width, bodyRows, titleRows, bottomRows, qRing, sRing,
-        qButtons, sButtons, qArrowWidth, sArrowWidth, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, qPosition, sPosition,
+      const key = JSON.stringify([width, bodyRows, preferredSummaryRows, bottomRows, briefBottomRows, qRing, sRing,
+        qButtons, sButtons, maxQArrowWidth, maxSArrowWidth, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, qPosition, sPosition, anchored,
         qControlsRows, revealOpen, qHeaderOnly, sHeaderOnly, qEmpty, sEmpty, bannerCount])
       return paneLayout.layout(key, () => {
-        const fit = () => {
+        const fit = (qArrowWidth: number, sArrowWidth: number, summaryRows: number, briefFooter: boolean, contentAnchors = false) => {
+          const titleRows = 1 + summaryRows
+          const footerRows = briefFooter ? briefBottomRows : bottomRows
           const qHead = flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qButtons, qArrowWidth), width, HEADER_GAP)
           const sHead = flowRows(headerWidths(stepWord, sRing, sHeaderOnly ? sEmpty : undefined, sButtons, sArrowWidth), width, HEADER_GAP)
-          const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + bottomRows + bannerCount))
+          const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + footerRows + bannerCount))
           // A compact question needs a text line plus its Q/A controls even in a short pane.
           const minQRows = questions.length > 0 ? 1 + qControlsRows : qHeaderOnly ? 0 : 1
-          const minSRows = steps.length > 0 ? Math.min(1 + Number(metaBelow), Math.max(0, room - minQRows)) : 0
+          const minSRows = steps.length > 0 ? Math.min(room, Math.max(1, Math.min(1 + Number(metaBelow), room - minQRows))) : 0
           let qRows = Math.min(needQ, Math.max(0, room - minSRows), Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
           let sRows = Math.max(0, room - qRows)
           if (needS < sRows) {
@@ -3567,7 +3575,7 @@ export const register: Register = on => {
             sRows -= give
           }
           // Grouping places active work first; scrolling still indexes task rows.
-          const stepWindow = (rows: number, position = sPosition) => {
+          const stepWindow = (rows: number, position = contentAnchors ? null : sPosition) => {
             const lines = canShowHeadings(rows) ? sLines : sLinesWithoutHeadings
             const last = lastStart(lines, rows)
             const [start, end] = windowOf(lines, rows, Math.min(position ?? (atWork < 0 ? last : atWork), last))
@@ -3588,13 +3596,40 @@ export const register: Register = on => {
           const qLast = lastStart(qLines, qRows)
           const shown = stepWindow(sRows)
           const sLast = shown.last
-          const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(qPosition ?? qLast, qLast))
+          const [qStart, qEnd] = windowOf(qLines, qRows, Math.min((contentAnchors ? null : qPosition) ?? qLast, qLast))
           const { start: sStart, end: sEnd } = shown
 
-          return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
+          return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, summaryRows, qArrowWidth, sArrowWidth, briefFooter }
         }
-        // Scroll changes indicator text, never header or region allocation.
-        return fit()
+        // Seat decisions use a fit without seats at the content anchors. A
+        // fully fitting list pays nothing for an empty indicator. Otherwise
+        // reserve its largest indicator so wheel offsets cannot move headers.
+        const withSeats = (summaryRows: number, briefFooter: boolean) => {
+          const bare = fit(0, 0, summaryRows, briefFooter, true)
+          let qSeat = bare.qStart > 0 || bare.qEnd < questions.length ? maxQArrowWidth : 0
+          let sSeat = bare.sStart > 0 || bare.sEnd < steps.length ? maxSArrowWidth : 0
+          let seated = fit(qSeat, sSeat, summaryRows, briefFooter, true)
+          // Adding one seat can make the other section overflow. Each seat
+          // turns on at most once; both decisions still use content anchors.
+          for (let pass = 0; pass < 2; pass++) {
+            const qNext = qSeat || (seated.qStart > 0 || seated.qEnd < questions.length ? maxQArrowWidth : 0)
+            const sNext = sSeat || (seated.sStart > 0 || seated.sEnd < steps.length ? maxSArrowWidth : 0)
+            if (qNext === qSeat && sNext === sSeat) break
+            qSeat = qNext
+            sSeat = sNext
+            seated = fit(qSeat, sSeat, summaryRows, briefFooter, true)
+          }
+          return seated
+        }
+        let chosen = withSeats(preferredSummaryRows, false)
+        const tooFewTasks = () => steps.length > 0 && (anchored
+          ? chosen.sRows === 0
+          : chosen.sEnd - chosen.sStart < Math.min(3, steps.length))
+        // Fold optional information before losing task rows, at every width.
+        // Keep the established summary in taller panes and fully fitting lists.
+        if (bodyRows < 16 && preferredSummaryRows > 0 && tooFewTasks()) chosen = withSeats(0, false)
+        if (bodyRows < 16 && tooFewTasks()) chosen = withSeats(0, true)
+        return fit(chosen.qArrowWidth, chosen.sArrowWidth, chosen.summaryRows, chosen.briefFooter)
       })
     }
     // Collapse when the stacked rows would leave fewer than min(3, steps) whole steps in view; a
@@ -3607,6 +3642,11 @@ export const register: Register = on => {
     }
     const fitted = layoutFor(bannerRows.length)
     const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
+    const summaryRows = fitted.summaryRows ?? preferredSummaryRows
+    const titleRows = 1 + summaryRows
+    const qArrowWidth = fitted.qArrowWidth ?? 0
+    const sArrowWidth = fitted.sArrowWidth ?? 0
+    const shownHints = fitted.briefFooter ? briefHints : hints
     const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
     const qIndicator = qArrowWidth > 0 && <Box key="questions-hidden" width={qArrowWidth} flexShrink={0}><Text dimColor>{qHidden}</Text></Box>
     const sIndicator = sArrowWidth > 0 && <Box key="steps-hidden" width={sArrowWidth} flexShrink={0}><Text dimColor>{sHidden}</Text></Box>
@@ -3825,7 +3865,7 @@ export const register: Register = on => {
         <Box flexGrow={1} />
         <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={0}>
           {clearButtons('-bottom')}
-          {hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
+          {shownHints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
         </Box>
         {/* One row per active state. The wrapper keeps the old banner seat; only the amber glyph pulses. */}
         <Box key="banner" width={width} flexDirection="column" justifyContent="center" backgroundColor={bannerRows.at(-1)?.background ?? 'success'}>
