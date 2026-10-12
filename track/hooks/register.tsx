@@ -3485,6 +3485,10 @@ export const register: Register = on => {
     const lifecycleOf = (s: Step): string | undefined =>
       s.status === 'paused' && s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
     const qControlsRows = compact ? 1 : 0
+    // Scrolling changes the viewport, not the ledger. Keep existing previews
+    // for all eligible rows, but compute a new one only when its row is drawn.
+    for (const q of questions) paneLayout.retainPreview(`${questionLabel(q.id)}. ${q.head}`, qWidth)
+    for (let i = 0; i < steps.length; i++) paneLayout.retainPreview(`S${i + 1}. ${steps[i]!.subject}`, stepWidth)
     const revealedText = (q: Question): string | undefined => {
       const side = opened[String(q.id)]
       if (side === 'q' && q.head.trim() !== '') return q.head
@@ -3567,8 +3571,7 @@ export const register: Register = on => {
       qLast,
       sLast,
     })
-    paneLayout.finish()
-    return (
+    const drawing = (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
         {/* The title as a centered header bar, rules filling the width. */}
         <Box key="title" flexDirection="row" justifyContent="center" marginBottom={roomy ? 1 : 0}>
@@ -3653,7 +3656,8 @@ export const register: Register = on => {
           )
           // A closed Text carries exactly its display line. Full saved words
           // appear only after selection, in the wrapping detail below it.
-          const headShown = fitLines(`${questionLabel(q.id)}. ${q.head}`, qWidth, 1)
+          const head = `${questionLabel(q.id)}. ${q.head}`
+          const headShown = paneLayout.preview(head, qWidth, () => fitLines(head, qWidth, 1))
           const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
           // A short region still draws one cut line. An empty press is not an answer.
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - 1)
@@ -3722,10 +3726,12 @@ export const register: Register = on => {
                           : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
+          const subject = `S${index + 1}. ${s.subject}`
+          const subjectShown = paneLayout.preview(subject, stepWidth, () => fitLines(subject, stepWidth, 1))
           const text = (
             <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={stepWidth} height={1} overflow="hidden">
               <Text color={look.textColor} wrap="truncate-end">
-                {fitLines(`S${index + 1}. ${s.subject}`, stepWidth, 1)}
+                {subjectShown}
               </Text>
             </Box>
           )
@@ -3772,5 +3778,9 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+    // Preview keys are marked while JSX is built. Evict only after the whole
+    // drawing has used its measurements and display lines.
+    paneLayout.finish()
+    return drawing
   })
 }
