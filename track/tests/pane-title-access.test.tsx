@@ -3,6 +3,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore, pane } from './kit'
 import type { On } from './kit'
+import { collectTitlePages } from './pane-detail-assertions'
 
 const NOW = 1_800_000_000_000
 const longTitle = (n: number) => `Inspect connection ${n} against the original folded bracket drawing before recording the complete alignment result and checking every marked edge`
@@ -48,10 +49,12 @@ test('every full step title can be opened and closed through a native Button wit
   const ui = await $.ui.mount(pane('dock', 60, 30))
   const controls = (await ui.findAll({ type: 'Button' })).filter(row => String(row.key ?? '').startsWith('title-s-'))
   expect(controls).toHaveLength(6)
-  for (const step of steps) {
+  for (const [index, step] of steps.entries()) {
+    const preview = String((await ui.find({ key: `s-text-${step.id}` }))?.text ?? '')
     await ui.press({ key: `title-s-${step.id}` })
     const opened = await ui.findAll({ type: 'Text' })
-    expect(opened.some(row => row.text === step.subject && (row.props as { wrap?: string }).wrap === 'wrap')).toBe(true)
+    expect(opened.some(row => row.text === preview)).toBe(false)
+    await collectTitlePages(ui, 's', step.id, `S${index + 1}`, step.subject)
     await ui.press({ key: `title-s-${step.id}` })
     expect((await ui.findAll({ type: 'Text' })).some(row => row.text === step.subject)).toBe(false)
   }
@@ -66,8 +69,12 @@ test('a question title has its own full-text control without replacing Q and A n
   const ui = await $.ui.mount(pane('dock', 60, 30))
   const controls = await ui.findAll({ type: 'Button' })
   expect(controls.some(row => row.key === 'title-q-1')).toBe(true)
+  const preview = String((await ui.find({ key: 'q-text-1' }))?.text ?? '')
   await ui.press({ key: 'title-q-1' })
-  expect((await ui.findAll({ type: 'Text' })).some(row => row.text === longTitle(9))).toBe(true)
+  expect((await ui.findAll({ type: 'Text' })).some(row => row.text === preview)).toBe(false)
+  await collectTitlePages(ui, 'q', 1, 'Q1', longTitle(9))
+  await ui.press({ key: 'detail-close-q-1' })
+  expect(String((await ui.find({ key: 'q-text-1' }))?.text ?? '')).toBe(preview)
   expect(JSON.stringify(ledger.value)).toBe(before)
   expect(ledger.writes).toHaveLength(0)
   await ui.unmount()
