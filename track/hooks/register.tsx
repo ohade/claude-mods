@@ -1349,6 +1349,8 @@ const adoptAfterConflict = async ($: EngineInterface, id: string, memory: Ledger
     if (!sameValue(current, memory)) throw new Error('ledger changed during conflict recovery; archive was kept')
     return durable
   })
+  // Reused ids now name other rows; drop their selection before any draw.
+  await prunePresentation($, memory, durable)
   if (checkpoint !== undefined) savedRevisions.set(id, checkpoint.revision)
   await update($, durability, current => ({ ...current, memorySession: id, rewindBaseline: undefined,
     baseline: { session_id: id, ledger: durable, checkpoint, generation } }))
@@ -1518,6 +1520,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
         })
         await update($, durability, () => ({ isUnsaved: false, reason: '', memorySession: id }))
         memory = await read($, ledger)
+        await prunePresentation($, stale, memory)
       }
       const pending = await read($, durability)
       const prior = pending.baseline?.session_id === id ? pending.baseline : undefined
@@ -1547,6 +1550,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
           if (!sameValue(current, memory)) throw new Error('ledger changed during resume; both snapshots were kept')
           return reconciled
         })
+        await prunePresentation($, memory, reconciled)
         const checkpoint = raw?.checkpoint ?? head?.checkpoint
         if (checkpoint !== undefined) savedRevisions.set(id, checkpoint.revision)
         await update($, durability, current => ({ ...current,
@@ -3412,18 +3416,31 @@ export const register: Register = on => {
     const questionLabel = questionLabels(l.questions)
     // Opening brings that row into view once. Later wheel, key, and track_question
     // writes to scrollAt.questions win; the open row does not pin the window.
+    // The displayed source is anchored before the selection write, so a draw
+    // in between pages only that source. A replacement during the write is
+    // pruned before the handler returns.
+    const pruneIfReplaced = async (before: Ledger, source: (l: Ledger) => string | undefined): Promise<boolean> => {
+      const after = await read($, ledger)
+      if (source(after) === source(before)) return false
+      await prunePresentation($, before, after)
+      return true
+    }
     const toggleReveal = async (id: number, side: 'q' | 'a', index: number, pageTitle = false) => {
       const displayed = questions[index]
-      const current = (await read($, ledger)).questions.find(q => q.id === id && q.cleared !== true)
+      const before = await read($, ledger)
+      const current = before.questions.find(q => q.id === id && q.cleared !== true)
       if (displayed === undefined || current === undefined || questionSource(displayed) !== questionSource(current)) return
+      const paged = pageTitle && side === 'q'
+      if (paged) await update($, detailAnchors, cur => ({ ...cur, [`q:${id}`]: { source: displayed.head, offset: 0 } }))
       let opening = false
       await update($, reveal, cur => {
         const next = cur[String(id)] === side ? undefined : side
         opening = next !== undefined
         return { ...cur, [String(id)]: next }
       })
-      await update($, detailAnchors, cur => ({ ...cur, [`q:${id}`]: opening && pageTitle && side === 'q'
-        ? { source: questions[index]!.head, offset: 0 } : undefined }))
+      if (!(opening && paged)) await update($, detailAnchors, cur => ({ ...cur, [`q:${id}`]: undefined }))
+      const sourceOf = (l: Ledger) => { const q = l.questions.find(q => q.id === id && q.cleared !== true); return q === undefined ? undefined : questionSource(q) }
+      if (await pruneIfReplaced(before, sourceOf)) return
       if (opening) await update($, scrollAt, cur => ({ ...cur, questions: index }))
     }
     const qDone = questions.filter(q => q.status === 'answered').length
@@ -3431,16 +3448,19 @@ export const register: Register = on => {
     // without changing the saved subject, status or the question/answer selection.
     const toggleStepTitle = async (id: string, index: number) => {
       const displayed = stepRows[index]?.step
-      const current = visibleSteps((await read($, ledger)).steps).find(s => s.id === id)
+      const before = await read($, ledger)
+      const current = visibleSteps(before.steps).find(s => s.id === id)
       if (displayed === undefined || current === undefined || stepSource(displayed) !== stepSource(current)) return
+      await update($, detailAnchors, cur => ({ ...cur, [`step:${id}`]: { source: displayed.subject, offset: 0 } }))
       let opening = false
       await update($, reveal, cur => {
         opening = cur[`step:${id}`] !== 'q'
         const next = Object.fromEntries(Object.entries(cur).filter(([key]) => !key.startsWith('step:')))
         return opening ? { ...next, [`step:${id}`]: 'q' as const } : next
       })
-      await update($, detailAnchors, cur => ({ ...cur, [`step:${id}`]: opening
-        ? { source: stepRows[index]!.step.subject, offset: 0 } : undefined }))
+      if (!opening) await update($, detailAnchors, cur => ({ ...cur, [`step:${id}`]: undefined }))
+      const sourceOf = (l: Ledger) => { const s = visibleSteps(l.steps).find(s => s.id === id); return s === undefined ? undefined : stepSource(s) }
+      if (await pruneIfReplaced(before, sourceOf)) return
       if (opening) await update($, scrollAt, cur => ({ ...cur, steps: index }))
     }
     const sDone = steps.filter(s => s.status === 'completed').length
@@ -3628,6 +3648,13 @@ export const register: Register = on => {
     const metaBelow = compact || inlineStepWidth < minimumStepWidth
     const stepWidth = metaBelow ? Math.max(1, width - rowIndent - 3) : inlineStepWidth
     const detailWidth = Math.max(1, width - rowIndent - 3)
+    // An opened title moves owner and clock below it when they leave no room
+    // for its label and one source grapheme; the toggle stays on the title line.
+    const detailMetaBelow = (number: number) =>
+      width - rowIndent - 2 - 1 - ownerWidth - clockWidth - 4 < columnsOf(displayTitle(`S${number}`, '')) + 1
+    const stackedTitleWidth = Math.max(1, width - rowIndent - 5)
+    // Question continuation spans the row; only the first line shares controls.
+    const qDetailWidth = Math.max(1, width - rowIndent)
     const lifecycleOf = (s: Step): string | undefined =>
       s.status === 'paused' && s.note !== undefined && LIFECYCLE_NOTES.has(s.note) ? s.note : undefined
     const qControlsRows = questionCompact ? 1 : 0
@@ -3637,13 +3664,25 @@ export const register: Register = on => {
       if (side === 'a' && q.answerKey === undefined && (q.answerText?.trim().length ?? 0) > 0) return q.answerText
       return undefined
     }
+    // A paged title shares its first line with the head, then adds the rest and its pager.
+    const restAfterFirst = (source: string, columns: number): string => {
+      const clusters = graphemesOf(source)
+      let used = 0
+      let cursor = 0
+      while (cursor < clusters.length && used + columnsOf(clusters[cursor]!) <= columns) used += columnsOf(clusters[cursor++]!)
+      return clusters.slice(Math.max(cursor, Math.min(1, clusters.length))).join('')
+    }
     const qLines = questions.map(q => {
       const extra = revealedText(q)
-      return 1 + qControlsRows + (extra === undefined ? 0 : paneLayout.lines(extra, qWidth) + Number(anchors[`q:${q.id}`]?.source === q.head))
+      if (extra === undefined) return 1 + qControlsRows
+      if (anchors[`q:${q.id}`]?.source !== q.head) return 1 + qControlsRows + paneLayout.lines(extra, qWidth)
+      const rest = restAfterFirst(q.head, Math.max(1, qWidth - columnsOf(displayTitle(questionLabel(q.id), ''))))
+      return 2 + qControlsRows + (rest === '' ? 0 : paneLayout.lines(rest, qDetailWidth))
     })
-    const sDetails = stepRows.map(({ step }) => opened[`step:${step.id}`] === 'q')
-    const sLines = stepRows.map(({ step: s, heading }, i) => 1 + (heading === undefined ? 0 : 1) + (metaBelow && !sDetails[i] ? 1 : 0)
-      + (sDetails[i] ? 1 + paneLayout.lines(s.subject, detailWidth) : 0)
+    // A selection opens only the source it was made on.
+    const sDetails = stepRows.map(({ step }) => opened[`step:${step.id}`] === 'q' && anchors[`step:${step.id}`]?.source === step.subject)
+    const sLines = stepRows.map(({ step: s, heading, number }, i) => 1 + (heading === undefined ? 0 : 1) + (metaBelow && !sDetails[i] ? 1 : 0)
+      + (sDetails[i] ? 1 + paneLayout.lines(s.subject, detailWidth) + Number(detailMetaBelow(number)) : 0)
       + (lifecycleOf(s) === undefined ? 0 : paneLayout.lines(lifecycleOf(s)!, detailWidth))
       + (s.followUp === true ? paneLayout.lines('update status', detailWidth) : 0))
     const sLinesWithoutHeadings = sLines.map((lines, index) => lines - (stepRows[index]!.heading === undefined ? 0 : 1))
@@ -3659,9 +3698,10 @@ export const register: Register = on => {
       const [start, end] = windowOf(lines, rows, Math.min(atWork < 0 ? last : atWork, last))
       return end - start
     }
+    // Tasks come before labels: a list that fits whole only without headings drops them.
     const canShowHeadings = (rows: number) =>
       rows > 1 + Number(metaBelow) && (linesFit(sLines, rows) ||
-        tasksShown(sLines, rows) >= minimumTaskWindow)
+        (!linesFit(sLinesWithoutHeadings, rows) && tasksShown(sLines, rows) >= minimumTaskWindow))
     const revealOpen = questions.some(q => revealedText(q) !== undefined)
     const layoutFor = (bannerCount: number, anchored = false) => {
       const qPosition = anchored ? null : at.questions
@@ -3785,7 +3825,8 @@ export const register: Register = on => {
     const openStep = sDetails.indexOf(true)
     const openQuestion = questions.findIndex(q => opened[String(q.id)] === 'q' && anchors[`q:${q.id}`]?.source === q.head && q.head.trim() !== '')
     const stepHeadingRows = Number(fitted.showHeadings === true && openStep >= 0 && stepRows[openStep]?.heading !== undefined)
-    const detailPane = openStep >= 0 && sRows < 2 + stepHeadingRows ? 's' : openQuestion >= 0 && qRows < 2 + qControlsRows ? 'q' : undefined
+    const openStepMetaRows = openStep >= 0 ? Number(detailMetaBelow(stepRows[openStep]!.number)) : 0
+    const detailPane = openStep >= 0 && sRows < 2 + stepHeadingRows + openStepMetaRows ? 's' : openQuestion >= 0 && qRows < 2 + qControlsRows ? 'q' : undefined
     const showHeadings = detailPane === undefined && fitted.showHeadings === true
     const summaryRows = fitted.summaryRows ?? preferredSummaryRows
     const titleRows = 1 + summaryRows
@@ -3794,7 +3835,7 @@ export const register: Register = on => {
     const footer = footerModes[fitted.footerMode ?? 0]!
     const footerRows = footer.rows
     if (detailPane !== undefined) {
-      const room = Math.max(2 + (detailPane === 'q' ? qControlsRows : 0), bodyRows - titleRows - footerRows - bannerRows.length)
+      const room = Math.max(2 + (detailPane === 'q' ? qControlsRows : openStepMetaRows), bodyRows - titleRows - footerRows - bannerRows.length)
       qHead = 0
       sHead = 0
       qRows = detailPane === 'q' ? room : 0
@@ -3849,13 +3890,16 @@ export const register: Register = on => {
         await update($, detailAnchors, cur => ({ ...cur, [stateKey]: undefined }))
       }
       const continuation = <Box key={`detail-${kind}-${id}`} width={restWidth} height={selected.rest === '' ? 0 : paneLayout.lines(selected.rest, restWidth)} flexShrink={0}><Text wrap="wrap">{selected.rest}</Text></Box>
+      // Words when the widest counter fits the row; whole symbols otherwise.
+      const wordsWidth = 'Prev Next Close '.length + 2 * String(pages.length).length + 1
+      const [prevLabel, nextLabel, closeLabel] = wordsWidth <= width - rowIndent ? ['Prev', 'Next', 'Close'] : ['‹', '›', '✕']
       const controls = <Box key={`detail-controls-${kind}-${id}`} height={1} flexShrink={0} flexDirection="row" columnGap={1}>
-        <Button key={`detail-prev-${kind}-${id}`} plain dimColor={index === 0} label="Prev" onPress={() => move(-1)} />
+        <Button key={`detail-prev-${kind}-${id}`} plain dimColor={index === 0} label={prevLabel} onPress={() => move(-1)} />
         <Box key={`detail-page-${kind}-${id}`} flexShrink={0}><Text dimColor>{`${index + 1}/${pages.length}`}</Text></Box>
-        <Button key={`detail-next-${kind}-${id}`} plain dimColor={index === pages.length - 1} label="Next" onPress={() => move(1)} />
-        <Button key={`detail-close-${kind}-${id}`} plain label="Close" onPress={close} />
+        <Button key={`detail-next-${kind}-${id}`} plain dimColor={index === pages.length - 1} label={nextLabel} onPress={() => move(1)} />
+        <Button key={`detail-close-${kind}-${id}`} plain label={closeLabel} onPress={close} />
       </Box>
-      return { first: `${label}. ${selected.first}`, continuation, controls }
+      return { first: `${label}. ${selected.first}`, prefix: `${label}. `, fragment: selected.first, continuation, controls }
     }
     Object.assign(regions, {
       qTop: titleRows + Number(framed),
@@ -3936,7 +3980,7 @@ export const register: Register = on => {
                 {restoredOnly && !savedQuestion
                   ? <Button key={`q-${q.id}`} dimColor label="Q" onPress={() => undefined} />
                   : restoredOnly
-                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q', index)} />
+                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q', index, true)} />
                     : askedAt === undefined
                       ? <Text dimColor>[ Q ]</Text>
                       : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
@@ -3961,13 +4005,15 @@ export const register: Register = on => {
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - 1)
           const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
           const titleDetail = opened[String(q.id)] === 'q' && savedQuestion && anchors[`q:${q.id}`]?.source === q.head
-            ? pageOf('q', q.id, q.head, questionLabel(q.id), drawQWidth, qWidth,
+            ? pageOf('q', q.id, q.head, questionLabel(q.id), drawQWidth, qDetailWidth,
               (detailPane === 'q' ? qRows : Math.min(qRows, qLines[index]!)) - qControlsRows) : undefined
           const text = (
             <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={drawQWidth}>
-              <Box height={1} overflow="hidden"><Text color={color} dimColor={q.status === 'deferred'} wrap="truncate-end">
-                {titleDetail?.first ?? headShown}
-              </Text></Box>
+              {/* An opened title keeps its label apart from the saved source text. */}
+              <Box height={1} overflow="hidden">{titleDetail === undefined
+                ? <Text color={color} dimColor={q.status === 'deferred'} wrap="truncate-end">{headShown}</Text>
+                : <Box flexDirection="row"><Text color={color} dimColor={q.status === 'deferred'}>{titleDetail.prefix}</Text><Text color={color} dimColor={q.status === 'deferred'} wrap="truncate-end">{titleDetail.fragment}</Text></Box>}
+              </Box>
               {titleDetail === undefined && revealShown !== undefined && <Box key={`reveal-${opened[String(q.id)]}-${q.id}`}><Text wrap="wrap">{revealShown}</Text></Box>}
             </Box>
           )
@@ -4040,12 +4086,14 @@ export const register: Register = on => {
           </Box>
           const subject = displayTitle(`S${number}`, s.subject)
           const subjectShown = paneLayout.preview(subject, drawStepWidth, () => fitLines(subject, drawStepWidth, 1))
+          const metaUnder = sDetails[index] === true && detailMetaBelow(number)
+          const titleWidth = metaUnder ? stackedTitleWidth : inlineStepWidth
           const titleDetail = sDetails[index]
-            ? pageOf('s', s.id, s.subject, `S${number}`, inlineStepWidth, detailWidth,
+            ? pageOf('s', s.id, s.subject, `S${number}`, titleWidth, detailWidth,
               (detailPane === 's' ? sRows : Math.min(sRows, sLines[index]! - Number(heading !== undefined && !showHeadings)))
-              - Number(heading !== undefined && showHeadings) - (lifecycle === undefined ? 0 : paneLayout.lines(lifecycle, detailWidth)) - Number(s.followUp === true)) : undefined
+              - Number(heading !== undefined && showHeadings) - Number(metaUnder) - (lifecycle === undefined ? 0 : paneLayout.lines(lifecycle, detailWidth)) - Number(s.followUp === true)) : undefined
           const text = (
-            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={titleDetail === undefined ? drawStepWidth : inlineStepWidth} height={1} overflow="hidden">
+            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={titleDetail === undefined ? drawStepWidth : titleWidth} height={1} overflow="hidden">
               <Text color={look.textColor} wrap="truncate-end">
                 {titleDetail?.first ?? subjectShown}
               </Text>
@@ -4066,12 +4114,13 @@ export const register: Register = on => {
           const reason = lifecycle !== undefined && <Text key={`s-reason-${s.id}`} dimColor>{lifecycle}</Text>
           const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
           const stackedRow = metaBelow || sDetails[index] || lifecycle !== undefined || s.followUp === true
-          const titleRow = metaBelow && titleDetail === undefined ? [dot, text] : [dot, text, titleToggle, owner, clock]
+          const titleRow = metaBelow && titleDetail === undefined ? [dot, text] : metaUnder ? [dot, text, titleToggle] : [dot, text, titleToggle, owner, clock]
           return (
             <Box key={`grouped-step-${s.id}`} flexDirection="column" flexShrink={0}>
               {heading !== undefined && showHeadings && <Box key={`step-group-${s.status}`} height={1} flexShrink={0}><Text bold dimColor>{heading}</Text></Box>}
               <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
                 {stackedRow ? <Box key={`s-first-line-${s.id}`} height={1} flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
+                {metaUnder && <Box key={`s-detail-meta-${s.id}`} width={Math.max(1, width - rowIndent)} height={1} flexDirection="row" columnGap={1} justifyContent="flex-end">{owner}{clock}</Box>}
                 {metaBelow && titleDetail === undefined && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
                 {titleDetail?.continuation}
                 {titleDetail?.controls}
