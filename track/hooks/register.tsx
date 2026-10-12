@@ -3305,6 +3305,7 @@ export const register: Register = on => {
     const compact = width < COMPACT_COLUMNS
     const rowIndent = compact ? 0 : ROW_INDENT
     const bodyRows = Math.max(8, e.props.scroll.bodyRows)
+    const shortCompact = compact && bodyRows < 16
     const at = await read($, scrollAt)
     const questions = l.questions.filter(q => q.cleared !== true)
     const steps = visibleSteps(l.steps)
@@ -3377,7 +3378,9 @@ export const register: Register = on => {
       item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
     ]
     const clearWidths = [l.steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)]
-    const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
+    const hints = compact
+      ? [{ key: 'hint-hide', text: '/track hide' }, ...(!shortCompact ? [{ key: 'hint-close', text: 'ctrl+x x close' }] : [])]
+      : [{ key: 'hint', text: HINT }]
 
     const work = workState(l, now)
     const numbered = steps.map((s, i) => ({ step: s, n: i + 1 }))
@@ -3461,6 +3464,7 @@ export const register: Register = on => {
     const countLabel = (done: number, total: number) => {
       const full = ring(done, total)
 
+      if (shortCompact) return `${done}/${total}`
       return compact && total > 0 ? `${full.split(' ')[0]} ${done}/${total}` : full
     }
     const qRing = countLabel(qDone, questions.length)
@@ -3475,12 +3479,25 @@ export const register: Register = on => {
     // The layout: the title, the two headers, the separator, the bottom bar and the banner take
     // fixed rows, a header or the bar as many as its items wrap onto; the two regions share the
     // room left, measured in wrapped lines.
-    // The summary replaces the old blank title row. Optional footer spacing
-    // also yields to content; neither spacing row may starve a task.
-    const titleRows = 2
+    // Short narrow panes keep totals in their section headers and spend the
+    // summary row on task content. Footer spacing is always zero.
+    const summaryRows = shortCompact ? 0 : 1
+    const titleRows = 1 + summaryRows
     const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
     const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
     const sButtons = l.steps.length > 0 ? clearWidths : []
+    // Fixed indicator seats keep scrolling from changing header height.
+    const arrowWidth = (count: number) => count <= 1 ? 0 : hidden(count - 1, count - 1).length
+    const qArrowWidth = arrowWidth(questions.length)
+    const sArrowWidth = arrowWidth(steps.length)
+    // Q/S match the row prefixes. Abbreviate words, never totals or hidden
+    // counts, when a short 17-column pane cannot fit the complete header.
+    const questionWord = shortCompact && width < 24 ? 'Q' : 'Questions'
+    const stepWord = shortCompact && width < 24 ? 'S' : 'Steps'
+    const headerWidths = (word: string, count: string, empty: string | undefined, controls: number[], indicatorWidth: number) => [
+      word.length, count.length, ...(empty === undefined ? [] : [empty.trim().length]),
+      ...(shortCompact ? [indicatorWidth] : []), ...controls, ...(!shortCompact ? [indicatorWidth] : []),
+    ]
     // Include the largest position label, an ellipsis and a cell for trimming
     // trailing space. Metadata must not consume the readable subject width.
     const minimumStepWidth = displayTitle(`S${Math.max(steps.length, 1)}`, '').length + MIN_SUBJECT_COLUMNS + 2
@@ -3522,14 +3539,16 @@ export const register: Register = on => {
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : sHeaderOnly ? 0 : paneLayout.lines(sEmpty, width)
     const atWork = stepRows.findIndex(row => row.step.status !== 'completed')
     const revealOpen = questions.some(q => revealedText(q) !== undefined)
-    const layoutFor = (bannerCount: number) => {
+    const layoutFor = (bannerCount: number, anchored = false) => {
+      const qPosition = anchored ? null : at.questions
+      const sPosition = anchored ? null : at.steps
       const key = JSON.stringify([width, bodyRows, titleRows, bottomRows, qRing, sRing,
-        qButtons, sButtons, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, at.questions, at.steps,
+        qButtons, sButtons, qArrowWidth, sArrowWidth, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, qPosition, sPosition,
         qControlsRows, revealOpen, qHeaderOnly, sHeaderOnly, qEmpty, sEmpty, bannerCount])
       return paneLayout.layout(key, () => {
-        const fit = (qArrows: string, sArrows: string) => {
-          const qHead = flowRows(['Questions'.length, qRing.length, ...(qHeaderOnly ? [qEmpty.trim().length] : []), ...qButtons, qArrows.length], width, HEADER_GAP)
-          const sHead = flowRows(['Steps'.length, sRing.length, ...(sHeaderOnly ? [sEmpty.trim().length] : []), ...sButtons, sArrows.length], width, HEADER_GAP)
+        const fit = () => {
+          const qHead = flowRows(headerWidths(questionWord, qRing, qHeaderOnly ? qEmpty : undefined, qButtons, qArrowWidth), width, HEADER_GAP)
+          const sHead = flowRows(headerWidths(stepWord, sRing, sHeaderOnly ? sEmpty : undefined, sButtons, sArrowWidth), width, HEADER_GAP)
           const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + bottomRows + bannerCount))
           // A compact question needs a text line plus its Q/A controls even in a short pane.
           const minQRows = questions.length > 0 ? 1 + qControlsRows : qHeaderOnly ? 0 : 1
@@ -3548,7 +3567,7 @@ export const register: Register = on => {
             sRows -= give
           }
           // Grouping places active work first; scrolling still indexes task rows.
-          const stepWindow = (rows: number, position = at.steps) => {
+          const stepWindow = (rows: number, position = sPosition) => {
             const lines = canShowHeadings(rows) ? sLines : sLinesWithoutHeadings
             const last = lastStart(lines, rows)
             const [start, end] = windowOf(lines, rows, Math.min(position ?? (atWork < 0 ? last : atWork), last))
@@ -3569,24 +3588,19 @@ export const register: Register = on => {
           const qLast = lastStart(qLines, qRows)
           const shown = stepWindow(sRows)
           const sLast = shown.last
-          const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
+          const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(qPosition ?? qLast, qLast))
           const { start: sStart, end: sEnd } = shown
 
           return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
         }
-        // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
-        // row, which takes a row from the regions, so the layout is fitted again with them.
-        const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
-        const first = fit('', '')
-        const [qFirst, sFirst] = arrowsOf(first)
-
-        return qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
+        // Scroll changes indicator text, never header or region allocation.
+        return fit()
       })
     }
     // Collapse when the stacked rows would leave fewer than min(3, steps) whole steps in view; a
     // wrapped step takes several lines, so lines are not the measure.
     if (openRows.length > 1 && steps.length > 0) {
-      const stacked = layoutFor(openRows.length)
+      const stacked = layoutFor(openRows.length, true)
       if (stacked.sEnd - stacked.sStart < Math.min(3, steps.length)) {
         bannerRows = [collapseLine(openRows, width)]
       }
@@ -3594,6 +3608,8 @@ export const register: Register = on => {
     const fitted = layoutFor(bannerRows.length)
     const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
     const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
+    const qIndicator = qArrowWidth > 0 && <Box key="questions-hidden" width={qArrowWidth} flexShrink={0}><Text dimColor>{qHidden}</Text></Box>
+    const sIndicator = sArrowWidth > 0 && <Box key="steps-hidden" width={sArrowWidth} flexShrink={0}><Text dimColor>{sHidden}</Text></Box>
     Object.assign(regions, {
       qTop: titleRows,
       qBottom: titleRows + qHead + qRows,
@@ -3614,15 +3630,16 @@ export const register: Register = on => {
           </Text>
           <Text dimColor>{'─'.repeat(Math.max(0, width - titleLabel.length - titleSide))}</Text>
         </Box>
-        <Box key="state-summary" height={1} flexShrink={0} overflow="hidden"><Text dimColor wrap="truncate-end">{summary}</Text></Box>
+        {summaryRows > 0 && <Box key="state-summary" height={summaryRows} flexShrink={0} overflow="hidden"><Text dimColor wrap="truncate-end">{summary}</Text></Box>}
         <Box key="questions-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
-          {item('questions-word', <Text bold>Questions</Text>)}
+          {item('questions-word', <Text bold>{questionWord}</Text>)}
           {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
           {qHeaderOnly && item('questions-empty', <Text dimColor>{qEmpty.trim()}</Text>)}
+          {shortCompact && qIndicator}
           {/* The engine draws "q: label", so the gap is the header's, not padding in the label. */}
           {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />)}
           {l.questions.length > 0 && item('questions-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />)}
-          {qHidden !== '' && item('questions-hidden', <Text dimColor>{qHidden}</Text>)}
+          {!shortCompact && qIndicator}
         </Box>
         <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
         {questions.length === 0 && !qHeaderOnly && (
@@ -3722,11 +3739,12 @@ export const register: Register = on => {
         </Box>
         <Text dimColor>{'─'.repeat(width)}</Text>
         <Box key="steps-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
-          {item('steps-word', <Text bold>Steps</Text>)}
+          {item('steps-word', <Text bold>{stepWord}</Text>)}
           {item('steps-ring', <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{sRing}</Text>)}
           {sHeaderOnly && item('steps-empty', <Text dimColor>{sEmpty.trim()}</Text>)}
+          {shortCompact && sIndicator}
           {l.steps.length > 0 && clearButtons('')}
-          {sHidden !== '' && item('steps-hidden', <Text dimColor>{sHidden}</Text>)}
+          {!shortCompact && sIndicator}
         </Box>
         <Box key="steps" flexDirection="column" height={sRows} overflow="hidden">
         {steps.length === 0 && !sHeaderOnly && (
@@ -3760,7 +3778,9 @@ export const register: Register = on => {
                           : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0} flexDirection="row">
-            {s.status === 'in_progress' && <Box key={`s-active-${s.id}`} width={1} flexShrink={0}><Text color={look.glyphColor}>▏</Text></Box>}
+            <Box key={s.status === 'in_progress' ? `s-active-${s.id}` : `s-bar-slot-${s.id}`} width={1} flexShrink={0}>
+              {s.status === 'in_progress' && <Text color={look.glyphColor}>▏</Text>}
+            </Box>
             <Text color={look.glyphColor}>{look.glyph}</Text>
           </Box>
           const subject = displayTitle(`S${number}`, s.subject)
@@ -3794,7 +3814,7 @@ export const register: Register = on => {
               <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
                 {stackedRow ? <Box flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
                 {metaBelow && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
-                {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - (metaBelow ? 1 : 0))}</Text></Box>}
+                {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - Number(metaBelow) - Number(heading !== undefined && canShowHeadings(sRows)))}</Text></Box>}
                 {reason}
                 {follow}
               </Box>
