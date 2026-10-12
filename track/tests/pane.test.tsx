@@ -160,17 +160,18 @@ test('with no questions and no steps, each concise placeholder takes one row', a
   expect(heightOf(all, 'steps')).toBe(1)
 })
 
-test('a steps header too wide for the pane wraps, and the regions give up the extra row', async ($, on) => {
+test('the canonical footer wraps whole items and reserves their measured rows', async ($, on) => {
   const steps = Array.from({ length: 39 }, (_, i) => step(i + 1, i < 12 ? 'completed' : 'pending'))
   const narrow = await layout($, on, { ...EMPTY, steps }, 46)
-  const header = narrow.find(el => el.key === 'steps-header')
-  expect((header?.props as { flexWrap?: string } | undefined)?.flexWrap).toBe('wrap')
-  // Each header item keeps its width: the word, the ring and each button wrap whole.
-  const word = narrow.find(el => el.key === 'steps-word')
-  expect((word?.props as { flexShrink?: number } | undefined)?.flexShrink).toBe(0)
+  const footer = narrow.find(el => el.key === 'bottom-bar')
+  expect((footer?.props as { flexWrap?: string } | undefined)?.flexWrap).toBe('wrap')
+  for (const key of ['item-clear-steps', 'item-clear-completed']) {
+    expect((narrow.find(el => el.key === key)?.props as { flexShrink?: number } | undefined)?.flexShrink).toBe(0)
+  }
+  expect(heightOf(narrow, 'bottom-bar')).toBeGreaterThanOrEqual(2)
 })
 
-test('the regions of a narrow pane are shorter by the rows its wrapped bars take', async ($, on) => {
+test('allocated rows account exactly for measured footer and section chrome at each width', async ($, on) => {
   const steps = Array.from({ length: 39 }, (_, i) => step(i + 1, i < 12 ? 'completed' : 'pending'))
   const ledger = atomStore(on, 'ledger', { ...EMPTY, steps })
   atomStore(on, 'activity', IDLE)
@@ -181,8 +182,20 @@ test('the regions of a narrow pane are shorter by the rows its wrapped bars take
   const narrow = (await (await $.ui.mount(pane('dock', 46, 30))).findAll({})) as Box[]
   void ledger
 
-  const rowsOf = (all: Box[]) => heightOf(all, 'questions') + heightOf(all, 'steps')
-  expect(rowsOf(narrow)).toBeLessThan(rowsOf(wide))
+  for (const all of [wide, narrow]) {
+    const footer = heightOf(all, 'bottom-bar')
+    const qHeader = heightOf(all, 'questions-header')
+    const sHeader = heightOf(all, 'steps-header')
+    expect(footer).toBeGreaterThan(0)
+    expect(qHeader).toBeGreaterThan(0)
+    expect(sHeader).toBeGreaterThan(0)
+    // Title, summary, section headers, separator, list regions, footer and
+    // the single idle banner fill the 30-row pane. Borders, when present,
+    // contribute two vertical rows per section and are budgeted explicitly.
+    const borderRows = all.filter(el => ['questions-frame', 'steps-frame'].includes(String(el.key)) && (el.props as { borderStyle?: string }).borderStyle === 'round').length * 2
+    expect(1 + heightOf(all, 'state-summary') + qHeader + sHeader + 1 +
+      heightOf(all, 'questions') + heightOf(all, 'steps') + footer + 1 + borderRows).toBe(30)
+  }
 })
 
 test('the bottom bar wraps its hint instead of cutting it with an ellipsis', async ($, on) => {
