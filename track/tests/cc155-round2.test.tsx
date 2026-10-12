@@ -25,7 +25,10 @@ test('a wheel scroll in the questions region moves the window while a restored r
   on('ui.scroll', () => ({}))
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
-  await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: 3, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: 3, column: 5 } } as never)
+  const title = await ui.find({ key: 'title' }) as { props?: { marginBottom?: number } } | undefined
+  const summary = await ui.find({ key: 'state-summary' }) as { props?: { height?: number } } | undefined
+  const questionTop = 1 + Number(title?.props?.marginBottom ?? 0) + Number(summary?.props?.height ?? 0)
+  await $.ui.scroll({ component: 'Pane', requestId: 'track', offset: 0, by: 3, bodyRows: 20, contentRows: 20, origin: { kind: 'person' }, pointer: { row: questionTop + 1, column: 5 } } as never)
   await clock.advance(100)
   expect((await shown(ui, 8)).includes(1)).toBe(false)
 })
