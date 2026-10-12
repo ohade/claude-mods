@@ -7,6 +7,7 @@ import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { createPaneLayoutCache } from './pane-layout-cache'
+import { groupedSteps, stepSummary } from './pane-state-groups'
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { RetentionStore } from './retention'
 import { indexedStore } from './size-index'
@@ -3307,6 +3308,8 @@ export const register: Register = on => {
     const at = await read($, scrollAt)
     const questions = l.questions.filter(q => q.cleared !== true)
     const steps = visibleSteps(l.steps)
+    const stepRows = groupedSteps(steps)
+    const summary = stepSummary(steps, width)
     paneLayout.begin(width)
     const titleLabel = fitLines(width < TITLE.length + 4 ? ' TRACK ' : ` ${TITLE.toUpperCase()} `, width, 1)
     const titleSide = Math.max(0, Math.floor((width - titleLabel.length) / 2))
@@ -3472,8 +3475,9 @@ export const register: Register = on => {
     // The layout: the title, the two headers, the separator, the bottom bar and the banner take
     // fixed rows, a header or the bar as many as its items wrap onto; the two regions share the
     // room left, measured in wrapped lines.
-    const roomy = bodyRows >= 16
-    const titleRows = roomy ? 2 : 1
+    // The summary replaces the old blank title row. Optional footer spacing
+    // also yields to content; neither spacing row may starve a task.
+    const titleRows = 2
     const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
     const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
     const sButtons = l.steps.length > 0 ? clearWidths : []
@@ -3507,27 +3511,30 @@ export const register: Register = on => {
       const extra = revealedText(q)
       return 1 + qControlsRows + (extra === undefined ? 0 : paneLayout.lines(extra, qWidth))
     })
-    const sDetails = steps.map(s => opened[`step:${s.id}`] === 'q')
-    const sLines = steps.map((s, i) => 1 + (metaBelow ? 1 : 0)
+    const sDetails = stepRows.map(({ step }) => opened[`step:${step.id}`] === 'q')
+    const sLines = stepRows.map(({ step: s, heading }, i) => 1 + (heading === undefined ? 0 : 1) + (metaBelow ? 1 : 0)
       + (sDetails[i] ? paneLayout.lines(s.subject, detailWidth) : 0)
       + (lifecycleOf(s) === undefined ? 0 : paneLayout.lines(lifecycleOf(s)!, detailWidth))
       + (s.followUp === true ? paneLayout.lines('update status', detailWidth) : 0))
+    const sLinesWithoutHeadings = sLines.map((lines, index) => lines - (stepRows[index]!.heading === undefined ? 0 : 1))
+    const canShowHeadings = (rows: number) => rows > 1 + Number(metaBelow)
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : qHeaderOnly ? 0 : paneLayout.lines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : sHeaderOnly ? 0 : paneLayout.lines(sEmpty, width)
-    const atWork = steps.findIndex(s => s.status !== 'completed')
+    const atWork = stepRows.findIndex(row => row.step.status !== 'completed')
     const revealOpen = questions.some(q => revealedText(q) !== undefined)
     const layoutFor = (bannerCount: number) => {
       const key = JSON.stringify([width, bodyRows, titleRows, bottomRows, qRing, sRing,
-        qButtons, sButtons, qLines, sLines, needQ, needS, atWork, at.questions, at.steps,
+        qButtons, sButtons, qLines, sLines, stepRows.map(row => [row.step.id, row.step.status]), needQ, needS, atWork, at.questions, at.steps,
         qControlsRows, revealOpen, qHeaderOnly, sHeaderOnly, qEmpty, sEmpty, bannerCount])
       return paneLayout.layout(key, () => {
         const fit = (qArrows: string, sArrows: string) => {
           const qHead = flowRows(['Questions'.length, qRing.length, ...(qHeaderOnly ? [qEmpty.trim().length] : []), ...qButtons, qArrows.length], width, HEADER_GAP)
           const sHead = flowRows(['Steps'.length, sRing.length, ...(sHeaderOnly ? [sEmpty.trim().length] : []), ...sButtons, sArrows.length], width, HEADER_GAP)
-          const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerCount))
+          const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + bottomRows + bannerCount))
           // A compact question needs a text line plus its Q/A controls even in a short pane.
           const minQRows = questions.length > 0 ? 1 + qControlsRows : qHeaderOnly ? 0 : 1
-          let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
+          const minSRows = steps.length > 0 ? Math.min(1 + Number(metaBelow), Math.max(0, room - minQRows)) : 0
+          let qRows = Math.min(needQ, Math.max(0, room - minSRows), Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
           let sRows = Math.max(0, room - qRows)
           if (needS < sRows) {
             qRows = Math.min(needQ, qRows + sRows - needS)
@@ -3535,17 +3542,35 @@ export const register: Register = on => {
           }
           // An open reveal needs one line of its own. Take it from the steps region,
           // and never from the last step row.
-          const minSRows = steps.length > 0 ? 1 : 0
           if (revealOpen && qRows < minQRows + 1 && sRows > minSRows) {
             const give = Math.min(minQRows + 1 - qRows, sRows - minSRows)
             qRows += give
             sRows -= give
           }
-          // Where each region starts: the newest questions, the step at work with one done row above.
+          // Grouping places active work first; scrolling still indexes task rows.
+          const stepWindow = (rows: number, position = at.steps) => {
+            const lines = canShowHeadings(rows) ? sLines : sLinesWithoutHeadings
+            const last = lastStart(lines, rows)
+            const [start, end] = windowOf(lines, rows, Math.min(position ?? (atWork < 0 ? last : atWork), last))
+            return { last, start, end }
+          }
+          // Headings cost rows, not tasks. When both lists are crowded, yield
+          // spare question space until Steps again has the larger task window.
+          // Allocation uses the content anchors, never the scroll offsets:
+          // moving either viewport must not move the section boundary/footer.
+          while (questions.length > 0 && steps.length > 0 && !revealOpen && qRows > minQRows && sRows < needS) {
+            const qLast = lastStart(qLines, qRows)
+            const [qStart, qEnd] = windowOf(qLines, qRows, qLast)
+            const shown = stepWindow(sRows, null)
+            if (shown.end - shown.start > qEnd - qStart) break
+            qRows--
+            sRows++
+          }
           const qLast = lastStart(qLines, qRows)
-          const sLast = lastStart(sLines, sRows)
+          const shown = stepWindow(sRows)
+          const sLast = shown.last
           const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
-          const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
+          const { start: sStart, end: sEnd } = shown
 
           return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
         }
@@ -3582,13 +3607,14 @@ export const register: Register = on => {
     const drawing = (
       <Box flexDirection="column" height={bodyRows} overflow="hidden">
         {/* The title as a centered header bar, rules filling the width. */}
-        <Box key="title" flexDirection="row" justifyContent="center" marginBottom={roomy ? 1 : 0}>
+        <Box key="title" flexDirection="row" justifyContent="center" marginBottom={0}>
           <Text dimColor>{'─'.repeat(titleSide)}</Text>
           <Text bold color="claude">
             {titleLabel}
           </Text>
           <Text dimColor>{'─'.repeat(Math.max(0, width - titleLabel.length - titleSide))}</Text>
         </Box>
+        <Box key="state-summary" height={1} flexShrink={0} overflow="hidden"><Text dimColor wrap="truncate-end">{summary}</Text></Box>
         <Box key="questions-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
           {item('questions-word', <Text bold>Questions</Text>)}
           {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
@@ -3710,7 +3736,7 @@ export const register: Register = on => {
         )}
         {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
             same left edge, a number S<n> by position, and green once done. */}
-        {steps.slice(sStart, sEnd).map((s, shownAt) => {
+        {stepRows.slice(sStart, sEnd).map(({ step: s, number, heading }, shownAt) => {
           const index = sStart + shownAt
           const color = s.status === 'completed' ? 'success' : undefined
           const lifecycle = lifecycleOf(s)
@@ -3733,8 +3759,11 @@ export const register: Register = on => {
                           ? { glyph: '○', glyphColor: color, textColor: color }
                           : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
-          const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
-          const subject = displayTitle(`S${index + 1}`, s.subject)
+          const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0} flexDirection="row">
+            {s.status === 'in_progress' && <Box key={`s-active-${s.id}`} width={1} flexShrink={0}><Text color={look.glyphColor}>▏</Text></Box>}
+            <Text color={look.glyphColor}>{look.glyph}</Text>
+          </Box>
+          const subject = displayTitle(`S${number}`, s.subject)
           const subjectShown = paneLayout.preview(subject, stepWidth, () => fitLines(subject, stepWidth, 1))
           const text = (
             <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={stepWidth} height={1} overflow="hidden">
@@ -3760,18 +3789,21 @@ export const register: Register = on => {
           const stackedRow = metaBelow || sDetails[index] || lifecycle !== undefined || s.followUp === true
           const titleRow = metaBelow ? [dot, text] : [dot, text, titleToggle, owner, clock]
           return (
-            <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
-              {stackedRow ? <Box flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
-              {metaBelow && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
-              {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - (metaBelow ? 1 : 0))}</Text></Box>}
-              {reason}
-              {follow}
+            <Box key={`grouped-step-${s.id}`} flexDirection="column" flexShrink={0}>
+              {heading !== undefined && canShowHeadings(sRows) && <Box key={`step-group-${s.status}`} height={1} flexShrink={0}><Text bold dimColor>{heading}</Text></Box>}
+              <Box key={`row-s-${s.id}`} flexDirection={stackedRow ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
+                {stackedRow ? <Box flexDirection="row" columnGap={1}>{titleRow}</Box> : titleRow}
+                {metaBelow && <Box key={`s-metadata-${s.id}`} width={Math.max(1, width - rowIndent)} flexDirection="row" columnGap={1} justifyContent="flex-end">{titleToggle}{owner}{clock}</Box>}
+                {sDetails[index] && <Box marginLeft={3} width={detailWidth}><Text wrap="wrap">{fitLines(s.subject, detailWidth, sRows - 1 - (metaBelow ? 1 : 0))}</Text></Box>}
+                {reason}
+                {follow}
+              </Box>
             </Box>
           )
         })}
         </Box>
         <Box flexGrow={1} />
-        <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={roomy ? 1 : 0}>
+        <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={0}>
           {clearButtons('-bottom')}
           {hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
         </Box>
