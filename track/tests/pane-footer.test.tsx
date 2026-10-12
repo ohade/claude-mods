@@ -68,8 +68,9 @@ for (const [width, height] of [[17, 12], [30, 12], [60, 10], [60, 14]]) test(`bo
 })
 
 test('tall fitting sections use quiet round borders', async ($, on) => {
-  mock.clock(on)
-  atomStore(on, 'ledger', { ...EMPTY, questions, steps })
+  const clock = mock.clock(on)
+  await clock.set(1_800_000_000_000)
+  atomStore(on, 'ledger', { ...EMPTY, questions, steps: steps.map(s => s.status === 'in_progress' ? { ...s, startedAt: 1_799_999_940_000 } : s) })
   atomStore(on, 'activity', IDLE)
   const ui = await $.ui.mount(pane('dock', 80, 30))
   for (const key of ['questions-frame', 'steps-frame']) {
