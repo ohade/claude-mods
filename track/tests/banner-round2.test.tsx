@@ -85,7 +85,7 @@ test('four banner rows collapse once they would hide a third step', async ($, on
     $, on,
     [step(1, 'waiting'), step(2, 'in_progress'), step(3, 'in_progress', { delegated: true })],
     { ...IDLE, isWorking: true },
-    { unsaved: true, reason: 'quota exhausted', rows: 12 },
+    { unsaved: true, reason: 'quota exhausted', rows: 11 },
   )
   const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
   expect(rows.map(row => row.key)).toEqual(['banner-line'])
@@ -100,6 +100,19 @@ test('four banner rows collapse once they would hide a third step', async ($, on
   expect(line).toContain('S3')
   expect(line.length).toBeLessThanOrEqual(80)
 })
+
+for (const rows of [12, 14]) for (const count of [1, 2, 3]) {
+  test(`${count} visible steps keep two separate banner rows in a ${rows}-row pane`, async ($, on) => {
+    const ui = await mount($, on,
+      Array.from({ length: count }, (_, i) => step(i + 1, 'in_progress')),
+      { ...IDLE, isWorking: true, background: ['agent-1'] },
+      { rows },
+    )
+    const boxes = await ui.findAll({ type: 'Box' })
+    expect(boxes.filter(el => String(el.key ?? '').startsWith('row-s-'))).toHaveLength(count)
+    expect(boxes.filter(el => String(el.key ?? '').startsWith('banner-')).map(el => el.key)).toEqual(['banner-agents', 'banner-working'])
+  })
+}
 
 test('the working banner glyph is the row text color, not the row background', async ($, on) => {
   const ui = await mount($, on, [step(1, 'in_progress')], { ...IDLE, isWorking: true })
