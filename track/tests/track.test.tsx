@@ -1093,8 +1093,11 @@ test('the banner says Waiting on you while a question to the user is open', asyn
   expect(await banner($, on, ANSWERED, { ...IDLE, isWorking: true, askCalls: ['toolu_ask'] })).toContain('Waiting on you')
 })
 
-test('the banner says Paused after the turn while an unanswered question remains', async ($, on) => {
-  expect(await banner($, on, OPEN_ONE, IDLE)).toContain('Paused')
+// Ohad, TRACK-14 2026-10-13: an idle session with an open question waits on the person, not Paused.
+test('the banner says Waiting on you after the turn while an unanswered question remains', async ($, on) => {
+  const text = await banner($, on, OPEN_ONE, IDLE)
+  expect(text).toContain('Waiting on you')
+  expect(text).not.toContain('Paused')
 })
 
 test('the banner says Safe to close when the turn ended and nothing is open or running', async ($, on) => {

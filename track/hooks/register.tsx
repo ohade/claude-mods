@@ -316,7 +316,8 @@ const LIFECYCLE_NOTES = new Set(['cancelled by you', 'refused', 'interrupted'])
 // a finished-work flag. A cancel, refusal, or interruption note stays only while the step is paused.
 const withStatus = (s: Step, status: Step['status'], now: number, turnId?: string | null): Step => {
   const { endedAt: _ended, delegated, activeTurnId: _turn, followUp: _follow, note, ...rest } = s
-  const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
+  // A step completed straight from pending starts and ends at once, so it shows <1m, not nothing.
+  const startedAt = s.startedAt ?? (status === 'in_progress' || status === 'completed' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
   const keepNote = !(s.status === 'paused' && status !== 'paused' && note !== undefined && LIFECYCLE_NOTES.has(note))
 
@@ -712,8 +713,14 @@ const isDefined = <T,>(value: T | undefined): value is T => value !== undefined
 const textField = <K extends string>(key: K, value: unknown): Partial<Record<K, string>> =>
   typeof value === 'string' ? ({ [key]: value } as Record<K, string>) : {}
 
+// Steps a running agent was launched from: an Agent call in flight or a background agent still
+// running. A finished agent or a shell task does not count (Ohad, TRACK-14, 2026-10-13).
+const agentOwnedIds = (now: Activity): Set<string> =>
+  new Set([...now.agentCalls, ...now.background].flatMap(id => now.owners?.[id] ?? []))
 // Ownership is retained when parked; only an uncleared in-progress row signals active work.
-const isDelegatedWork = (step: Step): boolean => step.cleared !== true && step.delegated === true && step.status === 'in_progress'
+// A running agent launched from the step marks it too, without the session setting the flag.
+const isDelegatedWork = (step: Step, owned: Set<string> = new Set()): boolean =>
+  step.cleared !== true && step.status === 'in_progress' && (step.delegated === true || owned.has(step.id))
 
 // Work activity is independent of whether another item needs the person's action.
 // Incomplete work without current runtime activity is paused or unknown.
@@ -722,8 +729,9 @@ const workState = (l: Ledger, now: Activity): WorkState => {
   const unfinished = l.questions.some(q => q.cleared !== true && q.status !== 'answered') || steps.some(s => s.status !== 'completed')
   if (now.agentCalls.length > 0) return 'agents'
   const mainWorks = now.isWorking && now.askCalls.length === 0
-  const delegated = steps.some(isDelegatedWork)
-  if (delegated && !(mainWorks && steps.some(s => s.status === 'in_progress' && s.delegated !== true))) return 'agents'
+  const owned = agentOwnedIds(now)
+  const delegated = steps.some(s => isDelegatedWork(s, owned))
+  if (delegated && !(mainWorks && steps.some(s => s.status === 'in_progress' && !isDelegatedWork(s, owned)))) return 'agents'
   if (mainWorks) return 'working'
   if (now.background.length > 0) return 'agents'
   if ((now.tasks ?? []).length > 0) return 'tasks'
@@ -2846,7 +2854,9 @@ export const register: Register = on => {
       return next(e)
     }
     const callId = e.tool_use_id
-    await update($, activity, a => ({ ...a, agentCalls: [...a.agentCalls, callId] }))
+    // The call's step is known at launch, so the pane can mark that step while the call runs.
+    const callOwner = agentLaunchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
+    await update($, activity, a => ({ ...a, agentCalls: [...a.agentCalls, callId], ...rememberOwner(a, callId, callOwner) }))
     try {
       const ran = await next(e)
       const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
@@ -2858,7 +2868,7 @@ export const register: Register = on => {
 
       return ran
     } finally {
-      await update($, activity, a => ({ ...a, agentCalls: a.agentCalls.filter(id => id !== callId) }))
+      await update($, activity, a => ({ ...a, agentCalls: a.agentCalls.filter(id => id !== callId), ...(a.owners?.[callId] !== undefined && rememberOwner(a, callId, [])) }))
     }
   })
 
@@ -3526,8 +3536,9 @@ export const register: Register = on => {
     const work = workState(l, now)
     const numbered = steps.map((s, i) => ({ step: s, n: i + 1 }))
     const waitingSteps = numbered.filter(row => row.step.status === 'waiting')
-    const agentSteps = numbered.filter(row => isDelegatedWork(row.step))
-    const mainSteps = numbered.filter(row => row.step.status === 'in_progress' && row.step.delegated !== true && work === 'working')
+    const ownedIds = agentOwnedIds(now)
+    const agentSteps = numbered.filter(row => isDelegatedWork(row.step, ownedIds))
+    const mainSteps = numbered.filter(row => row.step.status === 'in_progress' && !isDelegatedWork(row.step, ownedIds) && work === 'working')
     const pausedSteps = numbered.filter(row => row.step.status === 'paused')
     const taskCount = (now.tasks ?? []).length
     const agentActivity = agentSteps.length > 0 || now.agentCalls.length > 0 || now.background.length > 0 || taskCount > 0
@@ -3535,10 +3546,11 @@ export const register: Register = on => {
     const questionRefs = questions
       .filter(q => q.status !== 'answered' && q.status !== 'deferred' && (askIds.has(q.askedRequestId ?? '') || askIds.has(q.trackedBy ?? '')))
       .map(q => questionLabel(q.id))
-    const unfinishedQuestion = questions.some(q => q.status !== 'answered' && q.status !== 'deferred')
     const askOpen = now.askCalls.length > 0
+    // Nothing runs and a question is open or deferred: the session waits on the person (Ohad, TRACK-14).
+    const personQuestions = questions.filter(q => q.status !== 'answered').map(q => questionLabel(q.id))
     // The main turn runs with no main step of its own (only delegated steps): still a Working row.
-    const mainRuns = now.isWorking && !askOpen && !numbered.some(row => row.step.status === 'in_progress' && row.step.delegated !== true)
+    const mainRuns = now.isWorking && !askOpen && !numbered.some(row => row.step.status === 'in_progress' && !isDelegatedWork(row.step, ownedIds))
     const mainRow = work === 'working' || mainRuns
     // An ask dialog in the middle of a step is the person's turn, not unknown activity.
     const unknownRow = work === 'unknown' && !askOpen
@@ -3579,14 +3591,15 @@ export const register: Register = on => {
       if (unknownRow) {
         const label = width < 18 ? 'Unknown' : 'Activity unknown'
         built.push({ ...piece('banner-unknown', '', { label, brief: 'Unknown', questions: [], steps: [], counts: [] }, GREY_SHADES[0]), wordColor: 'subtle' })
-      } else if (!running && (pausedSteps.length > 0 || (work === 'paused' && waitingSteps.length === 0 && unfinishedQuestion))) {
+      } else if (!running && pausedSteps.length > 0) {
         built.push(piece('banner-paused', '', { label: 'Paused', brief: 'Paused', questions: [], steps: [], counts: [] }, 'warning'))
       }
-      if (waitingSteps.length > 0 || askOpen) {
+      const personWait = !running && personQuestions.length > 0
+      if (waitingSteps.length > 0 || askOpen || personWait) {
         built.push(piece('banner-you', '◆', {
           label: 'Waiting on you',
           brief: 'You',
-          questions: questionRefs,
+          questions: personWait ? personQuestions : questionRefs,
           steps: waitingSteps.map(row => `S${row.n}`),
           counts: [],
         }, WAITING_BLUE))
@@ -4067,11 +4080,12 @@ export const register: Register = on => {
           const color = s.status === 'completed' ? 'success' : undefined
           const lifecycle = lifecycleOf(s)
           // The step's mark is the row it sits on. A cancel or a shown refusal is ⊘, not the pause glyph.
-          const onWorking = s.status === 'in_progress' && s.delegated !== true && work === 'working'
+          const agentWork = isDelegatedWork(s, ownedIds)
+          const onWorking = s.status === 'in_progress' && !agentWork && work === 'working'
           const look =
             lifecycle === 'cancelled by you' || lifecycle === 'refused'
               ? { glyph: '⊘', glyphColor: 'subtle', textColor: 'subtle' }
-              : isDelegatedWork(s)
+              : agentWork
                 ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
                 : s.status === 'waiting'
                   ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
@@ -4105,7 +4119,7 @@ export const register: Register = on => {
               </Text>
             </Box>
           )
-          const owner = <Box key={`s-owner-${s.id}`} width={ownerWidth} flexShrink={0} flexDirection="row" justifyContent="flex-end"><Text dimColor>{s.delegated === true ? 'agent' : 'main'}</Text></Box>
+          const owner = <Box key={`s-owner-${s.id}`} width={ownerWidth} flexShrink={0} flexDirection="row" justifyContent="flex-end"><Text dimColor>{s.delegated === true || agentWork ? 'agent' : 'main'}</Text></Box>
           const clock = (
             <Box key={`s-time-slot-${s.id}`} width={clockWidth} flexShrink={0} flexDirection="row" justifyContent="flex-end">
               {hasClock(s) && <Box key={`s-clock-${s.id}`} flexShrink={0}>
