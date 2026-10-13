@@ -4086,9 +4086,8 @@ export const register: Register = on => {
                           : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0} flexDirection="row">
-            <Box key={s.status === 'in_progress' ? `s-active-${s.id}` : `s-bar-slot-${s.id}`} width={1} flexShrink={0}>
-              {s.status === 'in_progress' && <Text color={look.glyphColor}>▏</Text>}
-            </Box>
+            {/* An empty cell keeps every glyph in one column; the ACTIVE heading and the motion mark active rows. */}
+            <Box key={`s-bar-slot-${s.id}`} width={1} flexShrink={0} />
             <Text color={look.glyphColor}>{look.glyph}</Text>
           </Box>
           const subject = displayTitle(`S${number}`, s.subject)

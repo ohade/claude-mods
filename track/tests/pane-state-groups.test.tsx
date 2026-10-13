@@ -20,11 +20,11 @@ test('mixed states group stably without renumbering or changing owner and backgr
   expect((await ui.find({ key: 's-owner-plan:5' }))?.text).toBe('main')
   expect((await ui.find({ key: 's-owner-plan:6' }))?.text).toBe('agent')
   expect((await ui.find({ key: 's-status-plan:6' }))?.text).toContain('⧗')
+  // Ohad 2026-10-13: no bar beside active rows; the ACTIVE heading and the motion mark them.
   for (const id of ['plan:5', 'plan:6']) {
-    expect((await ui.find({ key: `s-active-${id}` }))?.text).toBe('▏')
     expect((await ui.find({ key: `s-status-${id}` }))?.props.width).toBe(2)
+    expect((await ui.find({ key: `s-status-${id}` }))?.text).not.toContain('▏')
   }
-  expect(await ui.find({ key: 's-active-plan:3' })).toBeUndefined()
   expect((await ui.findAll({ type: 'Text' })).some(text => text.text === 'S1. Work 1' && text.props.color === 'success')).toBe(true)
   expect(ledger.value.steps).toEqual(mixed)
   expect(ledger.writes).toHaveLength(0)
