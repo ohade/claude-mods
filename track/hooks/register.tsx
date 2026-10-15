@@ -1638,7 +1638,7 @@ const savedStep = (row: unknown): Step | undefined => {
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
     ...textField('sourceId', r.sourceId),
-    ...(typeof r.note === 'string' && { note: truncate(r.note, HEAD_CHARS) }),
+    ...(typeof r.note === 'string' && { note: r.note }),
     ...(r.followUp === true ? { followUp: true as const } : {}),
   }
 }
@@ -1897,7 +1897,20 @@ export const register: Register = on => {
     if (ran.deny !== undefined || ran.isError === true || before === JSON.stringify(await read($, ledger))) return ran
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
     await publishGate($)
-    if (await saveLedger($)) return ran
+    if (await saveLedger($)) {
+      if (e.tool === MARK_STEP && typeof ran.result === 'string') {
+        // TRACK-23: copy the acknowledged row, not the caller's proposed note
+        // or an atom that may already contain a later, unsaved edit.
+        const saved = (await read($, durability)).baseline
+        const row = saved?.session_id === await $.session.id()
+          ? saved.ledger.steps.find(step => step.id === String(e.id)) : undefined
+        if (row !== undefined) {
+          const { id, subject, status, note } = row
+          return { ...ran, result: `${ran.result}\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}` }
+        }
+      }
+      return ran
+    }
     const warning = `track: unsaved — ${persistence.failure}`
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string') {
       const receipt = JSON.parse(ran.result) as Checkpoint
@@ -1980,7 +1993,7 @@ export const register: Register = on => {
         'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional short generic note, including a peer or background wait.' }, delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' } },
+        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' }, delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' } },
         required: ['id', 'status'],
       },
     })
@@ -2373,7 +2386,7 @@ export const register: Register = on => {
         const now = await $.clock.now()
         await update<Ledger>($, ledger, l => ({ ...l, steps: l.steps.map(s => {
           if (s.cleared === true || s.status !== 'in_progress' || s.delegated === true || s.activeTurnId !== e.turnId) return s
-          return { ...withStatus(s, 'paused', now), note: s.note ? `${truncate(s.note, HEAD_CHARS - 13)}; interrupted` : 'interrupted' }
+          return { ...withStatus(s, 'paused', now), note: s.note ? `${s.note}; interrupted` : 'interrupted' }
         }) }))
         await dropFinishedOwners($)
       }
@@ -2933,7 +2946,7 @@ export const register: Register = on => {
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => {
       if (s.id !== id) return s
       const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
-      return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: truncate(e.note, HEAD_CHARS) }) }
+      return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }) }
     }) }))
     await dropFinishedOwners($)
 

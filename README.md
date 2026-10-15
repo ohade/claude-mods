@@ -235,6 +235,10 @@ running turn. Doorbells and informational notifications alone need no row. Track
   save its words at the tracking call. This concurrent publication window is not live-proven.
   Saved text is bounded to 1,000 Unicode code points. Legacy progress saved as an answer is not
   silently rewritten. An already captured answer stays unchanged. Step updates name the affected step.
+  An acknowledged `mark_step` change also returns a `Saved row:` JSON record with the exact
+  saved id, subject, status and optional note. A failed save reports Unsaved and returns no saved-row
+  claim. Step blocker notes stay complete through save, interruption and restore; display limits
+  never shorten their stored values.
 
 It opens by itself by the built-in diff panel's rule, less the git condition: in the fullscreen
 layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). A reload of
@@ -269,7 +273,7 @@ remain visibly **Unsaved**. Rendering performs no persistence. For each session 
   time; prompts that start with `/` are left out; the last 200 prompts;
 - each tracked question as the model summed it up, cut to 200 Unicode code points, with its status,
   optional note, stable source identity, and answer text (up to 1,000 code points); up to 200;
-- the title and status of each step, cut to 200 characters; the last 300.
+- each step's title (up to 200 characters), status and complete optional note; up to 300 steps.
 
 The store budgets serialized UTF-8 conservatively below its 4 MiB limit. Ordinary saves stop
 at 3 MiB, including bodies, heads, indexes and recovery records. No count or byte eviction
