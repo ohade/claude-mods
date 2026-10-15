@@ -214,7 +214,8 @@ const settle = async (call: Promise<unknown>) => {
 
 test("a slash command's row draws the picture pasted into it, before any row brings the picture's bytes", async ($, on) => {
   const copied: string[] = []
-  standInForSavedPictures(on, [savedName(2, '6524ECCF')], copied)
+  const saved = savedName(2, '6524ECCF')
+  standInForSavedPictures(on, [saved], copied)
   standInForRows(on)
 
   // Live, the command's row is printed before the row carrying the picture
@@ -224,7 +225,7 @@ test("a slash command's row draws the picture pasted into it, before any row bri
   const reply = await replyDraws($, 'd1000000-0000-4000-8000-000000000001', 'Looking.')
 
   expect((await reply.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #1]' })
-  expect(copied).toEqual([savedName(2, '6524ECCF')])
+  expect(copied).toEqual([saved])
 })
 
 test("a picture pasted from the clipboard is drawn from the session's images folder, by its number", async ($, on) => {
@@ -287,12 +288,15 @@ test('a prompt sent while Claude works draws its picture from the file saved whe
 
 test('the file saved nearest the paste is the one drawn', async ($, on) => {
   const copied: string[] = []
-  standInForSavedPictures(on, [savedName(40, '0000000A'), savedName(0, '0000000B')], copied)
+  // 2026-10-15: landing crossed a second before the assertion. The expected
+  // file is the one offered to the picker, not a new filename from a later clock.
+  const newest = savedName(0, '0000000B')
+  standInForSavedPictures(on, [savedName(40, '0000000A'), newest], copied)
 
   await settle(promptEdit($, { origin: { kind: 'composer' }, text: 'look ', cursor: 5, start: 5, end: 5, inputText: ' [Image #2]' }))
   await settle($.command.run({ command: 'recall', args: 'look [Image #2]', origin: { kind: 'composer' }, presentation: PRESENTATION }))
 
-  expect(copied).toEqual([savedName(0, '0000000B')])
+  expect(copied).toEqual([newest])
 })
 
 test('with no paste seen and two files saved since the last prompt, neither is taken', async ($, on) => {
