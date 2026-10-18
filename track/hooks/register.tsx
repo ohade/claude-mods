@@ -562,7 +562,7 @@ const pending = atom({ plugin: 'track', key: 'pending' } as const, { inputs: [],
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
-const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} }
+const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 // Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
 const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | undefined>)
@@ -948,7 +948,7 @@ const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId:
   const bash = tool === 'Bash' && typeof callId === 'string' && callId !== ''
   if (!edit && !bash && touched.length === 0) return false
   const completed = after.steps.filter(step => touched.includes(step.id) && step.status === 'completed' && before.steps.find(old => old.id === step.id)?.status !== 'completed')
-    .map(step => ({ id: step.id, ...(owners !== undefined && { owner_task_ids: Object.entries(owners).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }) }))
+    .map(step => ({ id: step.id, owner_task_ids: Object.entries(owners ?? {}).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }))
   await update($, turn, current => {
     if (current.currentId !== start.currentId) return current
     const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(start.currentId!)
@@ -1059,11 +1059,11 @@ const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidat
   const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
     .map(row => ({ kind: 'premature_completion', ...row }))
   const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
-    .map(step => ({ kind: 'stale_in_progress', id: step.id, ...(a.owners !== undefined && { owner_task_ids: Object.entries(a.owners).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }) }))
+    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: Object.entries(a.owners ?? {}).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
+  // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
   return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
-    .filter(row => !fresh?.held.includes(row.kind))
 }
 
 const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined> => {
@@ -1117,7 +1117,7 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
   }
   for (const kind of FRESHNESS_KINDS) {
     const candidates = snapshot.candidates.filter(row => row.kind === kind)
-    if (candidates.length === 0) continue
+    if (candidates.length === 0 || snapshot.held.includes(kind)) continue
     try {
       const result = await $.process.run(['python3', `${root}/hooks/stop-gate.py`, '--claim'], {
         stdin: JSON.stringify({ ...payload, session_id: snapshot.session_id }), timeoutMs: 2000,
@@ -1628,6 +1628,12 @@ const savedPrompt = (row: unknown): Prompt | undefined => {
   return { rowKey: r.rowKey, head: headOf(r.head), at: r.at, turnId: typeof r.turnId === 'string' ? r.turnId : null, ...textField('requestId', r.requestId) }
 }
 
+// A saved native A-marker's provenance, kept so a reload compares equal in the three-way merge.
+const savedMarker = (m: Record<string, unknown>): Pick<Question, 'answerMarker'> | undefined =>
+  typeof m.turnId === 'string' && m.turnId !== '' && typeof m.order === 'number' && Number.isSafeInteger(m.order) && m.order >= 0
+    ? { answerMarker: { turnId: m.turnId, order: m.order } }
+    : undefined
+
 const savedQuestion = (row: unknown): Question | undefined => {
   if (typeof row !== 'object' || row === null) {
     return undefined
@@ -1652,6 +1658,7 @@ const savedQuestion = (row: unknown): Question | undefined => {
     ...(typeof r.answerTextHash === 'string' && /^[0-9a-f]{64}$/.test(r.answerTextHash) && { answerTextHash: r.answerTextHash }),
     ...(typeof r.answerOrder === 'number' && Number.isSafeInteger(r.answerOrder) && r.answerOrder >= 0 && { answerOrder: r.answerOrder }),
     ...textField('answerKey', r.answerKey),
+    ...(typeof r.answerMarker === 'object' && r.answerMarker !== null && savedMarker(r.answerMarker as Record<string, unknown>)),
     ...textField('trackedBy', r.trackedBy),
     ...(typeof r.trackedOrder === 'number' && Number.isSafeInteger(r.trackedOrder) && r.trackedOrder >= 0 && { trackedOrder: r.trackedOrder }),
     ...textField('restoredFrom', r.restoredFrom),
