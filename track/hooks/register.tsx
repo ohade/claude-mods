@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
 
-import type { Activity, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
+import type { Activity, FreshnessCandidate, FreshnessKind, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, StepFreshness, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
@@ -562,7 +562,7 @@ const pending = atom({ plugin: 'track', key: 'pending' } as const, { inputs: [],
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
-const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
+const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 // Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
 const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | undefined>)
@@ -905,6 +905,64 @@ const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStr
 const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; memorySession?: string | null; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
 const gateWrites = { queue: Promise.resolve() }
 
+const freshTurn = (turnId: string): StepFreshness => ({ turnId, edits: [], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] })
+const distinctIds = (ids: string[]): string[] => [...new Set(ids)].slice(-MAX_STEPS)
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+// Full stored responses, not the capped pane preview, supply waiting requests.
+const waitingArrowIds = (text: string): string[] => {
+  const ids: string[] = []
+  let fence: { char: string; size: number } | undefined
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '')
+    const boundary = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence !== undefined) {
+      if (boundary?.[1]?.[0] === fence.char && boundary[1].length >= fence.size && boundary[2]?.trim() === '') fence = undefined
+    } else if (boundary !== null && !(boundary[1]![0] === '`' && boundary[2]!.includes('`'))) {
+      fence = { char: boundary[1]![0]!, size: boundary[1]!.length }
+    } else {
+      const arrow = /^ {0,3}👉[ \t]+((?:plan|task|todo):\S+):[ \t]+(\S.*)$/.exec(line)
+      if (arrow !== null) ids.push(arrow[1]!)
+    }
+  }
+  return distinctIds(ids)
+}
+
+// TRACK-27: a successful native call must actually address a tracked row.
+const stepReceiptIds = (tool: string, input: Record<string, unknown>, result: unknown, before: Ledger, after: Ledger): string[] => {
+  const output = result as { task?: { id?: unknown }; success?: unknown; newTodos?: unknown } | undefined
+  if (tool === MARK_STEP) {
+    const row = after.steps.find(step => step.id === String(input.id))
+    return row !== undefined && row.status === input.status && STEP_STATUSES.includes(input.status as Step['status']) ? [row.id] : []
+  }
+  if (tool === TRACK_STEPS) return typeof result === 'string' && /^(Tracking \d+ steps:|Inserted after )/.test(result) ? after.steps.filter(step => step.source === 'plan').map(step => step.id) : []
+  if (tool === 'TaskCreate') return output?.task?.id !== undefined ? after.steps.filter(step => step.taskId === String(output.task!.id)).map(step => step.id) : []
+  if (tool === 'TaskUpdate') return output?.success !== false && (input.status === 'deleted' || STEP_STATUSES.includes(input.status as Step['status'])) ? before.steps.filter(step => step.taskId === String(input.taskId)).map(step => step.id) : []
+  if (tool === 'TodoWrite') return Array.isArray(output?.newTodos) ? distinctIds([...before.steps, ...after.steps].filter(step => step.source === 'todo').map(step => step.id)) : []
+  return []
+}
+
+const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId: unknown, touched: string[], before: Ledger, after: Ledger, owners: Activity['owners']): Promise<boolean> => {
+  if (typeof start.currentId !== 'string' || start.currentId === '') return false
+  const edit = EDIT_TOOLS.has(tool) && typeof callId === 'string' && callId !== ''
+  const bash = tool === 'Bash' && typeof callId === 'string' && callId !== ''
+  if (!edit && !bash && touched.length === 0) return false
+  const completed = after.steps.filter(step => touched.includes(step.id) && step.status === 'completed' && before.steps.find(old => old.id === step.id)?.status !== 'completed')
+    .map(step => ({ id: step.id, ...(owners !== undefined && { owner_task_ids: Object.entries(owners).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }) }))
+  await update($, turn, current => {
+    if (current.currentId !== start.currentId) return current
+    const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(start.currentId!)
+    return { ...current, freshness: { ...fresh,
+      edits: edit ? distinctIds([...fresh.edits, callId as string]) : fresh.edits,
+      bash: bash ? distinctIds([...fresh.bash, callId as string]) : fresh.bash,
+      steps: distinctIds([...fresh.steps, ...touched]),
+      waiting: distinctIds([...fresh.waiting.filter(id => !touched.includes(id)), ...after.steps.filter(step => touched.includes(step.id) && step.status === 'waiting').map(step => step.id)]),
+      completed: [...fresh.completed.filter(row => !touched.includes(row.id) || after.steps.find(step => step.id === row.id)?.status === 'completed' && !completed.some(next => next.id === row.id)), ...completed].slice(-MAX_STEPS),
+    } }
+  })
+  return true
+}
+
 // An identity failure must not discard a tracking event. Null records explicitly
 // unknown ownership: a later save archives these rows instead of relabelling them.
 const captureMintOwner = async ($: EngineInterface): Promise<string | undefined> => {
@@ -991,15 +1049,102 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
   })()
 }
 
-const publishGate = async ($: EngineInterface): Promise<void> => {
+type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; candidates: FreshnessCandidate[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
+const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
+const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
+
+const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidate[] => {
+  const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
+  const visible = l.steps.filter(step => step.cleared !== true)
+  const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
+    .map(row => ({ kind: 'premature_completion', ...row }))
+  const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
+    .map(step => ({ kind: 'stale_in_progress', id: step.id, ...(a.owners !== undefined && { owner_task_ids: Object.entries(a.owners).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }) }))
+  const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
+    .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
+  return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
+    .filter(row => !fresh?.held.includes(row.kind))
+}
+
+const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined> => {
   const run = gateWrites.queue.then(async () => {
     const t = await read($, turn)
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.cleared !== true && q.status === 'open' && q.turnId === t.currentId)
-    await $.env.set('TRACK_GATE_SNAPSHOT', JSON.stringify({ v: 1, session_id: await $.session.id(), turn_id: t.currentId, open: open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })) }))
+    const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
+    const snapshot: GateSnapshot = { v: 2, session_id: await $.session.id(), turn_id: t.currentId,
+      open: t.gatedTurnId === t.currentId ? [] : open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })),
+      candidates: freshnessCandidates(t, l, await read($, activity)), response: fresh?.response, held: fresh?.held ?? [] }
+    while (utf8Bytes(snapshot) > 16 * 1024 && snapshot.candidates.length > 0) {
+      snapshot.candidates.pop()
+      snapshot.truncated = true
+    }
+    if (utf8Bytes(snapshot) > 16 * 1024) throw new Error('bounded Stop snapshot exceeded')
+    await $.env.set('TRACK_GATE_SNAPSHOT', JSON.stringify(snapshot))
+    return snapshot
   })
-  gateWrites.queue = run.catch(error => { $.ui.log(`track: Stop snapshot unavailable: ${reason(error)}`, { to: 'debug' }) })
-  await gateWrites.queue
+  gateWrites.queue = run.then(() => undefined, error => { $.ui.log(`track: Stop snapshot unavailable: ${reason(error)}`, { to: 'debug' }) })
+  try { return await run } catch { return undefined } // the queue reports the cause above
+}
+
+const freshnessNudge = async ($: EngineInterface, code: string, text: string, remind = false): Promise<void> => {
+  let show = false
+  await update($, turn, current => {
+    if (typeof current.currentId !== 'string') { show = true; return current }
+    const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(current.currentId)
+    if (fresh.nudged.includes(code)) return current
+    show = true
+    return { ...current, ...(remind && { stepReminder: text }), freshness: { ...fresh, nudged: [...fresh.nudged, code] } }
+  })
+  if (show) $.ui.toast(text)
+}
+
+const stepStop = async ($: EngineInterface, payload: { session_id?: string; background_tasks?: readonly { id: string; type: string }[] }): Promise<string | undefined> => {
+  const snapshot = await publishGate($)
+  if (snapshot === undefined || !snapshot.session_id || !snapshot.turn_id || (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) {
+    await freshnessNudge($, 'identity', 'track: Stop snapshot identity unavailable; reconcile steps before finishing.')
+    return undefined
+  }
+  const t = await read($, turn)
+  const fresh = t.freshness?.turnId === snapshot.turn_id ? t.freshness : undefined
+  if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) await freshnessNudge($, 'bash', BASH_NUDGE, true)
+  if (snapshot.candidates.length === 0) return undefined
+  const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
+  const config = await $.env.get('CLAUDE_CONFIG_DIR')
+  if (!root?.startsWith('/') || !config?.startsWith('/')) {
+    await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.')
+    return undefined
+  }
+  for (const kind of FRESHNESS_KINDS) {
+    const candidates = snapshot.candidates.filter(row => row.kind === kind)
+    if (candidates.length === 0) continue
+    try {
+      const result = await $.process.run(['python3', `${root}/hooks/stop-gate.py`, '--claim'], {
+        stdin: JSON.stringify({ ...payload, session_id: snapshot.session_id }), timeoutMs: 2000,
+        env: { CLAUDE_CONFIG_DIR: config, TRACK_GATE_SNAPSHOT: JSON.stringify({ ...snapshot, candidates }) },
+      })
+      if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) throw new Error(`helper exit ${result.exitCode}`)
+      if (result.stderr.trim() !== '') {
+        $.ui.log(result.stderr.trim(), { to: 'debug' })
+        await freshnessNudge($, `facts:${kind}`, result.stderr.trim())
+      }
+      const receipt = JSON.parse(result.stdout) as { decision?: unknown; reason?: unknown }
+      if (receipt?.decision !== 'block' || typeof receipt.reason !== 'string' || receipt.reason.trim() === '') continue
+      let currentTurn = false
+      await update($, turn, current => {
+        if (current.currentId !== snapshot.turn_id) return current
+        const fresh = current.freshness?.turnId === snapshot.turn_id ? current.freshness : freshTurn(snapshot.turn_id!)
+        currentTurn = true
+        return { ...current, freshness: { ...fresh, held: [...new Set([...fresh.held, kind])] } }
+      })
+      await publishGate($)
+      return currentTurn ? receipt.reason : undefined
+    } catch (error) {
+      await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`)
+      return undefined
+    }
+  }
+  return undefined
 }
 
 // Existing entries are verified save metadata. Read only newly discovered
@@ -1884,17 +2029,27 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     const current = await read($, turn)
-    const owner = cancelOwner((await read($, ledger)).steps, e.tool, current.currentId)
+    const beforeLedger = await read($, ledger)
+    const beforeOwners = (await read($, activity)).owners
+    const owner = cancelOwner(beforeLedger.steps, e.tool, current.currentId)
     const owners = owner === undefined ? [] : [owner]
     if (!mutationTools.has(e.tool)) {
       const ran = await next(e)
       await applyCancel($, owners, ran)
+      if (ran.deny === undefined && ran.isError !== true && await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeOwners)) await publishGate($)
       return ran
     }
-    const before = JSON.stringify(await read($, ledger))
+    const before = JSON.stringify(beforeLedger)
     const ran = await next(e)
     await applyCancel($, owners, ran)
-    if (ran.deny !== undefined || ran.isError === true || before === JSON.stringify(await read($, ledger))) return ran
+    if (ran.deny !== undefined || ran.isError === true) return ran
+    const afterLedger = await read($, ledger)
+    const touched = stepReceiptIds(e.tool, e, ran.result, beforeLedger, afterLedger)
+    const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeOwners)
+    if (before === JSON.stringify(afterLedger)) {
+      if (recorded) await publishGate($)
+      return ran
+    }
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
     await publishGate($)
     if (await saveLedger($)) {
@@ -2116,17 +2271,31 @@ export const register: Register = on => {
     const observed = (await read($, turn)).lastText
     const stored = await next(e)
     if (stored.deny !== undefined || e.agentId !== undefined || e.origin.kind !== 'model' || stored.message.type !== 'assistant' || observed?.requestId !== e.uuid || observed.turnId === null || observed.order === undefined) return stored
-    const blocks = answerBlocks(textOf(stored.message.content))
-    if (blocks.length === 0 || (await read($, turn)).currentId !== observed.turnId) return stored
+    const text = textOf(stored.message.content)
+    const current = await read($, turn)
+    if (current.currentId !== observed.turnId) return stored
+    const arrows = waitingArrowIds(text)
+    await update($, turn, cur => {
+      if (cur.currentId !== observed.turnId || cur.lastText?.order !== observed.order) return cur
+      const fresh = cur.freshness?.turnId === observed.turnId ? cur.freshness : freshTurn(observed.turnId!)
+      return { ...cur, freshness: { ...fresh, response: { turn_id: observed.turnId!, request_id: stored.uuid, arrow_ids: arrows } } }
+    })
+    await publishGate($)
+    const blocks = answerBlocks(text)
+    if (blocks.length === 0) return stored
     const completed = await Promise.all(blocks.map(async block => ({ ...block, hash: await checksumOf(block.text) })))
     let changed = false
     await update<Ledger>($, ledger, cur => {
       changed = false
       const questions = cur.questions.map(q => {
         const block = completed.find(one => one.id === q.id)
-        if (block === undefined || q.cleared === true || q.status === 'answered' || q.answerText !== undefined || (q.turnId === observed.turnId && (q.trackedOrder === undefined || observed.order! <= q.trackedOrder))) return q
+        if (block === undefined || q.cleared === true || (q.turnId === observed.turnId && (q.trackedOrder === undefined || observed.order! <= q.trackedOrder))) return q
+        const native = q.answerRequestId !== undefined && q.answerKey === answerBlockKey(rowKey(q.answerRequestId), q.id) && q.answerTextHash !== undefined
+        const correcting = q.status === 'answered' && native && q.answerTextHash !== block.hash
+        if ((q.status === 'answered' || q.answerText !== undefined) && !correcting) return q
+        if (q.answerMarker?.turnId === observed.turnId && q.answerMarker.order >= observed.order!) return q
         changed = true
-        return { ...q, status: 'answered' as const, answeredAt: Date.now(), answerText: truncate(block.text, ANSWER_CHARS), answerTextHash: block.hash, answerRequestId: stored.uuid, answerKey: answerBlockKey(rowKey(stored.uuid), block.id) }
+        return { ...q, status: 'answered' as const, answeredAt: Date.now(), answerText: truncate(block.text, ANSWER_CHARS), answerTextHash: block.hash, answerRequestId: stored.uuid, answerKey: answerBlockKey(rowKey(stored.uuid), block.id), answerMarker: { turnId: observed.turnId!, order: observed.order! } }
       })
       return changed ? { ...cur, questions } : cur
     })
@@ -2142,7 +2311,7 @@ export const register: Register = on => {
     // A covered input of an earlier turn is done and leaves, and so is one Haiku called
     // not_question; an unresolved one stays. Steps coverage waits for a label still to come: a late
     // question label undoes it.
-    await update($, turn, t => ({ ...t, currentId: e.turnId } as Turn))
+    await update($, turn, t => ({ ...t, currentId: e.turnId, freshness: typeof e.turnId === 'string' ? freshTurn(e.turnId) : undefined } as Turn))
     if (typeof e.turnId === 'string') {
       await update($, pending, p => (p.inputs.length === 0 ? p : {
         ...p,
@@ -2262,6 +2431,11 @@ export const register: Register = on => {
         }
       }
       const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
+      const reminder = (await read($, turn)).stepReminder
+      if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && reminder !== undefined) {
+        lines.push(reminder)
+        await update($, turn, current => current.stepReminder === reminder ? { ...current, stepReminder: undefined } : current)
+      }
       // A prompt Stop already asked about once and no row covers yet is named again here.
       const unresolved = (await read($, pending)).inputs.filter(i => i.held === true && i.covered === undefined && needsQuestion(i))
       if (unresolved.length > 0) {
@@ -2337,15 +2511,18 @@ export const register: Register = on => {
         return { ...below, block: uncoveredBlock(uncovered) }
       }
     }
-    if (e.stop_hook_active || t.currentId === null || t.gatedTurnId === t.currentId) {
+    if (e.stop_hook_active || t.currentId === null) {
+      if (!e.stop_hook_active && t.currentId === null) await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.')
       return below
     }
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
-    if (open.length === 0) {
-      return below
+    if (open.length === 0 || t.gatedTurnId === t.currentId) {
+      const block = await stepStop($, e)
+      return block === undefined ? below : { ...below, block }
     }
     await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
+    await publishGate($)
     const first = open[0] as Question
     const rest = open.length > 1 ? ` (${open.length - 1} more open: ${open.slice(1).map(q => `Q${q.id}`).join(', ')})` : ''
 

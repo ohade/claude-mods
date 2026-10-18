@@ -1,5 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
+import { SESSION } from './kit'
+import type { FreshnessKind, Step, Turn } from '../types'
 
 // Pins the two gates the model meets: the track_question tool (it mints a question) and the
 // Stop gate (it holds a turn once while a question tracked in it is still open).
@@ -199,3 +201,50 @@ test('with several open questions this turn, the block names the first and lists
   expect(ids[0]).toBe(2)
   expect([...ids].sort((a, b) => a - b)).toEqual([2, 3, 5])
 })
+
+// FIXTURE: pins the plugin/helper wire contract. The independent Python suite
+// runs the real helper and checks the same exact messages and exclusive holds.
+const freshnessMessages: Array<[FreshnessKind, string]> = [
+  ['premature_completion', 'track: task:7 is completed while its owned task worker-7 is still running. Reopen or pause the step, or wait for that task, then finish.'],
+  ['stale_in_progress', 'track: task:7 is still in_progress, but no work owns it. Call mark_step with completed, paused, or waiting and the true result, then finish.'],
+  ['missing_waiting_request', 'track: task:7 is waiting, but the final reply has no 👉 task:7: request line. Ask the user visibly, then finish.'],
+  ['untracked_edit', 'track: this turn changed files but no step was created or marked. Reuse a step with mark_step or register one with track_steps, then finish.'],
+]
+
+for (const [kind, reason] of freshnessMessages) {
+  test(`v2 Stop delegates ${kind} to the shared helper and consumes its hold once`, async ($, on) => {
+    const edits = kind === 'untracked_edit'
+    const status: Step['status'] = kind === 'premature_completion' ? 'completed' : kind === 'missing_waiting_request' ? 'waiting' : 'in_progress'
+    const steps: Step[] = edits ? [] : [{ id: 'task:7', source: 'task', subject: 'Finish the change', status, activeTurnId: 'turn-1' }]
+    store(on, 'ledger', { ...ledgerOf([]), steps })
+    store<Turn>(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, freshness: {
+      turnId: 'turn-1', edits: edits ? ['edit-7'] : [], bash: [], steps: edits ? [] : ['task:7'],
+      completed: kind === 'premature_completion' ? [{ id: 'task:7', owner_task_ids: ['worker-7'] }] : [],
+      waiting: kind === 'missing_waiting_request' ? ['task:7'] : [],
+      response: { turn_id: 'turn-1', request_id: 'fixture-main', arrow_ids: [] }, held: [], nudged: [],
+    } })
+    store(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} })
+    store(on, 'pending', { inputs: [], nextId: 1 })
+    const env = new Map([['CLAUDE_PLUGIN_ROOT', '/fixture/track'], ['CLAUDE_CONFIG_DIR', '/fixture/config']])
+    let calls = 0
+    on('session.id', () => ({ value: SESSION }))
+    on('env.get', (_, e) => ({ value: env.get(e.name) }))
+    on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+    on('classic.Stop', () => ({}))
+    on('process.run', (_, e) => {
+      calls += 1
+      expect(e.argv).toEqual(['python3', '/fixture/track/hooks/stop-gate.py', '--claim'])
+      expect(e.init?.env?.CLAUDE_CONFIG_DIR).toBe('/fixture/config')
+      expect(JSON.parse(e.init?.stdin ?? '{}')).toMatchObject({ session_id: SESSION, background_tasks: [{ id: 'worker-7', type: 'agent' }] })
+      const snapshot = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}')
+      expect(snapshot).toMatchObject({ v: 2, session_id: SESSION, turn_id: 'turn-1', open: [], held: [],
+        response: { turn_id: 'turn-1', request_id: 'fixture-main' }, candidates: [{ kind }] })
+      return { value: { exitCode: 0, stdout: JSON.stringify({ decision: 'block', reason }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+
+    const payload = { session_id: SESSION, background_tasks: [{ id: 'worker-7', type: 'agent' }] }
+    expect((await stop($, payload)).block).toBe(reason)
+    expect((await stop($, payload)).block).toBeUndefined()
+    expect(calls).toBe(1)
+  })
+}

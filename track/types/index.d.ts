@@ -44,6 +44,8 @@ export type Question = {
   answerText?: string
   // SHA-256 of the full completed words, for source matching beyond the saved cap.
   answerTextHash?: string
+  // Native A-marker provenance and order, kept with its text/source in one row update.
+  answerMarker?: { turnId: string; order: number }
   // Brought back after a handoff: the session it came from, and the user-row receipt
   // that confirmed it. [ Q ] and [ A ] show the saved text in the pane.
   restoredFrom?: string
@@ -111,6 +113,19 @@ export type Ledger = {
 
 // `lastText`: the main loop's last text row, its text, and the turn it was written in.
 // Only the exact composedRule proves that the current instruction reached the model.
+export type FreshnessKind = 'premature_completion' | 'stale_in_progress' | 'missing_waiting_request' | 'untracked_edit'
+export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[] }
+export type StepFreshness = {
+  turnId: string
+  edits: string[]
+  bash: string[]
+  steps: string[]
+  completed: Array<{ id: string; owner_task_ids?: string[] }>
+  waiting: string[]
+  response?: { turn_id: string; request_id: string; arrow_ids: string[] }
+  held: FreshnessKind[]
+  nudged: string[]
+}
 export type Turn = {
   currentId: string | null
   gatedTurnId: string | null
@@ -118,6 +133,9 @@ export type Turn = {
   lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string; textHash?: string }
   composeSeen?: true
   composedRule?: string
+  // TRACK-27: current-turn facts only, never persisted in ledger rows.
+  freshness?: StepFreshness
+  stepReminder?: string
 }
 
 // A question-like main prompt waiting for a Track row (CC-179). `head` is its first line, which a
