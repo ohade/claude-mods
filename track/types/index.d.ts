@@ -156,7 +156,7 @@ export type ScrollAt = { questions: number | null; steps: number | null }
 // What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
 // calls in flight (tool_use ids), background agents still running, and other background work
 // still running, such as shell tasks (their ids). An activity saved before tasks existed has none.
-export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[]; owners?: Record<string, string[]>; ownerOrder?: string[]; attributed?: string[] }
+export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[]; owners?: Record<string, string[]>; ownerOrder?: string[]; launchOwners?: Array<{ task: string; steps: string[] }> }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.

@@ -508,8 +508,9 @@ const ownersForLiveSteps = (owners: Record<string, string[]> | undefined, steps:
 }
 // Launch order, newest last, kept apart from the map because an object lists integer-like keys
 // first. A relaunch moves its id to the end. Lost notifications cannot grow the map past the cap.
-// `attributed` outlives the owner entry: a task whose step finished still has a known owner.
-const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activity, 'owners' | 'ownerOrder' | 'attributed'> => {
+// `launchOwners` outlives the owner entry: a task whose step finished or reopened still has a
+// known owner. A relaunch with an unknown owner drops the task, so it reads as unknown.
+const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activity, 'owners' | 'ownerOrder' | 'launchOwners'> => {
   const owners = { ...(a.owners ?? {}) }
   delete owners[id]
   if (stepIds.length > 0) owners[id] = stepIds
@@ -519,8 +520,8 @@ const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activit
     const oldest = order.shift()
     if (oldest !== undefined) delete owners[oldest]
   }
-  const attributed = [...(a.attributed ?? []).filter(k => k !== id), ...(stepIds.length > 0 ? [id] : [])].slice(-OWNER_CAP)
-  return { owners, ownerOrder: order, attributed }
+  const launchOwners = [...(a.launchOwners ?? []).filter(row => row.task !== id), ...(stepIds.length > 0 ? [{ task: id, steps: stepIds }] : [])].slice(-OWNER_CAP)
+  return { owners, ownerOrder: order, launchOwners }
 }
 const dropFinishedOwners = async ($: EngineInterface): Promise<void> => {
   const steps = (await read($, ledger)).steps
@@ -1070,7 +1071,10 @@ const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidat
   const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
     .map(row => ({ kind: 'premature_completion', ...row }))
   const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
-    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: Object.entries(a.owners ?? {}).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }))
+    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: [...new Set([
+      ...Object.entries(a.owners ?? {}).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id),
+      ...(a.launchOwners ?? []).filter(row => row.steps.includes(step.id)).map(row => row.task),
+    ])] }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
@@ -1086,7 +1090,7 @@ const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined
     const a = await read($, activity)
     const snapshot: GateSnapshot = { v: 2, session_id: await $.session.id(), turn_id: t.currentId,
       open: t.gatedTurnId === t.currentId ? [] : open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })),
-      candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.attributed ?? [])])], response: fresh?.response, held: fresh?.held ?? [] }
+      candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [] }
     while (utf8Bytes(snapshot) > 16 * 1024 && snapshot.candidates.length > 0) {
       snapshot.candidates.pop()
       snapshot.truncated = true
@@ -2302,7 +2306,7 @@ export const register: Register = on => {
     const text = textOf(stored.message.content)
     const current = await read($, turn)
     if (current.currentId !== observed.turnId) return stored
-    const arrows = waitingArrowIds(text, new Set((await read($, ledger)).steps.filter(step => step.cleared !== true).map(step => step.id)))
+    const arrows = waitingArrowIds(text, new Set(visibleSteps((await read($, ledger)).steps).map(step => step.id)))
     await update($, turn, cur => {
       if (cur.currentId !== observed.turnId || cur.lastText?.order !== observed.order) return cur
       const fresh = cur.freshness?.turnId === observed.turnId ? cur.freshness : freshTurn(observed.turnId!)
