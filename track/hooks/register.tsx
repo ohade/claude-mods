@@ -510,7 +510,7 @@ const ownersForLiveSteps = (owners: Record<string, string[]> | undefined, steps:
 // first. A relaunch moves its id to the end. Lost notifications cannot grow the map past the cap.
 // `launchOwners` outlives the owner entry: a task whose step finished or reopened still has a
 // known owner. A relaunch with an unknown owner drops the task, so it reads as unknown.
-const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activity, 'owners' | 'ownerOrder' | 'launchOwners'> => {
+const rememberOwner = (a: Activity, id: string, stepIds: string[], steps: Step[]): Pick<Activity, 'owners' | 'ownerOrder' | 'launchOwners'> => {
   const owners = { ...(a.owners ?? {}) }
   delete owners[id]
   if (stepIds.length > 0) owners[id] = stepIds
@@ -520,22 +520,19 @@ const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activit
     const oldest = order.shift()
     if (oldest !== undefined) delete owners[oldest]
   }
-  const launchOwners = [...(a.launchOwners ?? []).filter(row => row.task !== id), ...(stepIds.length > 0 ? [{ task: id, steps: stepIds }] : [])].slice(-OWNER_CAP)
+  const identities = steps.filter(row => stepIds.includes(row.id)).map(row => ({ id: row.id, subject: norm(row.subject) }))
+  const launchOwners = [...(a.launchOwners ?? []).filter(row => row.task !== id), ...(identities.length > 0 ? [{ task: id, steps: identities }] : [])].slice(-OWNER_CAP)
   return { owners, ownerOrder: order, launchOwners }
 }
-const ownerTasksForStep = (a: Activity, stepId: string): string[] => [...new Set([
-  ...Object.entries(a.owners ?? {}).filter(([, ids]) => ids.includes(stepId)).map(([id]) => id),
-  ...(a.launchOwners ?? []).filter(row => row.steps.includes(stepId)).map(row => row.task),
-])]
-const pruneReplacedOwners = async ($: EngineInterface, replacedIds: string[]): Promise<void> => {
-  if (replacedIds.length === 0) return
-  const replaced = new Set(replacedIds)
-  await update($, activity, a => {
-    const owners = Object.fromEntries(Object.entries(a.owners ?? {}).map(([task, ids]) => [task, ids.filter(id => !replaced.has(id))] as const).filter(([, ids]) => ids.length > 0))
-    // Keep the task attributed even when its old rows are gone: it is known to
-    // belong to other work, rather than being an unknown owner of the new row.
-    const launchOwners = a.launchOwners?.map(row => ({ ...row, steps: row.steps.filter(id => !replaced.has(id)) }))
-    return { ...a, ...(a.owners !== undefined && { owners }), ...(a.launchOwners !== undefined && { launchOwners }) }
+// TRACK-27 refuter 6: a reused id can name different work. Launch identity is
+// authoritative when present; only tasks without a launch row use the legacy id map.
+const ownerTasksForStep = (a: Activity, step: Step): string[] => {
+  const launches = new Map((a.launchOwners ?? []).map(row => [row.task, row.steps] as const))
+  const subject = norm(step.subject)
+  return [...new Set([...Object.keys(a.owners ?? {}), ...launches.keys()])].filter(task => {
+    const identities = launches.get(task)
+    return identities === undefined ? a.owners?.[task]?.includes(step.id) === true
+      : identities.some(row => row.id === step.id && row.subject === subject)
   })
 }
 const dropFinishedOwners = async ($: EngineInterface): Promise<void> => {
@@ -973,7 +970,10 @@ const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId:
   const bash = tool === 'Bash' && typeof callId === 'string' && callId !== ''
   if (!edit && !bash && touched.length === 0) return false
   const completed = after.steps.filter(step => touched.includes(step.id) && step.status === 'completed' && before.steps.find(old => old.id === step.id)?.status !== 'completed')
-    .map(step => ({ id: step.id, owner_task_ids: ownerTasksForStep(beforeActivity, step.id) }))
+    .map(step => {
+      const previous = before.steps.find(old => old.id === step.id)
+      return { id: step.id, owner_task_ids: previous === undefined ? [] : ownerTasksForStep(beforeActivity, previous) }
+    })
   await update($, turn, current => {
     if (current.currentId !== start.currentId) return current
     const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(start.currentId!)
@@ -1086,7 +1086,7 @@ const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidat
   const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
     .map(row => ({ kind: 'premature_completion', ...row }))
   const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
-    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: ownerTasksForStep(a, step.id) }))
+    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: ownerTasksForStep(a, step) }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
@@ -2912,8 +2912,9 @@ export const register: Register = on => {
       const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
       if (launched?.status === 'async_launched' && typeof launched.agentId === 'string') {
         const agentId = launched.agentId
-        const ids = agentLaunchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
-        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids) }))
+        const steps = (await read($, ledger)).steps
+        const ids = agentLaunchOwner(steps, (await read($, turn)).currentId)
+        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids, steps) }))
       }
 
       return ran
@@ -2939,8 +2940,9 @@ export const register: Register = on => {
     const ran = await next(e)
     const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
     if (e.agentId === undefined && typeof taskId === 'string') {
-      const ids = launchOwner((await read($, ledger)).steps, (await read($, turn)).currentId)
-      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids) }))
+      const steps = (await read($, ledger)).steps
+      const ids = launchOwner(steps, (await read($, turn)).currentId)
+      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids, steps) }))
     }
 
     return ran
@@ -2979,12 +2981,7 @@ export const register: Register = on => {
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
-    let replacedIds: string[] = []
-    await update<Ledger>($, ledger, cur => {
-      replacedIds = cur.steps.filter(s => s.source === 'plan').map(s => s.id)
-      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }
-    })
-    await pruneReplacedOwners($, replacedIds)
+    await update<Ledger>($, ledger, cur => ({ ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
     await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
@@ -3130,19 +3127,14 @@ export const register: Register = on => {
         personNotice = restoreNotice({ by: notice.uuid, from, steps: steps.length, visibleSteps: visibleStepCount, questions: displayed })
       }
     }
-    let replacedIds: string[] = []
     await update<Ledger>($, ledger, cur => {
-      replacedIds = []
       if (mechanical && !sameValue(cur, before)) {
         refusal = 'track: ledger changed while the restore receipt was pending; nothing was restored. Retry against the current ledger.'
         return cur
       }
-      const nextLedger = mechanical ? proposed : propose(cur)
-      if (replace && steps.length > 0) replacedIds = cur.steps.map(s => s.id)
-      return nextLedger
+      return mechanical ? proposed : propose(cur)
     })
     if (refusal !== undefined) return failed(refusal)
-    await pruneReplacedOwners($, replacedIds)
     // The person-facing notice is not a receipt. A refusal leaves the restore in place;
     // the pane still has the saved questions and answers.
     if (personNotice !== undefined) {

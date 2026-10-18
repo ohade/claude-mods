@@ -71,7 +71,7 @@ for (const replacement of ['full-plan', 'restore'] as const) {
     expect((await stop($)).block).toBe(STALE)
     expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'stale_in_progress', id: 'plan:1', owner_task_ids: [] }))
     expect(fixture.snapshot().attributed_task_ids).toContain(TASK)
-    expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: [] })
+    expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: [{ id: 'plan:1', subject: 'start the dev server' }] })
   })
 }
 
@@ -106,7 +106,7 @@ test('inserting after a row keeps its launch ownership', async ($, on) => {
   await fixture.launch()
   await invoke($, 'mcp__track__track_steps', { steps: ['Write the migration'], after: 'plan:1' })
   await response($)
-  expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: ['plan:1'] })
+  expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: [{ id: 'plan:1', subject: 'start the dev server' }] })
   expect((await stop($)).block).toBeUndefined()
 })
 
@@ -119,7 +119,7 @@ for (const tool of ['TodoWrite', 'mcp__track__track_steps'] as const) {
     await fixture.launch()
     await invoke($, tool, tool === 'TodoWrite' ? { todos: [{ content: 'Start the dev server!', status: 'in_progress' }] } : { steps: ['Write the migration'] })
     await response($)
-    expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: [id] })
+    expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: [{ id, subject: 'start the dev server' }] })
     expect((await stop($)).block).toBeUndefined()
   })
 }
