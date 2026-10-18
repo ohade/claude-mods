@@ -921,7 +921,8 @@ const waitingArrowIds = (text: string): string[] => {
     } else if (boundary !== null && !(boundary[1]![0] === '`' && boundary[2]!.includes('`'))) {
       fence = { char: boundary[1]![0]!, size: boundary[1]!.length }
     } else {
-      const arrow = /^ {0,3}👉[ \t]+((?:plan|task|todo):\S+):[ \t]+(\S.*)$/.exec(line)
+      // A todo id keeps its spaces (`todo:ship it`); no step id has a colon after its prefix.
+      const arrow = /^ {0,3}👉[ \t]+((?:plan|task|todo):[^:\n]*[^:\s]):[ \t]+(\S.*)$/.exec(line)
       if (arrow !== null) ids.push(arrow[1]!)
     }
   }
@@ -935,7 +936,12 @@ const stepReceiptIds = (tool: string, input: Record<string, unknown>, result: un
     const row = after.steps.find(step => step.id === String(input.id))
     return row !== undefined && row.status === input.status && STEP_STATUSES.includes(input.status as Step['status']) ? [row.id] : []
   }
-  if (tool === TRACK_STEPS) return typeof result === 'string' && /^(Tracking \d+ steps:|Inserted after )/.test(result) ? after.steps.filter(step => step.source === 'plan').map(step => step.id) : []
+  if (tool === TRACK_STEPS) {
+    if (typeof result !== 'string') return []
+    if (/^Tracking \d+ steps:/.test(result)) return after.steps.filter(step => step.source === 'plan').map(step => step.id)
+    // Only the inserted rows: a row the insert merely sits beside keeps its own turn's state.
+    return result.startsWith('Inserted after ') ? after.steps.filter(step => step.source === 'plan' && !before.steps.some(old => old.id === step.id)).map(step => step.id) : []
+  }
   if (tool === 'TaskCreate') return output?.task?.id !== undefined ? after.steps.filter(step => step.taskId === String(output.task!.id)).map(step => step.id) : []
   if (tool === 'TaskUpdate') return output?.success !== false && (input.status === 'deleted' || STEP_STATUSES.includes(input.status as Step['status'])) ? before.steps.filter(step => step.taskId === String(input.taskId)).map(step => step.id) : []
   if (tool === 'TodoWrite') return Array.isArray(output?.newTodos) ? distinctIds([...before.steps, ...after.steps].filter(step => step.source === 'todo').map(step => step.id)) : []
@@ -1049,7 +1055,9 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
   })()
 }
 
-type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; candidates: FreshnessCandidate[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
+// `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
+// any step, so the helper reports unknown ownership instead of a stale step.
+type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
 
@@ -1072,9 +1080,10 @@ const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.cleared !== true && q.status === 'open' && q.turnId === t.currentId)
     const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
+    const a = await read($, activity)
     const snapshot: GateSnapshot = { v: 2, session_id: await $.session.id(), turn_id: t.currentId,
       open: t.gatedTurnId === t.currentId ? [] : open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })),
-      candidates: freshnessCandidates(t, l, await read($, activity)), response: fresh?.response, held: fresh?.held ?? [] }
+      candidates: freshnessCandidates(t, l, a), attributed_task_ids: Object.keys(a.owners ?? {}), response: fresh?.response, held: fresh?.held ?? [] }
     while (utf8Bytes(snapshot) > 16 * 1024 && snapshot.candidates.length > 0) {
       snapshot.candidates.pop()
       snapshot.truncated = true
@@ -1090,7 +1099,13 @@ const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined
 const freshnessNudge = async ($: EngineInterface, code: string, text: string, remind = false): Promise<void> => {
   let show = false
   await update($, turn, current => {
-    if (typeof current.currentId !== 'string') { show = true; return current }
+    show = false // a compare-and-set retry decides again from the newer turn
+    if (typeof current.currentId !== 'string') {
+      // No turn record to hold it: show each turnless nudge once per session.
+      if (current.turnlessNudged?.includes(code)) return current
+      show = true
+      return { ...current, turnlessNudged: [...(current.turnlessNudged ?? []), code] }
+    }
     const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(current.currentId)
     if (fresh.nudged.includes(code)) return current
     show = true
@@ -1110,7 +1125,9 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
   if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) await freshnessNudge($, 'bash', BASH_NUDGE, true)
   if (snapshot.candidates.length === 0) return undefined
   const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
-  const config = await $.env.get('CLAUDE_CONFIG_DIR')
+  // Unset is normal: Claude Code then uses ~/.claude, as stop-gate.py and writer-lock.py do.
+  const home = await $.env.get('HOME')
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home?.startsWith('/') ? `${home}/.claude` : undefined)
   if (!root?.startsWith('/') || !config?.startsWith('/')) {
     await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.')
     return undefined
@@ -1132,6 +1149,7 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
       if (receipt?.decision !== 'block' || typeof receipt.reason !== 'string' || receipt.reason.trim() === '') continue
       let currentTurn = false
       await update($, turn, current => {
+        currentTurn = false
         if (current.currentId !== snapshot.turn_id) return current
         const fresh = current.freshness?.turnId === snapshot.turn_id ? current.freshness : freshTurn(snapshot.turn_id!)
         currentTurn = true

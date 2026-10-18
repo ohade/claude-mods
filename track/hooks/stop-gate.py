@@ -40,7 +40,11 @@ def expire_holds(directory):
         if re.fullmatch(r"[0-9a-f]{64}", path.name) is None:
             continue
         try:
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            # A FIFO or device with a hold name must not stall Stop: skip it,
+            # and never block on open if it replaces the file after lstat.
+            if not stat.S_ISREG(path.lstat().st_mode):
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "r") as handle:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 info = os.fstat(handle.fileno())
@@ -62,8 +66,9 @@ def expire_holds(directory):
 
 
 def claim_once(session, turn, kind):
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    if not config or not Path(config).is_absolute():
+    # Unset is normal: Claude Code then uses ~/.claude (writer-lock.py does the same).
+    config = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    if not Path(config).is_absolute():
         raise ValueError("claim configuration")
     directory = Path(config) / "state" / "track" / "stop-holds"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -83,7 +88,7 @@ def claim_once(session, turn, kind):
     return True
 
 
-def freshness_reason(candidate, payload):
+def freshness_reason(candidate, payload, attributed):
     kind = candidate.get("kind")
     step = candidate.get("id")
     if kind != "untracked_edit" and (not isinstance(step, str) or not step.strip()):
@@ -101,6 +106,11 @@ def freshness_reason(candidate, payload):
             return None
         running = {task["id"] for task in tasks}
         owner = next((owner for owner in owners if owner in running), None)
+        # A running task with no recorded owner might own this step: unknown, not stale.
+        if kind == "stale_in_progress" and owner is None and running and (
+                not isinstance(attributed, list) or not running <= set(attributed)):
+            unavailable("owner identity")
+            return None
         if kind == "premature_completion":
             return None if owner is None else (
                 f"track: {step} is completed while its owned task {owner} is still running. "
@@ -140,7 +150,7 @@ def freshness_decision(payload, snapshot):
         for row in rows:
             if not isinstance(row, dict) or row.get("kind") != kind:
                 continue
-            reason = freshness_reason(row, payload)
+            reason = freshness_reason(row, payload, snapshot.get("attributed_task_ids"))
             if reason is None:
                 continue
             try:

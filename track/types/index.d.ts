@@ -136,6 +136,8 @@ export type Turn = {
   // TRACK-27: current-turn facts only, never persisted in ledger rows.
   freshness?: StepFreshness
   stepReminder?: string
+  // Nudge codes already shown while the turn identity was unknown, once per session.
+  turnlessNudged?: string[]
 }
 
 // A question-like main prompt waiting for a Track row (CC-179). `head` is its first line, which a

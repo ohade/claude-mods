@@ -59,6 +59,7 @@ class StopGateTests(unittest.TestCase):
                 with self.subTest(kind=kind):
                     candidate = {"kind": kind, "id": "task:7", "owner_task_ids": ["worker-7"] if kind == "premature_completion" else []}
                     snapshot = {"v": 2, "session_id": SID, "turn_id": kind, "open": [], "candidates": [candidate],
+                                "attributed_task_ids": ["worker-7"],
                                 "response": {"turn_id": kind, "request_id": "fixture-main"}, "held": []}
                     payload = {"session_id": SID, "background_tasks": [{"id": "worker-7", "type": "agent"}]}
                     self.assertEqual(self.invoke(payload, snapshot, config), {"decision": "block", "reason": reason})

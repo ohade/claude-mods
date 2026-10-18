@@ -35,6 +35,8 @@ class StepFreshnessStopTests(unittest.TestCase):
     def snapshot(self, candidates=None, **extra):
         return {"v": 2, "session_id": SID, "turn_id": "t1", "open": [],
                 "candidates": [candidate()] if candidates is None else candidates,
+                # FIXTURE: worker-1 and other have recorded owners, as the plugin snapshot lists them.
+                "attributed_task_ids": ["worker-1", "other"],
                 "response": {"turn_id": "t1", "request_id": "response-1"}, "held": [], **extra}
 
     def invoke(self, snapshot=None, payload=None, plugin=False):
