@@ -521,8 +521,13 @@ const rememberOwner = (a: Activity, id: string, stepIds: string[], steps: Step[]
     if (oldest !== undefined) delete owners[oldest]
   }
   const identities = steps.filter(row => stepIds.includes(row.id)).map(row => ({ id: row.id, subject: norm(row.subject) }))
-  const launchOwners = [...(a.launchOwners ?? []).filter(row => row.task !== id), ...(identities.length > 0 ? [{ task: id, steps: identities }] : [])].slice(-OWNER_CAP)
-  return { owners, ownerOrder: order, launchOwners }
+  const launchOwners = [...(a.launchOwners ?? []).filter(row => row.task !== id), ...(identities.length > 0 ? [{ task: id, steps: identities }] : [])]
+  while (launchOwners.length > OWNER_CAP) {
+    const oldest = launchOwners.shift()
+    // An evicted identity is unknown, not permission to use its legacy id map.
+    if (oldest !== undefined) delete owners[oldest.task]
+  }
+  return { owners, ownerOrder: order.filter(task => owners[task] !== undefined), launchOwners }
 }
 // TRACK-27 refuter 6: a reused id can name different work. Launch identity is
 // authoritative when present; only tasks without a launch row use the legacy id map.
@@ -972,7 +977,7 @@ const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId:
   const completed = after.steps.filter(step => touched.includes(step.id) && step.status === 'completed' && before.steps.find(old => old.id === step.id)?.status !== 'completed')
     .map(step => {
       const previous = before.steps.find(old => old.id === step.id)
-      return { id: step.id, owner_task_ids: previous === undefined ? [] : ownerTasksForStep(beforeActivity, previous) }
+      return { id: step.id, owner_task_ids: ownerTasksForStep(beforeActivity, previous ?? step) }
     })
   await update($, turn, current => {
     if (current.currentId !== start.currentId) return current
