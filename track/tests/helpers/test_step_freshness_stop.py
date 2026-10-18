@@ -106,8 +106,9 @@ class StepFreshnessStopTests(unittest.TestCase):
                 self.assertEqual(self.invoke(snapshot)[0], {})
         self.assertEqual(self.invoke()[0], {"decision": "block", "reason": STALE})
 
-    def test_subagent_and_stop_hook_active_do_not_consume_a_hold(self):
-        for extra in [{"agent_id": "worker"}, {"stop_hook_active": True}]:
+    def test_subagent_does_not_consume_a_hold(self):
+        # stop_hook_active no longer bypasses freshness (Ohad, 2026-10-18): test_track27_recheck.py.
+        for extra in [{"agent_id": "worker"}]:
             with self.subTest(extra=extra):
                 self.assertEqual(self.invoke(payload={"session_id": SID, "background_tasks": [], **extra})[0], {})
         self.assertEqual(self.invoke()[0], {"decision": "block", "reason": STALE})

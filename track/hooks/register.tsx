@@ -2539,9 +2539,16 @@ export const register: Register = on => {
         return { ...below, block: uncoveredBlock(uncovered) }
       }
     }
-    if (e.stop_hook_active || t.currentId === null) {
-      if (!e.stop_hook_active && t.currentId === null) await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.')
+    if (t.currentId === null) {
+      if (!e.stop_hook_active) await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.')
       return below
+    }
+    // Ohad, 2026-10-18: every Stop after a block carries stop_hook_active, and it still checks
+    // the freshness kinds. Each kind's shared hold allows one block per turn, so this cannot
+    // loop. The open-question gate keeps its bypass.
+    if (e.stop_hook_active) {
+      const block = await stepStop($, e)
+      return block === undefined ? below : { ...below, block }
     }
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)

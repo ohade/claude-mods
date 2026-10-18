@@ -207,7 +207,8 @@ test('a prior-turn waiting step requires no repeated ask', async ($, on) => {
   expect((await stop($)).block).toBeUndefined()
 })
 
-for (const bypass of [{ agent_id: 'worker' }, { stop_hook_active: true }]) {
+// stop_hook_active no longer bypasses freshness (Ohad, 2026-10-18): track27-recheck.test.tsx.
+for (const bypass of [{ agent_id: 'worker' }]) {
   test(`Stop bypass ${JSON.stringify(bypass)} does not consume a freshness hold`, async ($, on) => {
     const fixture = await prepare($, on)
     await mark($, 'in_progress')

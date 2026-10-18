@@ -166,14 +166,16 @@ def freshness_decision(payload, snapshot):
 def decision(payload, snapshot, plugin=False):
     if not isinstance(payload, dict) or not isinstance(snapshot, dict):
         return {}
-    if payload.get("agent_id") is not None or payload.get("stop_hook_active") is True:
+    if payload.get("agent_id") is not None:
         return {}
     if snapshot.get("v") not in (1, 2) or snapshot.get("session_id") != payload.get("session_id"):
         return {}
     if not isinstance(snapshot.get("turn_id"), str):
         return {}
     rows = snapshot.get("open")
-    if not isinstance(rows, list) or not rows or plugin:
+    # Ohad, 2026-10-18: a Stop after a block (stop_hook_active) still checks the freshness kinds,
+    # each once per turn through the shared claim. The open-question gate keeps its bypass.
+    if payload.get("stop_hook_active") is True or not isinstance(rows, list) or not rows or plugin:
         return freshness_decision(payload, snapshot) if snapshot.get("v") == 2 else {}
     first = rows[0]
     if not isinstance(first, dict) or not isinstance(first.get("id"), int) or not isinstance(first.get("head"), str):
