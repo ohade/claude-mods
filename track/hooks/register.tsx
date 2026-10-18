@@ -523,6 +523,21 @@ const rememberOwner = (a: Activity, id: string, stepIds: string[]): Pick<Activit
   const launchOwners = [...(a.launchOwners ?? []).filter(row => row.task !== id), ...(stepIds.length > 0 ? [{ task: id, steps: stepIds }] : [])].slice(-OWNER_CAP)
   return { owners, ownerOrder: order, launchOwners }
 }
+const ownerTasksForStep = (a: Activity, stepId: string): string[] => [...new Set([
+  ...Object.entries(a.owners ?? {}).filter(([, ids]) => ids.includes(stepId)).map(([id]) => id),
+  ...(a.launchOwners ?? []).filter(row => row.steps.includes(stepId)).map(row => row.task),
+])]
+const pruneReplacedOwners = async ($: EngineInterface, replacedIds: string[]): Promise<void> => {
+  if (replacedIds.length === 0) return
+  const replaced = new Set(replacedIds)
+  await update($, activity, a => {
+    const owners = Object.fromEntries(Object.entries(a.owners ?? {}).map(([task, ids]) => [task, ids.filter(id => !replaced.has(id))] as const).filter(([, ids]) => ids.length > 0))
+    // Keep the task attributed even when its old rows are gone: it is known to
+    // belong to other work, rather than being an unknown owner of the new row.
+    const launchOwners = a.launchOwners?.map(row => ({ ...row, steps: row.steps.filter(id => !replaced.has(id)) }))
+    return { ...a, ...(a.owners !== undefined && { owners }), ...(a.launchOwners !== undefined && { launchOwners }) }
+  })
+}
 const dropFinishedOwners = async ($: EngineInterface): Promise<void> => {
   const steps = (await read($, ledger)).steps
   await update($, activity, a => {
@@ -952,13 +967,13 @@ const stepReceiptIds = (tool: string, input: Record<string, unknown>, result: un
   return []
 }
 
-const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId: unknown, touched: string[], before: Ledger, after: Ledger, owners: Activity['owners']): Promise<boolean> => {
+const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId: unknown, touched: string[], before: Ledger, after: Ledger, beforeActivity: Activity): Promise<boolean> => {
   if (typeof start.currentId !== 'string' || start.currentId === '') return false
   const edit = EDIT_TOOLS.has(tool) && typeof callId === 'string' && callId !== ''
   const bash = tool === 'Bash' && typeof callId === 'string' && callId !== ''
   if (!edit && !bash && touched.length === 0) return false
   const completed = after.steps.filter(step => touched.includes(step.id) && step.status === 'completed' && before.steps.find(old => old.id === step.id)?.status !== 'completed')
-    .map(step => ({ id: step.id, owner_task_ids: Object.entries(owners ?? {}).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id) }))
+    .map(step => ({ id: step.id, owner_task_ids: ownerTasksForStep(beforeActivity, step.id) }))
   await update($, turn, current => {
     if (current.currentId !== start.currentId) return current
     const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(start.currentId!)
@@ -1067,14 +1082,11 @@ const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a
 
 const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidate[] => {
   const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
-  const visible = l.steps.filter(step => step.cleared !== true)
+  const visible = visibleSteps(l.steps)
   const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
     .map(row => ({ kind: 'premature_completion', ...row }))
   const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
-    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: [...new Set([
-      ...Object.entries(a.owners ?? {}).filter(([, ids]) => ids.includes(step.id)).map(([id]) => id),
-      ...(a.launchOwners ?? []).filter(row => row.steps.includes(step.id)).map(row => row.task),
-    ])] }))
+    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: ownerTasksForStep(a, step.id) }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
@@ -2062,13 +2074,13 @@ export const register: Register = on => {
     if (e.agentId !== undefined) return next(e)
     const current = await read($, turn)
     const beforeLedger = await read($, ledger)
-    const beforeOwners = (await read($, activity)).owners
+    const beforeActivity = await read($, activity)
     const owner = cancelOwner(beforeLedger.steps, e.tool, current.currentId)
     const owners = owner === undefined ? [] : [owner]
     if (!mutationTools.has(e.tool)) {
       const ran = await next(e)
       await applyCancel($, owners, ran)
-      if (ran.deny === undefined && ran.isError !== true && await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeOwners)) await publishGate($)
+      if (ran.deny === undefined && ran.isError !== true && await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeActivity)) await publishGate($)
       return ran
     }
     const before = JSON.stringify(beforeLedger)
@@ -2077,7 +2089,7 @@ export const register: Register = on => {
     if (ran.deny !== undefined || ran.isError === true) return ran
     const afterLedger = await read($, ledger)
     const touched = stepReceiptIds(e.tool, e, ran.result, beforeLedger, afterLedger)
-    const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeOwners)
+    const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeActivity)
     if (before === JSON.stringify(afterLedger)) {
       if (recorded) await publishGate($)
       return ran
@@ -2967,7 +2979,12 @@ export const register: Register = on => {
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
-    await update<Ledger>($, ledger, cur => ({ ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
+    let replacedIds: string[] = []
+    await update<Ledger>($, ledger, cur => {
+      replacedIds = cur.steps.filter(s => s.source === 'plan').map(s => s.id)
+      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }
+    })
+    await pruneReplacedOwners($, replacedIds)
     await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
@@ -3113,14 +3130,19 @@ export const register: Register = on => {
         personNotice = restoreNotice({ by: notice.uuid, from, steps: steps.length, visibleSteps: visibleStepCount, questions: displayed })
       }
     }
+    let replacedIds: string[] = []
     await update<Ledger>($, ledger, cur => {
+      replacedIds = []
       if (mechanical && !sameValue(cur, before)) {
         refusal = 'track: ledger changed while the restore receipt was pending; nothing was restored. Retry against the current ledger.'
         return cur
       }
-      return mechanical ? proposed : propose(cur)
+      const nextLedger = mechanical ? proposed : propose(cur)
+      if (replace && steps.length > 0) replacedIds = cur.steps.map(s => s.id)
+      return nextLedger
     })
     if (refusal !== undefined) return failed(refusal)
+    await pruneReplacedOwners($, replacedIds)
     // The person-facing notice is not a receipt. A refusal leaves the restore in place;
     // the pane still has the saved questions and answers.
     if (personNotice !== undefined) {
