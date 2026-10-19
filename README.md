@@ -314,6 +314,9 @@ Legacy imports add explicit owner IDs, a matching durable head and source proven
 changing original row values or IDs. A foreign import requires a retained CLOSED lease guard.
 Export and import join the save queue, require writer ownership, and reconcile pending save
 recovery under the shared store lock before reading records. Repeated imports are safe.
+An exact retention-only marker does not count as a durable head. After the lease check,
+import replaces that marker with the verified head. The next cleanup observation starts
+a new seven-day retention clock, so imported history can remain longer.
 Do not retire a legacy store until its original values and the added metadata have been verified.
 
 ### Local checkpoint/restore contract v1

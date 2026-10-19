@@ -1612,7 +1612,7 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       if (source.checkpoint !== undefined && checkpoint.checksum !== source.checkpoint.checksum) throw new Error('migration checkpoint checksum does not match its rows')
       const value = { ...source, session_id: target, ledger: identified, generation, checkpoint, import_provenance: provenance }
       const head: SessionHead = { v: 1, session_id: target, generation, checkpoint }
-      const currentHead = await $.store.get(`h:${target}`)
+      const currentHead = sessionHead(await $.store.get(`h:${target}`), target)
       if (current !== undefined && !sameValue(current, value) && !sameValue(current, record.value)) throw new Error(`migration conflict for session ${target}; both records were kept`)
       if (currentHead !== undefined && !sameValue(currentHead, head)) throw new Error(`migration conflict: session ${target} has a durable head; source was kept`)
       if (!sameValue(current, value) || currentHead === undefined) {

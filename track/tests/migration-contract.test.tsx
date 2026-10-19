@@ -84,3 +84,65 @@ test('corrupt or conflicting migration data changes no destination record', asyn
   expect(conflict.reason).toContain('conflict')
   expect(store.held.get(`s:${OLD}`)).toEqual(different)
 })
+
+for (const present of [false, true]) {
+  test(`a closed retention-only marker permits import with the legacy body ${present ? 'present' : 'missing'}`, async ($, on) => {
+    const { files, store } = prepare(on, { [`s:${OLD}`]: legacy }, { guardStates: { [OLD]: 'closed' } })
+    await exported($)
+    const source = files.get('/backup.json')
+    if (!present) store.held.delete(`s:${OLD}`)
+    store.held.set(`h:${OLD}`, { v: 1, session_id: OLD, retentionOnly: true, closedAt: 123 })
+
+    const first = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+    expect(first).toMatchObject({ ok: true, imported: present ? [] : [OLD], verified: [OLD] })
+    const saved = store.held.get(`s:${OLD}`) as { generation: string; checkpoint: unknown; ledger: unknown }
+    expect(saved.ledger).toEqual({ ...legacy.ledger, session_id: OLD, questions: legacy.ledger.questions.map(q => ({ ...q, session_id: OLD })) })
+    expect(saved.generation).toMatch(/^[0-9a-f-]{36}$/)
+    expect(store.held.get(`h:${OLD}`)).toEqual({ v: 1, session_id: OLD, generation: saved.generation, checkpoint: saved.checkpoint })
+    const second = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+    expect(second).toMatchObject({ ok: true, imported: [], verified: [OLD] })
+    expect(store.held.get(`s:${OLD}`)).toEqual(saved)
+    expect(files.get('/backup.json')).toBe(source)
+  })
+}
+
+test('a retention-only marker cannot bypass a live owner lease', async ($, on) => {
+  const { files, store } = prepare(on, { [`s:${OLD}`]: legacy })
+  await exported($)
+  const source = files.get('/backup.json')
+  const marker = { v: 1, session_id: OLD, retentionOnly: true, closedAt: 123 }
+  store.held.set(`h:${OLD}`, marker)
+  const result = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+  expect(result.ok).toBe(false)
+  expect(result.reason).toContain('live or unknown')
+  expect(store.held.get(`s:${OLD}`)).toEqual(legacy)
+  expect(store.held.get(`h:${OLD}`)).toEqual(marker)
+  expect(files.get('/backup.json')).toBe(source)
+})
+
+test('a retention-only marker cannot authorize overwriting a different body', async ($, on) => {
+  const { store } = prepare(on, { [`s:${OLD}`]: legacy }, { guardStates: { [OLD]: 'closed' } })
+  await exported($)
+  const changed = { ...legacy, savedAt: 2 }
+  const marker = { v: 1, session_id: OLD, retentionOnly: true, closedAt: 123 }
+  store.held.set(`s:${OLD}`, changed)
+  store.held.set(`h:${OLD}`, marker)
+  const result = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+  expect(result.ok).toBe(false)
+  expect(result.reason).toContain('conflict')
+  expect(store.held.get(`s:${OLD}`)).toEqual(changed)
+  expect(store.held.get(`h:${OLD}`)).toEqual(marker)
+})
+
+for (const extra of [{ generation: 'not-a-generation' }, { retentionOnly: false }, { session_id: SESSION }]) {
+  test(`a malformed retention marker stays protected: ${JSON.stringify(extra)}`, async ($, on) => {
+    const { store } = prepare(on, { [`s:${OLD}`]: legacy }, { guardStates: { [OLD]: 'closed' } })
+    await exported($)
+    const marker = { v: 1, session_id: OLD, retentionOnly: true, closedAt: 123, ...extra }
+    store.held.set(`h:${OLD}`, marker)
+    const result = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+    expect(result.ok).toBe(false)
+    expect(store.held.get(`s:${OLD}`)).toEqual(legacy)
+    expect(store.held.get(`h:${OLD}`)).toEqual(marker)
+  })
+}
