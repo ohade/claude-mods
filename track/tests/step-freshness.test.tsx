@@ -21,7 +21,7 @@ const response = ($: Engine, text = 'The requested work is ready.', extra: objec
 const stop = ($: Engine, extra: object = {}) => $.classic.Stop({ session_id: SESSION, stop_hook_active: false, background_tasks: [], ...extra } as never)
 
 const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
-  mock.clock(on)
+  const clock = mock.clock(on)
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
   const turn = atomStore<Turn>(on, 'turn', { currentId: null, gatedTurnId: null, eventOrder: 0 })
   const activity = atomStore<Activity>(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} })
@@ -29,7 +29,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   atomStore(on, 'scroll', { questions: null, steps: null })
   pluginStore(on)
   const lines = logs(on)
-  const lower = { block: undefined as string | undefined, payload: {} as { background_tasks?: Array<{ id: string }> } }
+  const lower = { block: undefined as string | undefined, context: [] as string[], payload: {} as { background_tasks?: Array<{ id: string }> } }
   const work = { value: { result: 'fixture success' } as { result?: unknown; deny?: string; isError?: boolean } }
   const claim = { kind: 'stale_in_progress', reason: STALE, taken: false, denied: false, calls: 0 }
   const env = new Map<string, string>([['CLAUDE_PLUGIN_ROOT', '/fixture/track'], ['CLAUDE_CONFIG_DIR', '/fixture/config']])
@@ -37,7 +37,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('classic.Stop', (_, e) => { lower.payload = e; return lower.block === undefined ? {} : { block: lower.block } })
+  on('classic.Stop', (_, e) => { lower.payload = e; return { ...(lower.block !== undefined && { block: lower.block }), ...(lower.context.length > 0 && { additionalContext: lower.context }) } })
   on('prompt.submit', (_, e) => { contexts.push(...(e.context ?? [])); return { text: e.text } })
   on('tool.call', { tool: /^(Edit|Write|MultiEdit|NotebookEdit|Bash)$/ }, () => work.value)
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
@@ -60,9 +60,83 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
     return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr } }
   })
   await $.turn.start({ text: 'Continue the agreed work', turnId: 't1' } as never)
-  return { ledger, turn, activity, lines, lower, work, claim, contexts,
+  return { ledger, turn, activity, lines, lower, work, claim, contexts, clock,
     snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') }
 }
+
+// FIXTURE: TRACK-30 (2026-10-19). Candidate publication and native Stop context are
+// exercised here; test_finished_delegation_stop.py exercises the actual helper.
+const delegatedRow = (extra: Partial<Step> = {}): Step => step({ status: 'in_progress', delegated: true, followUp: true, activeTurnId: 'old-turn', ...extra })
+const finishedOwners = (a: Activity): Activity => ({ ...a, launchOwners: [{ task: 'worker-1', steps: [{ id: 'plan:1', subject: 'finish the change' }] }] })
+
+for (const activeTurnId of ['old-turn', 't1']) {
+  test(`TRACK-30 publishes a finished delegated row from ${activeTurnId}`, async ($, on) => {
+    const f = await prepare($, on, [delegatedRow({ activeTurnId })])
+    f.activity.value = finishedOwners(f.activity.value)
+    await response($)
+    await stop($)
+    expect(f.snapshot().candidates).toContainEqual({ kind: 'finished_delegation', id: 'plan:1', owner_task_ids: ['worker-1'] })
+  })
+}
+
+for (const extra of [{ followUp: undefined }, { delegated: false }, { cleared: true }, { status: 'paused' }, { status: 'completed' }, { status: 'waiting' }] as Partial<Step>[]) {
+  test(`TRACK-30 does not publish an acknowledged or inactive row: ${JSON.stringify(extra)}`, async ($, on) => {
+    const f = await prepare($, on, [delegatedRow(extra)])
+    f.activity.value = finishedOwners(f.activity.value)
+    await response($)
+    await stop($)
+    expect(f.snapshot().candidates.filter((row: { kind: string }) => row.kind === 'finished_delegation')).toEqual([])
+  })
+}
+
+test('TRACK-30 an explicit update after completion acknowledges the follow-up', async ($, on) => {
+  const f = await prepare($, on, [delegatedRow()])
+  f.activity.value = finishedOwners(f.activity.value)
+  await invoke($, 'mcp__track__mark_step', { id: 'plan:1', status: 'in_progress', delegated: true, note: 'Reviewed the result; another peer is still responsible.' })
+  await response($)
+  await stop($)
+  expect(f.ledger.value.steps[0]?.followUp).toBeUndefined()
+  expect(f.snapshot().candidates.filter((row: { kind: string }) => row.kind === 'finished_delegation')).toEqual([])
+})
+
+test('TRACK-30 a reused step id does not inherit the finished task of different work', async ($, on) => {
+  const f = await prepare($, on, [delegatedRow({ subject: 'Different work' })])
+  f.activity.value = finishedOwners(f.activity.value)
+  await response($)
+  await stop($)
+  expect(f.snapshot().candidates.filter((row: { kind: string }) => row.kind === 'finished_delegation')).toEqual([])
+})
+
+test('TRACK-30 long-turn review is nonblocking, lists open rows and preserves lower context once', async ($, on) => {
+  const f = await prepare($, on, [step(), step({ id: 'plan:2', status: 'paused' }), step({ id: 'plan:3', status: 'completed' })])
+  f.lower.context = ['existing lower-hook context']
+  await response($)
+  await f.clock.advance(299_999)
+  expect((await stop($)).additionalContext).toEqual(['existing lower-hook context'])
+  await f.clock.advance(2)
+  const reviewed = await stop($)
+  expect(reviewed.block).toBeUndefined()
+  expect(reviewed.additionalContext?.[0]).toBe('existing lower-hook context')
+  const reminder = reviewed.additionalContext?.slice(1).join('\n') ?? ''
+  expect(reminder).toContain('review open steps')
+  expect(reminder).toContain('plan:1 (pending)')
+  expect(reminder).toContain('plan:2 (paused)')
+  expect(reminder).not.toContain('plan:3')
+  expect((await stop($)).additionalContext).toEqual(['existing lower-hook context'])
+})
+
+test('TRACK-30 the long-turn reminder resets next turn and never runs for a subagent', async ($, on) => {
+  const f = await prepare($, on)
+  await response($)
+  await f.clock.advance(300_001)
+  expect((await stop($, { agent_id: 'worker-1' })).additionalContext).toBeUndefined()
+  expect((await stop($)).additionalContext?.join('\n')).toContain('review open steps')
+  await $.turn.start({ text: 'Continue the agreed work', turnId: 't2' } as never)
+  expect((await stop($)).additionalContext).toBeUndefined()
+  await f.clock.advance(300_001)
+  await response($)
+  expect((await stop($)).additionalContext?.join('\n')).toContain('review open steps')
+})
 
 test('stale current-turn step blocks once without a live owner', async ($, on) => {
   const fixture = await prepare($, on)

@@ -16,7 +16,7 @@ import time
 
 # TRACK-27 (approved 2026-10-17): the ordinary hook and plugin share these
 # messages and exclusive claims. Missing facts never authorize a hard block.
-KINDS = ("premature_completion", "stale_in_progress", "missing_waiting_request", "untracked_edit")
+KINDS = ("premature_completion", "finished_delegation", "stale_in_progress", "missing_waiting_request", "untracked_edit")
 HOLD_OWNER = "track-stop-hold-v1"
 TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -93,7 +93,7 @@ def freshness_reason(candidate, payload, attributed):
     step = candidate.get("id")
     if kind != "untracked_edit" and (not isinstance(step, str) or not step.strip()):
         return None
-    if kind in ("premature_completion", "stale_in_progress"):
+    if kind in ("premature_completion", "finished_delegation", "stale_in_progress"):
         tasks, owners = payload.get("background_tasks"), candidate.get("owner_task_ids")
         if not isinstance(tasks, list):
             unavailable("background task list")
@@ -101,13 +101,21 @@ def freshness_reason(candidate, payload, attributed):
         if not isinstance(owners, list) or not all(isinstance(owner, str) and owner for owner in owners):
             unavailable("owner receipt")
             return None
+        # TRACK-30: a completion flag without known owners is not evidence that
+        # all delegated work finished. Keep unknown ownership nonblocking.
+        if kind == "finished_delegation" and not owners:
+            unavailable("finished task owner receipt")
+            return None
+        if kind == "finished_delegation" and candidate.get("external_owner") is not False:
+            unavailable("complete local ownership declaration")
+            return None
         if not all(isinstance(task, dict) and isinstance(task.get("id"), str) for task in tasks):
             unavailable("background task identity")
             return None
         running = {task["id"] for task in tasks}
         owner = next((owner for owner in owners if owner in running), None)
         # A running task with no recorded owner might own this step: unknown, not stale.
-        if kind == "stale_in_progress" and owner is None and running and (
+        if kind in ("stale_in_progress", "finished_delegation") and owner is None and running and (
                 not isinstance(attributed, list) or not running <= set(attributed)):
             unavailable("owner identity")
             return None
@@ -118,6 +126,11 @@ def freshness_reason(candidate, payload, attributed):
             )
         if owner is not None:
             return None
+        if kind == "finished_delegation":
+            return (f"track: {step} is still delegated, but its recorded background tasks have finished. "
+                    "Call mark_step with completed or paused and the true result. "
+                    "If another owner remains, keep in_progress with delegated:true and a note naming that owner. "
+                    "Use delegated:false only when the main thread resumes work now, then finish.")
         return (f"track: {step} is still in_progress, but no work owns it. "
                 "Call mark_step with completed, paused, or waiting and the true result, then finish.")
     if kind == "missing_waiting_request":

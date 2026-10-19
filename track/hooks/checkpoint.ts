@@ -1,19 +1,9 @@
-import type { Ledger } from '../types'
+import type { Checkpoint, Ledger } from '../types'
 import { visibleSteps } from './steps'
 
 // v1 local checkpoint/restore contract. The handoff reliability release requires
 // receipts for actual Q/A and step values; display-row ids are not authority.
-export type Checkpoint = {
-  v: 1
-  ok: boolean
-  source_session: string
-  destination_session?: string
-  applied_checksum?: string
-  revision: number
-  checksum: string
-  counts: { questions: number; answers: number; steps: number }
-  reason?: string
-}
+export type { Checkpoint } from '../types'
 
 export const checkpointValues = (l: Ledger, session: string) => ({
   questions: l.questions.filter(q => q.cleared !== true).map(q => ({
@@ -24,6 +14,7 @@ export const checkpointValues = (l: Ledger, session: string) => ({
     sourceId: s.sourceId ?? `${session}:${s.id}`, subject: s.subject, status: s.status,
     note: s.note ?? null, startedAt: s.startedAt ?? null, endedAt: s.endedAt ?? null,
     ...(s.delegated === true && { delegated: true }),
+    ...(s.delegated === true && typeof s.external_owner === 'boolean' && { external_owner: s.external_owner }),
   })),
 })
 
