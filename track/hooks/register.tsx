@@ -1938,7 +1938,7 @@ const classifying = new Map<number, Promise<void>>()
 // current turn's input only when its summary is that input's first line and no other waiting
 // input shares it: one candidate alone is no evidence. Steps need a source. One question row
 // covers one input: reusing an open row that already covers one covers no second.
-// New steps never cover a prompt Haiku called a question.
+// Steps, new or reused after saving, never cover a prompt Haiku called a question.
 const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown; summary?: string; questionId?: number } = {}): Promise<void> => {
   const currentId = (await read($, turn)).currentId
   if (currentId === null) return
@@ -1960,15 +1960,15 @@ const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source
 }
 
 // The Stop message for the inputs no row covered, quoting each one's first 80 characters. It names
-// only repairs that cover: mark_step on an existing step never does, and new steps never cover an
-// input Haiku labelled a question (CC-185, 2026-10-11: the message offered track_steps for those).
+// only repairs that cover, preserving existing work when the request reuses it. Steps never cover
+// an input Haiku labelled a question (CC-185, 2026-10-11: the message offered track_steps for those).
 const uncoveredBlock = (inputs: PendingInput[]): string => {
   const quoted = (some: PendingInput[]) => some.map(i => `"${i.excerpt}"`).join('; ')
   const labelled = inputs.filter(i => i.label === 'question')
   const worded = inputs.filter(i => i.label !== 'question')
   const parts: string[] = []
   if (worded.length > 0) {
-    const tail = `${ANSWER}; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.`
+    const tail = `${ANSWER}; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.`
     parts.push(worded.length === 1
       ? `track: a prompt looks like a question (${quoted(worded)}) but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${tail}`
       : `track: these prompts look like questions (${quoted(worded)}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
@@ -2062,6 +2062,9 @@ const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
 }
 
 export const register: Register = on => {
+  // Per-call eligibility crosses the handler/save boundary, then leaves memory.
+  // It is decided inside the atom update, whose retries see concurrent marks.
+  const reuseCalls = new Map<string, { step?: Step }>()
   // One restore owns its visible receipt and save through acknowledgement.
   // Other ledger writers still use atom compare-and-set; a changed ledger
   // during a mechanical receipt is refused instead of overwriting their work.
@@ -2089,13 +2092,24 @@ export const register: Register = on => {
       return ran
     }
     const before = JSON.stringify(beforeLedger)
-    const ran = await next(e)
+    // TRACK-8, 2026-10-19: Stop repair replaced an active plan because marking its
+    // existing step could not register the request. Only an explicit source opts
+    // into reuse; repeating an old completed row is not new work.
+    const reuse: { step?: Step } | undefined = e.tool === MARK_STEP && STEP_STATUSES.some(status => status === e.status) &&
+      (typeof e.source_text === 'string' || typeof e.source_request_id === 'string')
+      ? {} : undefined
+    const reuseSession = reuse === undefined ? undefined : await $.session.id()
+    if (reuse !== undefined) reuseCalls.set(e.tool_use_id, reuse)
+    const ran = await next(e).finally(() => {
+      if (reuse !== undefined && reuseCalls.get(e.tool_use_id) === reuse) reuseCalls.delete(e.tool_use_id)
+    })
+    const reusedStep = reuse?.step
     await applyCancel($, owners, ran)
     if (ran.deny !== undefined || ran.isError === true) return ran
     const afterLedger = await read($, ledger)
     const touched = stepReceiptIds(e.tool, e, ran.result, beforeLedger, afterLedger)
     const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeActivity)
-    if (before === JSON.stringify(afterLedger)) {
+    if (before === JSON.stringify(afterLedger) && reusedStep === undefined) {
       if (recorded) await publishGate($)
       return ran
     }
@@ -2109,6 +2123,14 @@ export const register: Register = on => {
         const row = saved?.session_id === await $.session.id()
           ? saved.ledger.steps.find(step => step.id === String(e.id)) : undefined
         if (row !== undefined) {
+          // Coverage follows the same durable acknowledgement as this receipt,
+          // including an unchanged status. A reconciled replacement cannot cover
+          // on behalf of the row the caller meant to reuse.
+          if (reusedStep !== undefined && saved?.session_id === reuseSession && row.cleared !== true && row.status === e.status &&
+              row.source === reusedStep.source && row.sourceId === reusedStep.sourceId && row.subject === reusedStep.subject &&
+              row.taskId === reusedStep.taskId && row.createdRequestId === reusedStep.createdRequestId) {
+            await coverInput($, 'steps', { source_text: e.source_text, source_request_id: e.source_request_id })
+          }
           const { id, subject, status, note } = row
           return { ...ran, result: `${ran.result}\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}` }
         }
@@ -2194,10 +2216,17 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
+        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. When a request reuses existing open work, pass its exact source_text or known source_request_id and keep the current status unless the work changes status; the request is registered only after saving. Repeating an old completed step does not register a new request. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' }, delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' } },
+        properties: {
+          id: { type: 'string' },
+          status: { type: 'string', enum: [...STEP_STATUSES] },
+          source_text: { type: 'string', description: 'Optional exact first line of the request this existing step carries out; only a saved open or reopened step can register it. Labelled questions still need a question row.' },
+          source_request_id: { type: 'string', description: 'Optional known source request UUID; takes precedence over source_text and must name an uncovered request.' },
+          note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' },
+          delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' },
+        },
         required: ['id', 'status'],
       },
     })
@@ -3178,11 +3207,17 @@ export const register: Register = on => {
       return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     }
     const now = await $.clock.now()
-    await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => {
-      if (s.id !== id) return s
-      const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
-      return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }) }
-    }) }))
+    const reuse = reuseCalls.get(e.tool_use_id)
+    await update<Ledger>($, ledger, cur => {
+      // A compare-and-set retry must discard eligibility from the old snapshot.
+      if (reuse !== undefined) reuse.step = undefined
+      return { ...cur, steps: cur.steps.map(s => {
+        if (s.id !== id) return s
+        if (reuse !== undefined && s.cleared !== true && (s.status !== 'completed' || status !== 'completed')) reuse.step = s
+        const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
+        return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }) }
+      }) }
+    })
     await dropFinishedOwners($)
 
     return { result: `Step ${id} "${l.steps.find(s => s.id === id)?.subject}" marked ${status}.` }

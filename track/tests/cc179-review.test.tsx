@@ -1,12 +1,12 @@
 // FIXTURE: CC-179 round 2, Codex's review of 12e11c8 (2026-10-10, AMQ thread cc179/review).
 // Unrelated rows covered the oldest input, text prefixes stood in for identity, an unresolved
 // input left at the next turn or at the cap, a late label could not undo step coverage, Stop never
-// waited for a label already in flight, and the Stop message offered mark_step, which covers nothing.
+// waited for a label already in flight, and Stop offered mark_step without request association.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, atomStore } from './kit'
 import type { Engine, On } from './kit'
 
-const TAIL = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text; for a request instead, call mcp__track__track_steps with the same source_text. Then finish.'
+const TAIL = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.'
 const blockFor = (excerpt: string) =>
   `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${TAIL}`
 // CC-185: steps never cover a labelled question, so its message offers no track_steps repair.
@@ -124,7 +124,8 @@ test('the Stop message offers only repairs that cover, and following it covers t
   const request = 'can you fix the image-thumbs test?'
   await ask($, request)
   const held = (await stop($)).block ?? ''
-  expect(held).not.toContain('mark_step')
+  expect(held).toContain('mcp__track__mark_step, keeping its current status and the same source_text')
+  expect(held).toContain('use after when steps already exist')
   await ask($, 'go', 'turn-1')
   await call($, { tool: 'mcp__track__track_steps', steps: ['Fix the image-thumbs test'], source_text: request, tool_use_id: 'toolu_t' })
   await $.turn.start({ text: 'next', turnId: 'turn-2' } as never)
