@@ -39,7 +39,7 @@ for (const width of [17, 80]) {
     expect(fixture.ledger.value.nextQuestionId).toBe(100)
     expect(fixture.ledger.value.questions[2].sourceId).toBe(`${SESSION}:Q25`)
     await $.prompt.submit({ text: 'Continue', origin: { kind: 'composer' } } as never)
-    expect(fixture.context()).toContain('Q25 "Keep"')
+    expect(fixture.context()).toContain('question:25 "Keep"')
     const marked = await $.tool.call({ tool: 'mcp__track__mark_answered', id: 25, status: 'answered', answer_text: 'Kept answer', tool_use_id: 'mark-25' } as never)
     expect(marked.result).toBe('Q25 marked answered.')
     expect(fixture.ledger.value.questions[2]).toMatchObject({ id: 25, status: 'answered', sourceId: `${SESSION}:Q25` })
