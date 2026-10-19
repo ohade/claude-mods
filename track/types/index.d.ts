@@ -91,6 +91,12 @@ export type Step = {
   // The step's wall clock: when it first went in progress, and when it was done.
   startedAt?: number
   endedAt?: number
+  // Explicit completed words and their acknowledged native mark_step source.
+  resultText?: string
+  resultTextHash?: string
+  resultRequestId?: string
+  resultAt?: number
+  resultTurnId?: string
 }
 
 export type Ledger = {
@@ -110,6 +116,23 @@ export type Ledger = {
   restores?: Restore[]
   restoredIds?: Record<string, number>
 }
+
+// Native validation failed on 2026-10-19 because the public contract imported
+// Baseline from hooks. Keep its dependency types here, without external imports.
+export type Checkpoint = {
+  v: 1
+  ok: boolean
+  source_session: string
+  destination_session?: string
+  applied_checksum?: string
+  revision: number
+  checksum: string
+  counts: { questions: number; answers: number; steps: number }
+  reason?: string
+}
+
+// TRACK-21 (2026-10-11): the verified row version used by three-way saving.
+export type Baseline = { session_id: string; ledger: Ledger; checkpoint?: Checkpoint; generation?: string }
 
 // `lastText`: the main loop's last text row, its text, and the turn it was written in.
 // Only the exact composedRule proves that the current instruction reached the model.
@@ -136,6 +159,8 @@ export type Turn = {
   // TRACK-27: current-turn facts only, never persisted in ledger rows.
   freshness?: StepFreshness
   stepReminder?: string
+  resultReminder?: { turnId: string; ids: string[] }
+  resultNudgedTurnId?: string
   // Nudge codes already shown while the turn identity was unknown, once per session.
   turnlessNudged?: string[]
 }
@@ -181,9 +206,9 @@ declare module 'claude-code' {
       scroll: ScrollAt
       // The time the step clocks were last moved on, by a timer while a step is under way.
       tick: number
-      durability: { isUnsaved: boolean; reason: string; memorySession?: string; rewindSession?: string; closedByPerson?: boolean; baseline?: import('../hooks/reconcile').Baseline; rewindBaseline?: Pick<import('../hooks/reconcile').Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] }
+      durability: { isUnsaved: boolean; reason: string; memorySession?: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] }
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
-      reveal: Record<string, 'q' | 'a' | undefined>
+      reveal: Record<string, 'q' | 'a' | 'r' | undefined>
     }
   }
 }

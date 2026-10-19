@@ -1,11 +1,29 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { EMPTY, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 import type { Engine } from './kit'
 
 // Steps from the model's tools: parallel calls, failed Task updates, restored steps, todo ids.
 
 type StepRow = { id: string; source: string; subject: string; status: string; taskId?: string }
+
+for (const tool of ['TaskUpdate', 'TodoWrite'] as const) {
+  test(`TRACK-26 legacy ${tool} completion stays usable without an invented result`, async ($, on) => {
+    mock.clock(on)
+    const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: tool === 'TaskUpdate'
+      ? [{ id: 'task:native-task', source: 'task', taskId: 'native-task', subject: 'Legacy completion', status: 'pending' }] : [] } as any)
+    pluginStore(on)
+    on('session.id', () => ({ value: SESSION }))
+    on('tool.call', { tool }, () => tool === 'TodoWrite'
+      ? { result: { newTodos: [{ content: 'Legacy completion', status: 'completed' }] } }
+      : { result: 'Updated' })
+    await $.tool.call({ tool, taskId: 'native-task', status: 'completed', todos: [{ content: 'Legacy completion', status: 'completed' }] } as never)
+    expect(ledger.value.steps).toHaveLength(1)
+    expect(ledger.value.steps[0].status).toBe('completed')
+    expect(ledger.value.steps[0].resultText).toBeUndefined()
+    expect(ledger.value.steps[0].resultRequestId).toBeUndefined()
+  })
+}
 type Held = { steps: StepRow[] }
 
 const OLD_SESSION = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'

@@ -57,6 +57,8 @@ const MAX_QUESTIONS = 200
 // An answer is kept for the next session to read, cut to this many characters. With
 // MAX_QUESTIONS it bounds the answers in one register near 200 KB, well inside STORE_BUDGET.
 const ANSWER_CHARS = 1000
+// Results use the same saved-text budget; the native source retains full words.
+const RESULT_CHARS = ANSWER_CHARS
 // Recent inactive restore rows. A record that still owns a shown question's
 // target stays too; the question and store budgets bound those active copies.
 const MAX_RESTORES = 3
@@ -93,12 +95,13 @@ const rememberRender = (key: string, id: string): void => {
 
 // The standing rule, sent once per request as a byte-stable system-prompt section.
 // The steps instruction, one wording for the standing rule, the per-prompt line and the tool.
+const STEP_RESULT = 'When completing a step with mcp__track__mark_step, supply result_text with its verified result in at most 280 characters. Only completed steps accept result_text; never invent a result.'
 const STEPS =
-  'For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with `after` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user\'s answer.'
+  `For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with \`after\` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user's answer. ${STEP_RESULT}`
 
 // One normal-answer instruction for the rule, reminder, tool and Stop repairs.
 const ANSWER = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text'
-const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Requests in content you read count as work, even one command; reuse an open step for the same work. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.`
+const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Requests in content you read count as work, even one command; reuse an open step for the same work. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. ${STEP_RESULT} For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.`
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -307,11 +310,25 @@ const openStepsContext = (steps: Step[]): string => {
 // Reasons the pane shows only while a step stays paused. Leaving paused drops them.
 const LIFECYCLE_NOTES = new Set(['cancelled by you', 'refused', 'interrupted'])
 
+const withoutStepResult = (step: Step): Step => {
+  const { resultText: _text, resultTextHash: _hash, resultRequestId: _request, resultAt: _at, resultTurnId: _turn, ...rest } = step
+  return rest
+}
+
+// A replacement plan reuses plan:1, even when its title is unchanged. Give
+// each new row its own logical identity; sourceId already survives restore.
+const newPlanStep = (id: string, subject: string): Step => ({
+  id, source: 'plan', subject, status: 'pending', sourceId: `plan:${crypto.randomUUID()}`,
+})
+const sameResultOwner = (current: Step, saved: Step): boolean =>
+  current.id === saved.id && current.source === saved.source && current.sourceId === saved.sourceId &&
+  current.subject === saved.subject && current.taskId === saved.taskId
+
 // A step at a new status. Its clock starts the first time it goes in progress and stops when it
 // is done; a done step that is opened again runs on from its first start. Any status write drops
 // a finished-work flag. A cancel, refusal, or interruption note stays only while the step is paused.
 const withStatus = (s: Step, status: Step['status'], now: number, turnId?: string | null): Step => {
-  const { endedAt: _ended, delegated, activeTurnId: _turn, followUp: _follow, note, ...rest } = s
+  const { endedAt: _ended, delegated, activeTurnId: _turn, followUp: _follow, note, ...rest } = status === 'completed' ? s : withoutStepResult(s)
   const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
   const keepNote = !(s.status === 'paused' && status !== 'paused' && note !== undefined && LIFECYCLE_NOTES.has(note))
@@ -585,7 +602,7 @@ const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
 const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 // Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
-const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | undefined>)
+const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | 'r' | undefined>)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
@@ -801,7 +818,9 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   }
   const judged = (q: Question) =>
     (q.trackedBy !== undefined && q.at > since) || (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since)
-  const hasJudged = l.questions.some(judged)
+  const judgedResult = (s: Step) => s.resultRequestId !== undefined && (s.resultAt ?? 0) > since
+  const missingResult = (s: Step) => judgedResult(s) && !present.has(s.resultRequestId!)
+  const hasJudged = l.questions.some(judged) || l.steps.some(judgedResult)
   const pending = (await read($, durability)).rewindSession
   // Empty registers and rows without transcript provenance need no session
   // lookup or transcript read before delivering their generic instruction.
@@ -828,11 +847,12 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   if (!l.questions.some(q =>
     (q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)) ||
     (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerSource(q)!))
-  )) return true
+  ) && !l.steps.some(missingResult)) return true
   // Capture the pre-rewind rows in memory. The save path verifies this
   // snapshot against the durable body under its locks before adopting it.
   await update($, durability, cur => ({ ...cur, rewindBaseline: { session_id: session, ledger: l } }))
   const observed = new Map(l.questions.map(q => [q.id, q]))
+  const observedSteps = new Map(l.steps.map(step => [step.id, step]))
   let changed = false
   await update<Ledger>($, ledger, cur => {
     const compactedAt = cur.compactedAt ?? 0
@@ -848,8 +868,14 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
 
       return [{ ...rest, status: 'open' as const }]
     })
-    changed = !sameValue(questions, cur.questions)
-    return changed ? { ...cur, questions } : cur
+    const steps = cur.steps.map(step => {
+      const old = observedSteps.get(step.id)
+      if (old === undefined || step.resultRequestId !== old.resultRequestId || step.resultAt !== old.resultAt || step.resultTextHash !== old.resultTextHash ||
+          step.resultRequestId === undefined || (step.resultAt ?? 0) <= compactedAt || present.has(step.resultRequestId)) return step
+      return withoutStepResult(step)
+    })
+    changed = !sameValue(questions, cur.questions) || !sameValue(steps, cur.steps)
+    return changed ? { ...cur, questions, steps } : cur
   })
   if (changed) {
     await update($, durability, cur => ({ ...cur, rewindSession: session }))
@@ -923,6 +949,10 @@ const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSO
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
 const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; memorySession?: string | null; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
+// A failed replacement leaves proposed words in memory. The transcript and pane
+// must both use the last acknowledged result owned by this ledger's session.
+const acknowledgedLedger = (l: Ledger, state: { baseline?: Baseline; memorySession?: string | null }): Ledger | undefined =>
+  state.baseline?.session_id === (l.session_id ?? state.memorySession) ? state.baseline?.ledger : undefined
 const gateWrites = { queue: Promise.resolve() }
 
 const freshTurn = (turnId: string): StepFreshness => ({ turnId, edits: [], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] })
@@ -1134,6 +1164,28 @@ const freshnessNudge = async ($: EngineInterface, code: string, text: string, re
     if (fresh.nudged.includes(code)) return current
     show = true
     return { ...current, ...(remind && { stepReminder: text }), freshness: { ...fresh, nudged: [...fresh.nudged, code] } }
+  })
+  if (show) $.ui.toast(text)
+}
+
+const missingResultText = (steps: Step[], ids: string[]): string | undefined => {
+  const missing = visibleSteps(steps).filter(step => ids.includes(step.id) && step.status === 'completed' && step.resultText === undefined)
+  if (missing.length === 0) return undefined
+  const named = missing.slice(0, OPEN_STEPS_LISTED).map(step => step.id).join(', ')
+  return `track: missing completion result for ${named}${missing.length > OPEN_STEPS_LISTED ? ` (+${missing.length - OPEN_STEPS_LISTED} more)` : ''}. ${STEP_RESULT} This reminder does not block Stop.`
+}
+
+const nudgeMissingResults = async ($: EngineInterface, observed: Turn): Promise<void> => {
+  if (observed.currentId === null || observed.freshness?.turnId !== observed.currentId) return
+  const ids = observed.freshness.completed.map(row => row.id)
+  const text = missingResultText((await read($, ledger)).steps, ids)
+  if (text === undefined) return
+  let show = false
+  await update($, turn, current => {
+    show = false
+    if (current.currentId !== observed.currentId || current.resultNudgedTurnId === observed.currentId) return current
+    show = true
+    return { ...current, resultNudgedTurnId: observed.currentId!, resultReminder: { turnId: observed.currentId!, ids } }
   })
   if (show) $.ui.toast(text)
 }
@@ -1834,6 +1886,13 @@ const savedStep = (row: unknown): Step | undefined => {
     ...textField('sourceId', r.sourceId),
     ...(typeof r.note === 'string' && { note: r.note }),
     ...(r.followUp === true ? { followUp: true as const } : {}),
+    ...(status === 'completed' && typeof r.resultText === 'string' && r.resultText.trim() !== '' && {
+      resultText: r.resultText.slice(0, RESULT_CHARS),
+      ...(typeof r.resultTextHash === 'string' && /^[0-9a-f]{64}$/.test(r.resultTextHash) && { resultTextHash: r.resultTextHash }),
+      ...textField('resultRequestId', r.resultRequestId),
+      ...textField('resultTurnId', r.resultTurnId),
+      ...(typeof r.resultAt === 'number' && Number.isFinite(r.resultAt) && { resultAt: r.resultAt }),
+    }),
   }
 }
 
@@ -2194,10 +2253,10 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_step',
       description:
-        'Set a step\'s status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user\'s answer. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.',
+        `Set a step's status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user's answer. ${STEP_RESULT} Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.`,
       inputSchema: {
         type: 'object',
-        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' }, delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' } },
+        properties: { id: { type: 'string' }, status: { type: 'string', enum: [...STEP_STATUSES] }, result_text: { type: 'string', description: 'Verified completed result, at most 280 characters requested. Only for completed; full text stays visible at its source, first 1000 characters saved with full hash.' }, note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' }, delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' } },
         required: ['id', 'status'],
       },
     })
@@ -2485,6 +2544,12 @@ export const register: Register = on => {
         lines.push(reminder)
         await update($, turn, current => current.stepReminder === reminder ? { ...current, stepReminder: undefined } : current)
       }
+      const resultReminder = (await read($, turn)).resultReminder
+      if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && resultReminder !== undefined) {
+        const text = missingResultText((await read($, ledger)).steps, resultReminder.ids)
+        if (text !== undefined) lines.push(text)
+        await update($, turn, current => current.resultReminder?.turnId === resultReminder.turnId ? { ...current, resultReminder: undefined } : current)
+      }
       // A prompt Stop already asked about once and no row covers yet is named again here.
       const unresolved = (await read($, pending)).inputs.filter(i => i.held === true && i.covered === undefined && needsQuestion(i))
       if (unresolved.length > 0) {
@@ -2539,6 +2604,7 @@ export const register: Register = on => {
       return below
     }
     const t = await read($, turn)
+    await nudgeMissingResults($, t)
     // Each uncovered input is held once, even after another Stop hook continued the turn: its
     // own mark bounds the repair, so no loop. Unbound inputs are this turn's and are bound now.
     if (t.currentId !== null) {
@@ -2975,7 +3041,7 @@ export const register: Register = on => {
       let added: Step[] = []
       await update<Ledger>($, ledger, cur => {
         const top = Math.max(0, ...cur.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
-        added = titles.map((subject, k) => ({ id: `plan:${top + k + 1}`, source: 'plan', subject, status: 'pending' }))
+        added = titles.map((subject, k) => newPlanStep(`plan:${top + k + 1}`, subject))
         const i = cur.steps.findIndex(s => s.id === after)
         const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
 
@@ -2985,7 +3051,7 @@ export const register: Register = on => {
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
-    const steps: Step[] = titles.map((subject, i) => ({ id: `plan:${i + 1}`, source: 'plan', subject, status: 'pending' }))
+    const steps: Step[] = titles.map((subject, i) => newPlanStep(`plan:${i + 1}`, subject))
     await update<Ledger>($, ledger, cur => ({ ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
     await coverInput($, 'steps', { source_text: e.source_text })
 
@@ -3031,7 +3097,7 @@ export const register: Register = on => {
     const steps = capSteps(rows
       .map(savedStep)
       .filter(isDefined)
-      .map(({ taskId: _old, activeTurnId: _turn, ...s }) => ({ ...s, sourceId: s.sourceId ?? `${from}:${s.id}`, ...(s.source === 'task' && !s.id.startsWith('restored:') && { id: `restored:${s.id}` }) })))
+      .map(({ taskId: _old, activeTurnId: _turn, resultRequestId: _result, resultTurnId: _resultTurn, ...s }) => ({ ...s, sourceId: s.sourceId ?? `${from}:${s.id}`, ...(s.source === 'task' && !s.id.startsWith('restored:') && { id: `restored:${s.id}` }) })))
     const visibleStepCount = visibleSteps(steps).length
     const questionRows = Array.isArray(saved?.ledger?.questions) ? (saved.ledger.questions as unknown[]) : []
     const questions = capRows(questionRows
@@ -3173,15 +3239,22 @@ export const register: Register = on => {
     if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
     const id = String(e.id)
     const status = STEP_STATUSES.find(one => one === e.status)
+    const supplied = typeof e.result_text === 'string' ? e.result_text.trim() : undefined
+    if (e.result_text !== undefined && (status !== 'completed' || !supplied)) return { deny: 'track: result_text must contain the verified result and is accepted only for completed steps.' }
     const l = await read($, ledger)
     if (status === undefined || !l.steps.some(s => s.id === id)) {
       return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     }
     const now = await $.clock.now()
+    const result = supplied === undefined ? undefined : {
+      resultText: supplied.slice(0, RESULT_CHARS), resultTextHash: await checksumOf(supplied), resultAt: now,
+      ...(typeof e.tool_use_id === 'string' && { resultRequestId: e.tool_use_id }),
+      ...(typeof currentId === 'string' && { resultTurnId: currentId }),
+    }
     await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => {
       if (s.id !== id) return s
-      const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(s, status, now, currentId)
-      return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }) }
+      const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(result === undefined ? s : withoutStepResult(s), status, now, currentId)
+      return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }), ...result }
     }) }))
     await dropFinishedOwners($)
 
@@ -3340,19 +3413,34 @@ export const register: Register = on => {
       return renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))
     }
     if (e.props.tool === MARK_STEP) {
-      const { Text } = $.ui.resolve(e)
-      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
+      const { Box, Text } = $.ui.resolve(e)
+      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown; result_text?: unknown }
       const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
       const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : status === 'paused' ? '⏸' : status === 'waiting' ? '◆' : '◻'
       // Named as the pane names it, S<n> and the title: an id such as plan:10 can sit third in
       // the pane after an insert, and was read as S10.
       const id = String(input.id ?? '?')
-      const shown = visibleSteps((await read($, ledger)).steps)
+      const l = await read($, ledger)
+      const shown = visibleSteps(l.steps)
       const at = shown.findIndex(s => s.id === id)
       const step = shown[at]
       const name = step === undefined ? id : `S${at + 1}. ${truncate(step.subject, 60)}`
-
-      return <Text dimColor>{`${glyph} ${name} ${status.replace('_', ' ')}`}</Text>
+      const label = `${glyph} ${name} ${status.replace('_', ' ')}`
+      // Proposed tool input is not an accepted result. Only the durable row
+      // acknowledged for this source and these full words may draw it.
+      const full = typeof input.result_text === 'string' ? input.result_text.trim() : undefined
+      if (status !== 'completed' || full === undefined) return <Text dimColor>{label}</Text>
+      const acknowledged = await read($, durability)
+      const saved = acknowledgedLedger(l, acknowledged)?.steps.find(row => row.id === id)
+      if (status === 'completed' && saved?.status === 'completed' && saved.resultRequestId === e.props.tool_use_id && saved.resultText !== undefined &&
+          full !== undefined && saved.resultTextHash === await checksumOf(full) && !e.props.isRunning && !e.props.isErrored && !e.props.isInterrupted) {
+        const key = `result:${e.props.tool_use_id}`
+        rememberRender(key, e.requestId)
+        const level = await read($, memberOf(flash, { requestId: key }))
+        const resultName = step !== undefined && sameResultOwner(step, saved) ? name : `${saved.id}. ${truncate(saved.subject, 60)}`
+        return <Box flexDirection="column"><Text dimColor>{`${glyph} ${resultName} completed`}</Text><Box key={key} backgroundColor={shade(level)}><Text dimColor wrap="wrap">{full}</Text></Box></Box>
+      }
+      return <Text dimColor>{label}</Text>
     }
     if (e.props.tool === MARK_ANSWERED) {
       const { Box, Text } = $.ui.resolve(e)
@@ -3497,6 +3585,30 @@ export const register: Register = on => {
     }
     const qDone = questions.filter(q => q.status === 'answered').length
     const steps = visibleSteps(l.steps)
+    const currentSteps = new Map(steps.map(step => [step.id, step]))
+    const stepResults = new Map((acknowledgedLedger(l, saved)?.steps ?? [])
+      .filter(step => {
+        const current = currentSteps.get(step.id)
+        return current?.status === 'completed' && current.resultText !== undefined && step.status === 'completed' &&
+          step.resultText !== undefined && sameResultOwner(current, step)
+      }).map(step => [step.id, step]))
+    const resultReveals = new Map<string, string>()
+    for (const current of steps) {
+      const step = stepResults.get(current.id)
+      if (current.status !== 'completed' || step === undefined || step.resultRequestId !== undefined || step.resultText === undefined || opened[`step-result:${step.id}`] !== 'r') continue
+      const truncated = step.resultText.length === RESULT_CHARS && step.resultTextHash !== undefined && await checksumOf(step.resultText) !== step.resultTextHash
+      resultReveals.set(step.id, step.resultText + (truncated ? '\n(saved result truncated at 1000 characters)' : ''))
+    }
+    const toggleResult = async (step: Step, index: number): Promise<void> => {
+      let opening = false
+      await update($, reveal, cur => {
+        const key = `step-result:${step.id}`
+        const next = cur[key] === 'r' ? undefined : 'r' as const
+        opening = next !== undefined
+        return { ...cur, [key]: next }
+      })
+      if (opening) await update($, scrollAt, cur => ({ ...cur, steps: index }))
+    }
     const sDone = steps.filter(s => s.status === 'completed').length
     const clearAnsweredQuestions = async () => {
       await update($, ledger, cur => ({
@@ -3646,9 +3758,11 @@ export const register: Register = on => {
       const extra = revealedText(q)
       return wrappedLines(`${questionLabel(q.id)}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
     })
-    const clockRows = (s: Step) => compact && hasClock(s) ? 1 : 0
+    const stepControlsRows = (s: Step) => compact && (hasClock(s) || s.status === 'completed') ? 1 : 0
     const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
-    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepWidth(s)) + clockRows(s))
+    const stepSubjectWidth = (s: Step) => Math.max(1, stepWidth(s) - (!compact && s.status === 'completed' ? 7 : 0))
+    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepSubjectWidth(s)) + stepControlsRows(s) +
+      (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
     const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
     const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
     const atWork = steps.findIndex(s => s.status !== 'completed')
@@ -3861,11 +3975,23 @@ export const register: Register = on => {
                           : { glyph: '◐', glyphColor: undefined, textColor: undefined }
 
           const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
+          const result = stepResults.get(s.id)
+          const resultKey = result?.resultRequestId === undefined ? undefined : `result:${result.resultRequestId}`
+          const resultControl = s.status === 'completed' && <Box key={`s-result-slot-${s.id}`} width={6} flexShrink={0}>
+            {result?.resultText === undefined ? <Text dimColor>[ R ]</Text> : <Button key={`r-${s.id}`} variant="primary" label="R" onPress={() => resultKey === undefined
+              ? toggleResult(result, index)
+              : jump($, [resultKey], 'start', resultKey, renderInstances.get(resultKey))} />}
+          </Box>
+          const resultRaw = resultReveals.get(s.id)
+          const headShown = fitLines(`S${index + 1}. ${s.subject}`, stepSubjectWidth(s), Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1)))
+          const resultShown = resultRaw === undefined ? undefined : fitLines(resultRaw, stepWidth(s), Math.max(1, sRows - stepControlsRows(s) - wrappedLines(headShown, stepSubjectWidth(s))))
           const text = (
-            <Box key={`s-text-${s.id}`} flexShrink={1} flexGrow={1} width={stepWidth(s)}>
-              <Text color={look.textColor} wrap="wrap">
-                {fitLines(`S${index + 1}. ${s.subject}`, stepWidth(s), sRows - clockRows(s))}
-              </Text>
+            <Box key={`s-text-${s.id}`} flexDirection="column" flexShrink={1} flexGrow={1} width={stepWidth(s)}>
+              <Box flexDirection="row" columnGap={1}>
+                {!compact && resultControl}
+                <Box width={stepSubjectWidth(s)} flexShrink={1}><Text color={look.textColor} wrap="wrap">{headShown}</Text></Box>
+              </Box>
+              {resultShown !== undefined && <Text key={`s-result-text-${s.id}`} wrap="wrap">{resultShown}</Text>}
             </Box>
           )
           const clock = hasClock(s) && (
@@ -3883,7 +4009,7 @@ export const register: Register = on => {
               {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : [dot, text]}
               {reason}
               {follow}
-              {clock}
+              {compact ? <Box flexDirection="row" columnGap={1}>{resultControl}{clock}</Box> : clock}
             </Box>
           )
         })}

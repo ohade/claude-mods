@@ -1,9 +1,9 @@
-import type { Ledger } from '../types'
+import type { Baseline, Ledger } from '../types'
 import type { Checkpoint } from './checkpoint'
 
 // TRACK-21 (2026-10-11): reload adopted a durable revision while retaining
 // unrelated nonempty memory, making a later save silently overwrite newer rows.
-export type Baseline = { session_id: string; ledger: Ledger; checkpoint?: Checkpoint; generation?: string }
+export type { Baseline } from '../types'
 export type SessionHead = { v: 1; session_id: string; generation: string; checkpoint: Checkpoint; closedAt?: number }
 const canonical = (value: unknown): string | undefined => JSON.stringify(value, (_, entry) =>
   entry !== null && typeof entry === 'object' && !Array.isArray(entry)
@@ -61,6 +61,9 @@ export const reconcileLedger = (base: Ledger | undefined, durable: Ledger, local
   const original = base === undefined ? undefined : identifyLedger(base, session)
   const questions = mergeRows(original?.questions, saved.questions, current.questions, row => row.sourceId ?? `${session}:Q${row.id}`)
   const steps = mergeRows(original?.steps, saved.steps, current.steps, row => row.sourceId ?? `${session}:${row.id}`)
+  // Different logical generations may reuse a local plan id. Tool calls and
+  // pane keys require that local id to stay unique after a merge too.
+  if (new Set(steps.map(row => row.id)).size !== steps.length) throw new Error('reconcile conflict: duplicate step id; both versions were kept')
   const prompts = mergeRows(original?.prompts, saved.prompts, current.prompts, row => row.rowKey)
   const restores = mergeRows(original?.restores, saved.restores ?? [], current.restores ?? [], row => row.by)
   const withdrawn = mergeRows(original?.withdrawn, saved.withdrawn ?? [], current.withdrawn ?? [], row => String(row.id))
