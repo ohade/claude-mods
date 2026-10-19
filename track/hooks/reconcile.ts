@@ -1,9 +1,9 @@
-import type { Ledger } from '../types'
+import type { Baseline, Ledger } from '../types'
 import type { Checkpoint } from './checkpoint'
 
 // TRACK-21 (2026-10-11): reload adopted a durable revision while retaining
 // unrelated nonempty memory, making a later save silently overwrite newer rows.
-export type Baseline = { session_id: string; ledger: Ledger; checkpoint?: Checkpoint; generation?: string }
+export type { Baseline } from '../types'
 export type SessionHead = { v: 1; session_id: string; generation: string; checkpoint: Checkpoint; closedAt?: number }
 const canonical = (value: unknown): string | undefined => JSON.stringify(value, (_, entry) =>
   entry !== null && typeof entry === 'object' && !Array.isArray(entry)
@@ -55,12 +55,28 @@ const mergeRows = <T>(base: T[] | undefined, durable: T[], local: T[], identity:
   return merged
 }
 
+// TRACK-29 (2026-10-19): a save finishing during a reorder discarded the
+// local array order because mergeRows only compares individual row values.
+// Treat a permutation as a three-way change, independently of row contents.
+const mergeStepOrder = (base: Ledger['steps'] | undefined, durable: Ledger['steps'], local: Ledger['steps'], merged: Ledger['steps'], identity: (row: Ledger['steps'][number]) => string): Ledger['steps'] => {
+  if (base === undefined) return merged
+  const original = base.map(identity), saved = durable.map(identity), current = local.map(identity)
+  const members = new Set(original)
+  // Additions/deletions retain normal row-merge behavior. A reorder caller
+  // verifies its exact visible permutation and refuses changed membership.
+  if (saved.length !== original.length || current.length !== original.length || saved.some(id => !members.has(id)) || current.some(id => !members.has(id)) || equal(current, original)) return merged
+  if (!equal(saved, original) && !equal(saved, current)) throw new Error('reconcile conflict: step order; both versions were kept')
+  const byId = new Map(merged.map(row => [identity(row), row]))
+  return current.map(id => byId.get(id)!)
+}
+
 export const reconcileLedger = (base: Ledger | undefined, durable: Ledger, local: Ledger, session: string): Ledger => {
   const saved = identifyLedger(durable, session)
   const current = identifyLedger(local, session)
   const original = base === undefined ? undefined : identifyLedger(base, session)
   const questions = mergeRows(original?.questions, saved.questions, current.questions, row => row.sourceId ?? `${session}:Q${row.id}`)
-  const steps = mergeRows(original?.steps, saved.steps, current.steps, row => row.sourceId ?? `${session}:${row.id}`)
+  const stepIdentity = (row: Ledger['steps'][number]) => row.sourceId ?? `${session}:${row.id}`
+  const steps = mergeStepOrder(original?.steps, saved.steps, current.steps, mergeRows(original?.steps, saved.steps, current.steps, stepIdentity), stepIdentity)
   const prompts = mergeRows(original?.prompts, saved.prompts, current.prompts, row => row.rowKey)
   const restores = mergeRows(original?.restores, saved.restores ?? [], current.restores ?? [], row => row.by)
   const withdrawn = mergeRows(original?.withdrawn, saved.withdrawn ?? [], current.withdrawn ?? [], row => String(row.id))

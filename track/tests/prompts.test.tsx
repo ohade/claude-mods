@@ -38,8 +38,8 @@ test('a skill command tells the model of a withdrawn question, the open ones and
 
   const context = await submit($, on, '/retro')
 
-  expect(context).toContain('withdrew Q1')
-  expect(context).toContain('Q2')
+  expect(context).toContain('withdrew question:1')
+  expect(context).toContain('question:2')
   expect(context).toContain('plan:1')
   expect(ledger.value.withdrawn).toEqual([])
 })

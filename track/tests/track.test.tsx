@@ -244,7 +244,7 @@ test('the next prompt tells the model about a withdrawn question, once', async (
   // @ts-expect-error deliberate: a prompt with no origin, the input that crashed the hook in the red run
   await $.prompt.submit({ text: 'something else' })
 
-  expect(context.some(line => line.includes('withdrew Q3'))).toBe(true)
+  expect(context.some(line => line.includes('withdrew question:3'))).toBe(true)
   expect(writes.at(-1)?.withdrawn ?? ['not cleared']).toHaveLength(0)
 })
 
