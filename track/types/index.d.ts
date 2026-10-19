@@ -91,6 +91,12 @@ export type Step = {
   // The step's wall clock: when it first went in progress, and when it was done.
   startedAt?: number
   endedAt?: number
+  // Explicit completed words and their acknowledged native mark_step source.
+  resultText?: string
+  resultTextHash?: string
+  resultRequestId?: string
+  resultAt?: number
+  resultTurnId?: string
 }
 
 export type Ledger = {
@@ -153,6 +159,8 @@ export type Turn = {
   // TRACK-27: current-turn facts only, never persisted in ledger rows.
   freshness?: StepFreshness
   stepReminder?: string
+  resultReminder?: { turnId: string; ids: string[] }
+  resultNudgedTurnId?: string
   // Nudge codes already shown while the turn identity was unknown, once per session.
   turnlessNudged?: string[]
 }
@@ -200,7 +208,7 @@ declare module 'claude-code' {
       tick: number
       durability: { isUnsaved: boolean; reason: string; memorySession?: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] }
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
-      reveal: Record<string, 'q' | 'a' | undefined>
+      reveal: Record<string, 'q' | 'a' | 'r' | undefined>
     }
   }
 }

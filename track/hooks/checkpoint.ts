@@ -14,6 +14,8 @@ export const checkpointValues = (l: Ledger, session: string) => ({
     sourceId: s.sourceId ?? `${session}:${s.id}`, subject: s.subject, status: s.status,
     note: s.note ?? null, startedAt: s.startedAt ?? null, endedAt: s.endedAt ?? null,
     ...(s.delegated === true && { delegated: true }),
+    ...(s.resultText !== undefined && { resultText: s.resultText }),
+    ...(s.resultTextHash !== undefined && { resultTextHash: s.resultTextHash }),
   })),
 })
 
