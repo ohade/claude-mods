@@ -298,6 +298,12 @@ const openStepsOf = (steps: Step[]): Array<Pick<Step, 'id' | 'status' | 'subject
   visibleSteps(steps).filter(s => s.status !== 'completed')
     .map(({ id, status, subject, note }) => ({ id, status, subject, ...(note !== undefined && { note }) }))
 
+const openPlanSteps = (steps: Step[]): ReturnType<typeof openStepsOf> => openStepsOf(steps.filter(s => s.source === 'plan'))
+const refusePlanReplacement = (steps: ReturnType<typeof openPlanSteps>) => {
+  const rows = steps.map(s => `${s.id} ${JSON.stringify(s.subject)} (${s.status})`).join('; ')
+  return { result: `Cannot replace unfinished plan steps: ${rows}. Reuse them or insert with after; pass replace: true only for an intentional replacement.` }
+}
+
 // CC-180 b (Ohad, 2026-10-10, after Codex + astra measured it): each prompt names the newest open
 // steps as id, status and quoted title in plain text, about half the characters of JSON with
 // notes. Titles alone can collide, so the model keeps such steps open; the restore result still
@@ -3133,18 +3139,17 @@ export const register: Register = on => {
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
+    const beforeReplacement = e.replace === true ? [] : openPlanSteps((await read($, ledger)).steps)
+    if (beforeReplacement.length > 0) return refusePlanReplacement(beforeReplacement)
     const steps: Step[] = titles.map((subject, i) => newPlanStep(`plan:${i + 1}`, subject))
-    let unfinished: Step[] = []
+    let unfinished: ReturnType<typeof openPlanSteps> = []
     await update<Ledger>($, ledger, cur => {
       // UI-1 (2026-10-20): validate inside the atomic update so concurrent additions cannot be lost.
-      unfinished = e.replace === true ? [] : visibleSteps(cur.steps).filter(s => s.source === 'plan' && s.status !== 'completed')
+      unfinished = e.replace === true ? [] : openPlanSteps(cur.steps)
       if (unfinished.length > 0) return cur
       return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }
     })
-    if (unfinished.length > 0) {
-      const rows = unfinished.map(s => `${s.id} ${JSON.stringify(s.subject)} (${s.status})`).join('; ')
-      return { result: `Cannot replace unfinished plan steps: ${rows}. Reuse them or insert with after; pass replace: true only for an intentional replacement.` }
-    }
+    if (unfinished.length > 0) return refusePlanReplacement(unfinished)
     await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
