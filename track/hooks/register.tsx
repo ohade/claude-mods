@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { EngineInterface, HookStream, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
+import type { EngineInterface, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
 
 import type { Activity, FreshnessCandidate, FreshnessKind, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, StepFreshness, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
@@ -951,10 +951,10 @@ const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
-const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as { isUnsaved: boolean; reason: string; memorySession?: string | null; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] })
+const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as PluginState['track']['durability'])
 // A failed replacement leaves proposed words in memory. The transcript and pane
 // must both use the last acknowledged result owned by this ledger's session.
-const acknowledgedLedger = (l: Ledger, state: { baseline?: Baseline; memorySession?: string | null }): Ledger | undefined =>
+const acknowledgedLedger = (l: Ledger, state: Pick<PluginState['track']['durability'], 'baseline' | 'memorySession'>): Ledger | undefined =>
   state.baseline?.session_id === (l.session_id ?? state.memorySession) ? state.baseline?.ledger : undefined
 const gateWrites = { queue: Promise.resolve() }
 
@@ -2411,7 +2411,7 @@ export const register: Register = on => {
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const text = textOf(e.message.content).trim()
     if (e.agentId === undefined && text !== '') {
-      let observed: NonNullable<Turn['lastText']> | undefined
+      let observed: (NonNullable<Turn['lastText']> & { requestId: string; order: number }) | undefined
       await update($, turn, cur => {
         const order = (cur.eventOrder ?? 0) + 1
         observed = { row: rowKey(e.uuid), requestId: e.uuid, turnId: cur.currentId, order, text: truncate(text, ANSWER_CHARS) }
@@ -2835,8 +2835,8 @@ export const register: Register = on => {
     let minted: Question | undefined
     let capacityExceeded = false
     await update($, ledger, l => {
-      const textSources = typeof e.source_text === 'string' ? l.prompts.filter(p => p.turnId === trackedTurnId && p.head === headOf(e.source_text)) : []
-      const source = typeof e.source_request_id === 'string' ? l.prompts.find(p => p.requestId === e.source_request_id || p.rowKey === rowKey(e.source_request_id)) : textSources.length === 1 ? textSources[0] : undefined
+      const textSources = typeof e.source_text === 'string' ? l.prompts.filter(p => p.turnId === trackedTurnId && p.head === headOf(e.source_text as string)) : []
+      const source = typeof e.source_request_id === 'string' ? l.prompts.find(p => p.requestId === e.source_request_id || p.rowKey === rowKey(e.source_request_id as string)) : textSources.length === 1 ? textSources[0] : undefined
       minted = {
         id: l.nextQuestionId,
         head: summary,
