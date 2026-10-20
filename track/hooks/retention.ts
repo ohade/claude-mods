@@ -24,7 +24,7 @@ type Probe = (session: string) => Promise<Guard>
 type Value = Record<string, unknown>
 type RecoveryEntry = { key: string; before: unknown; missing?: true; after?: unknown; stamp?: { session_id: string; closedAt: number } }
 type CleanupRecovery = { v: 1; session_id: string; entries: RecoveryEntry[] }
-type ExpiryIntent = { v: 2; mode: 'expiry'; session_id: string; closedAt: number; entries: Array<{ key: string; checksum: string; bytes: number }> }
+type ExpiryIntent = { v: 2; mode: 'expiry' | 'eviction'; session_id: string; closedAt: number; entries: Array<{ key: string; checksum: string; bytes: number }> }
 const recoveryAfter = (entry: RecoveryEntry): unknown => entry.stamp === undefined ? entry.after : { ...entry.before as Value, ...entry.stamp }
 const recoveryKey = (session: string): string => `cleanup:${session}`
 export const sameRecord = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right)
@@ -38,20 +38,46 @@ export const writeVerified = async (store: RetentionStore, key: string, value: u
 const ownedKeys = (keys: string[], session: string): string[] => keys.filter(key =>
   key === `s:${session}` || key === `h:${session}` || key.startsWith(`r:${session}:`))
 
+// A usable clock is a finite, non-negative time no later than `now`.
+const validClock = (value: unknown, now = Number.POSITIVE_INFINITY): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= now
+
+const RECORD_KEY = /^[shr]:/
+const sessionOf = (key: string): string | undefined => RECORD_KEY.test(key) ? key.split(':')[1] : undefined
+
+const hasAmbiguousIdentity = (entries: Array<[string, unknown]>, session: string): boolean => entries.some(([, value]) => value === null || typeof value !== 'object' ||
+  ((value as Value).session_id !== undefined && (value as Value).session_id !== session))
+
+// Recovery snapshots first; the ledger body is the last deletion.
+const deletionIntent = async (session: string, closedAt: number, entries: Array<[string, unknown]>, mode: ExpiryIntent['mode']): Promise<ExpiryIntent> => {
+  const rank = (key: string): number => key.startsWith('r:') ? 0 : key.startsWith('h:') ? 1 : 2
+  const deletionOrder = [...entries].sort(([left], [right]) => rank(left) - rank(right))
+  return { v: 2, mode, session_id: session, closedAt,
+    entries: await Promise.all(deletionOrder.map(async ([key, value]) => ({ key, checksum: await checksumOf(value), bytes: entryBytes(key, value) }))) }
+}
+
+type SwitchArchive = { kind?: string; value?: { source_session?: unknown; ledger?: { session_id?: unknown } } }
+// The session whose rows a switch archive holds; false when unknown or ambiguous.
+const switchSource = (archive: SwitchArchive | undefined): string | false | undefined => {
+  if (archive?.kind !== 'session-switch') return undefined
+  const source = archive.value?.source_session
+  return typeof source === 'string' && SESSION_ID.test(source) &&
+    (archive.value?.ledger?.session_id === undefined || archive.value.ledger.session_id === source) ? source : false
+}
+
 // TRACK-21 refuter 6: a switch archive in B's namespace can contain A's
 // unsaved rows. B's CLOSED lease gives no authority to delete a live A's rows.
-const holdArchiveSources = async (store: RetentionStore, intent: ExpiryIntent, guards: Map<string, Guard>, probe: Probe | undefined, canStart: () => boolean): Promise<boolean> => {
+// `held` names sessions whose CLOSED guard the caller already holds.
+const holdArchiveSources = async (store: RetentionStore, intent: ExpiryIntent, guards: Map<string, Guard>, probe: Probe | undefined, canStart: () => boolean, held: ReadonlySet<string>): Promise<boolean> => {
   for (const entry of intent.entries.filter(entry => entry.key.startsWith('r:'))) {
     if (!canStart()) throw new Error('expiry elapsed budget reached; committed deletion remains pending')
-    const archive = await store.get(entry.key) as { kind?: string; value?: { source_session?: unknown; ledger?: { session_id?: unknown } } } | undefined
-    if (archive?.kind !== 'session-switch') continue
-    const source = archive.value?.source_session
-    if (typeof source !== 'string' || !SESSION_ID.test(source) ||
-        archive.value?.ledger?.session_id !== undefined && archive.value.ledger.session_id !== source) {
+    const source = switchSource(await store.get(entry.key) as SwitchArchive | undefined)
+    if (source === undefined) continue
+    if (source === false) {
       store.log(`track: expiry keeps ${intent.session_id}: session-switch source is unknown or ambiguous`)
       return false
     }
-    if (source === intent.session_id || guards.has(source)) continue
+    if (source === intent.session_id || guards.has(source) || held.has(source)) continue
     if (probe === undefined) {
       store.log(`track: expiry keeps ${intent.session_id}: source ${source} has no lease probe`)
       return false
@@ -69,7 +95,7 @@ const holdArchiveSources = async (store: RetentionStore, intent: ExpiryIntent, g
 
 // Expired data is already committed for deletion. A small intent finishes
 // after a crash, without duplicating the body into the rollback reserve.
-const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true, probe?: Probe, publishIntent = false): Promise<boolean> => {
+const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStart: () => boolean = () => true, probe?: Probe, publishIntent = false, held: ReadonlySet<string> = new Set()): Promise<boolean> => {
   const key = recoveryKey(intent.session_id)
   const matches = async (entry: ExpiryIntent['entries'][number]): Promise<boolean> => {
     const value = await store.get(entry.key)
@@ -87,7 +113,7 @@ const finishExpiry = async (store: RetentionStore, intent: ExpiryIntent, canStar
   for (const entry of intent.entries) if (!(await matches(entry))) return cancel()
   const guards = new Map<string, Guard>()
   try {
-    if (!(await holdArchiveSources(store, intent, guards, probe, canStart))) return false
+    if (!(await holdArchiveSources(store, intent, guards, probe, canStart, held))) return false
     // Publish only after every source is CLOSED; a blocked fresh expiry must
     // not leave a journal that prevents imports or retries on every save.
     if (publishIntent) {
@@ -118,8 +144,10 @@ export const recoverCleanup = async (store: RetentionStore, session: string, opt
   const recovery = await store.get(key) as CleanupRecovery | ExpiryIntent | undefined
   if (recovery === undefined) return false
   if (recovery.v === 2) {
-    if (!SESSION_ID.test(session) || recovery.session_id !== session || recovery.mode !== 'expiry' ||
-        !Number.isFinite(recovery.closedAt) || recovery.closedAt < 0 || !options.owner && Date.now() - recovery.closedAt < CLOSED_TTL ||
+    // TRACK-31: an eviction intent was published under a CLOSED lease before
+    // the TTL; the recovering cleaner holds a CLOSED guard on it as well.
+    if (!SESSION_ID.test(session) || recovery.session_id !== session || recovery.mode !== 'expiry' && recovery.mode !== 'eviction' ||
+        !Number.isFinite(recovery.closedAt) || recovery.closedAt < 0 || !options.owner && recovery.mode === 'expiry' && Date.now() - recovery.closedAt < CLOSED_TTL ||
         !Array.isArray(recovery.entries) || recovery.entries.length === 0 ||
         new Set(recovery.entries.map(entry => entry.key)).size !== recovery.entries.length || recovery.entries.some(entry =>
           !ownedKeys([entry.key], session).length || !/^[a-f0-9]{64}$/.test(entry.checksum) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0)) throw new Error('cleanup expiry pending: ambiguous durable intent')
@@ -180,7 +208,7 @@ const readSizes = async (store: RetentionStore): Promise<Map<string, number>> =>
   }
   return sizes
 }
-const checkSizes = (sizes: Map<string, number>, replacements: Record<string, unknown>, budget: number): void => {
+const fitsSizes = (sizes: Map<string, number>, replacements: Record<string, unknown>, budget: number): boolean => {
   const planned = new Map(sizes)
   for (const [key, value] of Object.entries(replacements)) {
     if (value === undefined) planned.delete(key)
@@ -188,7 +216,10 @@ const checkSizes = (sizes: Map<string, number>, replacements: Record<string, unk
   }
   includeIndexSize(planned)
   const bytes = 2 + [...planned.values()].reduce((total, size) => total + size, 0) + Math.max(0, planned.size - 1)
-  if (bytes >= budget) throw new Error('capacity: protected or unexpired history fills the UTF-8 store budget; nothing was pruned')
+  return bytes < budget
+}
+const checkSizes = (sizes: Map<string, number>, replacements: Record<string, unknown>, budget: number): void => {
+  if (!fitsSizes(sizes, replacements, budget)) throw new Error('capacity: protected or unexpired history fills the UTF-8 store budget; nothing was pruned')
 }
 
 const changeRecord = async (store: RetentionStore, session: string, entries: Array<[string, unknown]>, changes: Array<[string, unknown]>, sizes: Map<string, number>, canStart: () => boolean): Promise<boolean> => {
@@ -286,7 +317,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
     }
   }
   const keys = await store.keys()
-  const sessions = [...new Set(keys.flatMap(key => key.startsWith('s:') || key.startsWith('h:') || key.startsWith('r:') ? [key.split(':')[1]] : []))]
+  const sessions = [...new Set(keys.flatMap(key => sessionOf(key) ?? []))]
     .filter(session => session !== caller && !recovered.has(session) && !pending.includes(recoveryKey(session)) && SESSION_ID.test(session)).sort()
   const after = sessions.filter(session => session > (previous?.cursor ?? ''))
   const ordered = [...after, ...sessions.filter(session => session <= (previous?.cursor ?? ''))]
@@ -303,25 +334,20 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       const entries: Array<[string, unknown]> = []
       for (const key of ownedKeys(keys, session)) entries.push([key, await store.get(key)])
       // A mismatching embedded owner is not safe to migrate or expire.
-      if (entries.some(([, value]) => value === null || typeof value !== 'object' ||
-        ((value as Value).session_id !== undefined && (value as Value).session_id !== session))) {
+      if (hasAmbiguousIdentity(entries, session)) {
         store.log(`track: cleanup keeps ${session}: ambiguous record identity`)
         cursor = session
         continue
       }
       const headKey = `h:${session}`
       const head = entries.find(([key]) => key === headKey)?.[1] as Value | undefined
-      const validClock = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= now
       const closures = entries.map(([, value]) => (value as Value).closedAt)
-      const closedAt = validClock(head?.closedAt) ? head.closedAt : closures.length > 0 && closures.every(validClock) ? Math.max(...closures as number[]) : undefined
+      const closedAt = validClock(head?.closedAt, now) ? head.closedAt : closures.length > 0 && closures.every(value => validClock(value, now)) ? Math.max(...closures as number[]) : undefined
       const expired = closedAt !== undefined && now - closedAt >= CLOSED_TTL
       if (sizes === undefined) sizes = await readSizes(store)
       if (!canStart()) break
       if (expired) {
-        // Recovery snapshots first; the ledger body is the last deletion.
-        const deletionOrder = [...entries].sort(([left], [right]) => (left.startsWith('r:') ? 0 : left.startsWith('h:') ? 1 : 2) - (right.startsWith('r:') ? 0 : right.startsWith('h:') ? 1 : 2))
-        const intent: ExpiryIntent = { v: 2, mode: 'expiry', session_id: session, closedAt,
-          entries: await Promise.all(deletionOrder.map(async ([key, value]) => ({ key, checksum: await checksumOf(value), bytes: entryBytes(key, value) }))) }
+        const intent = await deletionIntent(session, closedAt, entries, 'expiry')
         checkSizes(sizes, { [recoveryKey(session)]: intent }, 4 * 1024 * 1024)
         if (!canStart()) break
         if (await finishExpiry(store, intent, canStart, probe, true)) verified++
@@ -349,6 +375,124 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   if (failures.length) throw new Error(failures.join('; '))
 }
 
-export const ensureCapacity = async (store: RetentionStore, replacements: Record<string, unknown>, budget: number): Promise<void> => {
-  checkSizes(await readSizes(store), replacements, budget)
+type Eviction = { caller: string; probe: Probe; protect?: string[]; afterEviction?: (session: string) => Promise<void> }
+const CONFLICT_RECORD = /^r:[^:]+:(cleanup-)?conflict-/
+
+// Oldest first by the ledger's last save, else the head's closing clock; no
+// clock sorts last. The caller, written or protected sessions, pending
+// cleanups and conflict-recovery records are never candidates.
+const evictionOrder = async (store: RetentionStore, keys: string[], replacements: Record<string, unknown>, eviction: Eviction): Promise<Array<[string, number]>> => {
+  const kept = new Set([eviction.caller, ...eviction.protect ?? [], ...Object.keys(replacements).flatMap(key => sessionOf(key) ?? [])])
+  const present = new Set(keys)
+  const sessions = [...new Set(keys.flatMap(key => sessionOf(key) ?? []))].filter(session => SESSION_ID.test(session) && !kept.has(session) &&
+    !present.has(recoveryKey(session)) && !ownedKeys(keys, session).some(key => CONFLICT_RECORD.test(key)))
+  const clocks = await Promise.all(sessions.map(async (session): Promise<[string, number]> => {
+    const body = await store.get(`s:${session}`) as Value | undefined
+    if (validClock(body?.savedAt)) return [session, body.savedAt]
+    const head = await store.get(`h:${session}`) as Value | undefined
+    return [session, validClock(head?.closedAt) ? head.closedAt : Number.POSITIVE_INFINITY]
+  }))
+  return clocks.sort(([left, leftAt], [right, rightAt]) => leftAt < rightAt ? -1 : leftAt > rightAt ? 1 : left < right ? -1 : left > right ? 1 : 0)
+}
+
+// Holds a CLOSED guard in `guards` until the caller releases it, reusing one
+// already held: a second writer-lock guard on a held session reports live.
+const holdClosed = async (session: string, guards: Map<string, Guard>, probe: Probe): Promise<boolean> => {
+  if (guards.has(session)) return true
+  const guard = await probe(session)
+  if (guard.state === 'closed') {
+    guards.set(session, guard)
+    return true
+  }
+  await guard.release()
+  return false
+}
+
+// Returns the eviction intent only when the candidate and every switch-archive
+// source are CLOSED under guards held in `guards`, so the planned space is real.
+const confirmEviction = async (store: RetentionStore, session: string, clock: number, eviction: Eviction, guards: Map<string, Guard>): Promise<ExpiryIntent | undefined> => {
+  try {
+    if (!(await holdClosed(session, guards, eviction.probe))) return undefined
+    const entries: Array<[string, unknown]> = []
+    for (const key of ownedKeys(await store.keys(), session)) entries.push([key, await store.get(key)])
+    if (entries.length === 0) return undefined
+    if (hasAmbiguousIdentity(entries, session)) {
+      store.log(`track: eviction keeps ${session}: ambiguous record identity`)
+      return undefined
+    }
+    for (const [, value] of entries) {
+      const source = switchSource(value as SwitchArchive)
+      if (source === undefined || source === session) continue
+      // The saving session's own lease is live by definition.
+      if (source === false || source === eviction.caller || !(await holdClosed(source, guards, eviction.probe))) {
+        store.log(`track: eviction keeps ${session}: session-switch source is unknown, ambiguous or live`)
+        return undefined
+      }
+    }
+    return deletionIntent(session, Number.isFinite(clock) ? clock : Date.now(), entries, 'eviction')
+  } catch (error) {
+    store.log(`track: eviction keeps ${session}: ${String(error)}`)
+    return undefined
+  }
+}
+
+// Deletes through the expiry intent, so an interrupted eviction is finished
+// or cancelled by recoverCleanup exactly like an interrupted expiry. Any
+// failure keeps this candidate (a published intent stays for recovery) and
+// lets the caller try the next one.
+const evictSession = async (store: RetentionStore, intent: ExpiryIntent, eviction: Eviction, guards: Map<string, Guard>): Promise<boolean> => {
+  try {
+    checkSizes(await readSizes(store), { [recoveryKey(intent.session_id)]: intent }, 4 * 1024 * 1024)
+    await finishExpiry(store, intent, () => true, eviction.probe, true, new Set(guards.keys()))
+  } catch (error) {
+    store.log(`track: eviction keeps ${intent.session_id}: ${String(error)}`)
+  }
+  return ownedKeys(await store.keys(), intent.session_id).length === 0
+}
+
+// TRACK-31 (2026-10-20): a write past the budget evicts the oldest CLOSED
+// sessions until it fits. Under budget nothing else is read or written.
+// Nothing is deleted until confirmed candidates alone could make room: each
+// candidate and its switch-archive sources hold CLOSED guards until return,
+// so a live or ambiguous session never lets a write delete history and fail.
+export const ensureCapacity = async (store: RetentionStore, replacements: Record<string, unknown>, budget: number, eviction?: Eviction): Promise<string[]> => {
+  const sizes = await readSizes(store)
+  if (eviction === undefined) {
+    checkSizes(sizes, replacements, budget)
+    return []
+  }
+  if (fitsSizes(sizes, replacements, budget)) return []
+  const keys = await store.keys()
+  const candidates = await evictionOrder(store, keys, replacements, eviction)
+  // Skip probing when even evicting every candidate could not make room.
+  const floor = new Map(sizes)
+  for (const [session] of candidates) for (const key of ownedKeys(keys, session)) floor.delete(key)
+  checkSizes(floor, replacements, budget)
+  const guards = new Map<string, Guard>()
+  const evicted: string[] = []
+  let ready: ExpiryIntent[] = []
+  try {
+    for (const [session, clock] of candidates) {
+      const intent = await confirmEviction(store, session, clock, eviction, guards)
+      if (intent === undefined) continue
+      ready.push(intent)
+      const freed = new Map(await readSizes(store))
+      for (const pending of ready) for (const entry of pending.entries) freed.delete(entry.key)
+      if (!fitsSizes(freed, replacements, budget)) continue
+      for (const pending of ready) {
+        if (!(await evictSession(store, pending, eviction, guards))) continue
+        evicted.push(pending.session_id)
+        await eviction.afterEviction?.(pending.session_id)
+        if (fitsSizes(await readSizes(store), replacements, budget)) return evicted
+      }
+      ready = []
+    }
+    checkSizes(await readSizes(store), replacements, budget)
+    return evicted
+  } finally {
+    for (const [session, guard] of guards) {
+      try { await guard.release() }
+      catch (error) { store.log(`track: eviction guard release failed for ${session}: ${String(error)}`) }
+    }
+  }
 }

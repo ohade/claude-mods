@@ -31,7 +31,8 @@ const rewindCheck = { isScheduled: false, lastAt: -Infinity, running: undefined 
 const AUTO_OPEN_MIN_COLUMNS = 144
 const AUTO_OPEN_DELAY_MS = 50
 const autoOpen = { isScheduled: false }
-// Retention is lease + seven-day closed-session TTL. Never evict by count or size.
+// Retention is lease + seven-day closed-session TTL. Never evict by count; past
+// the size budget only the oldest CLOSED sessions are evicted (TRACK-31).
 // Leave space below the engine's 4 MiB limit for verified metadata and rollback.
 const STORE_BUDGET = 3 * 1024 * 1024
 // The store key of the buckets' index: per session id, when its bucket was saved and its size.
@@ -1315,9 +1316,23 @@ const retentionStore = ($: EngineInterface): RetentionStore => indexedStore({
 const writeVerified = async ($: EngineInterface, key: string, value: unknown): Promise<void> => {
   await writeRetentionValue(retentionStore($), key, value)
 }
-const ensureCapacity = async ($: EngineInterface, replacements: Record<string, unknown>, budget: number): Promise<void> => {
-  await checkCapacity(retentionStore($), replacements, budget)
+// A cleaner's or evictor's view of another session's writer lease: CLOSED
+// only when the guard says so; the caller releases the guard.
+const probeGuard = ($: EngineInterface) => async (target: string) => {
+  const guard = await acquireLock($, 'guard', target)
+  return { state: guardStates.get(guard) ?? 'live', release: () => closeLock(guard) }
 }
+// Over budget, evicts the oldest CLOSED sessions other than `id`, any written
+// session and `protect`, and returns their ids. Each eviction also drops its
+// session from the stored saved index; a caller that publishes its own planned
+// index removes the returned ids from it.
+const ensureCapacity = async ($: EngineInterface, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = []): Promise<string[]> =>
+  checkCapacity(retentionStore($), replacements, budget, { caller: id, protect, probe: probeGuard($),
+    afterEviction: async session => {
+      const stored = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
+      if (stored === undefined || !Object.hasOwn(stored, session)) return
+      await writeVerified($, SAVED_INDEX, Object.fromEntries(Object.entries(stored).filter(([other]) => other !== session)))
+    } })
 
 const sessionHead = (raw: unknown, id: string): SessionHead | undefined => {
   if (raw === undefined) return undefined
@@ -1367,7 +1382,7 @@ const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
 const preserveVersion = async ($: EngineInterface, id: string, kind: string, value: unknown): Promise<void> => {
   const key = `r:${id}:${kind}-${await checksumOf(value)}`
   const snapshot = { v: 1, session_id: id, kind, value }
-  await ensureCapacity($, { [key]: snapshot }, STORE_BUDGET)
+  await ensureCapacity($, id, { [key]: snapshot }, STORE_BUDGET)
   await writeVerified($, key, snapshot)
 }
 
@@ -1383,7 +1398,7 @@ const preserveConflict = async ($: EngineInterface, id: string, memory: Ledger, 
     return key
   }
   const snapshot = { v: 1, session_id: id, kind: 'conflict', value: { ledger: identified, baseline, durable } }
-  await ensureCapacity($, { [key]: snapshot }, STORE_BUDGET)
+  await ensureCapacity($, id, { [key]: snapshot }, STORE_BUDGET)
   await writeVerified($, key, snapshot)
   return key
 }
@@ -1403,10 +1418,7 @@ const adoptAfterConflict = async ($: EngineInterface, id: string, memory: Ledger
 }
 
 const cleanupOwned = async ($: EngineInterface, id: string): Promise<void> => {
-  await cleanupRecords(retentionStore($), id, async target => {
-    const guard = await acquireLock($, 'guard', target)
-    return { state: guardStates.get(guard) ?? 'live', release: () => closeLock(guard) }
-  })
+  await cleanupRecords(retentionStore($), id, probeGuard($))
 }
 
 // A save acknowledges body, durable head and index only after exact read-back.
@@ -1493,7 +1505,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       .filter(([other]) => other !== id)
       .sort(([, a], [, b]) => a.at - b.at)
     const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
-    await ensureCapacity($, { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }, STORE_BUDGET)
+    const evicted = await ensureCapacity($, id, { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }, STORE_BUDGET)
+    for (const session of evicted) delete index[session]
     saveRecoveries.set(id, { previous, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
     await retentionStore($).set(`s:${id}`, bucket)
     const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
@@ -1689,7 +1702,9 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       index[record.key.slice(2)] = { at: bucket.savedAt, bytes: utf8Bytes({ [record.key]: record.value }) + 1, unfinished }
     }
     replacements[SAVED_INDEX] = index
-    await ensureCapacity($, replacements, STORE_BUDGET)
+    // Unchanged records are verified below, so every bundle session is kept.
+    const evicted = await ensureCapacity($, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)))
+    for (const other of evicted) delete index[other]
     const verified: string[] = []
     for (const record of normalized) {
       if (Object.hasOwn(replacements, record.key)) {
