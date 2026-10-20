@@ -16,6 +16,7 @@ spec.loader.exec_module(state)
 
 class LandStateTest(unittest.TestCase):
     def setUp(self):
+        (ROOT / '.local').mkdir(exist_ok=True)
         self.directory = tempfile.TemporaryDirectory(dir=ROOT / '.local')
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)

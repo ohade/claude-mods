@@ -18,6 +18,16 @@ The default layout is `~/git/claude-mods`, `~/git/worktrees/claude-mods/live` an
 worktree; the script does not install or change them. `CLAUDE_MODS_HOME` replaces the home
 prefix for an alternate layout or isolated tests; unset means the current user's home.
 
+The gate also runs each mod's Python `tests/helpers/test_*.py` suite, Bun
+`tests/helpers/check_*.ts` checks, and any declared npm `typecheck` script. It runs the
+landing script's shell and Python self-tests once from the tested tree. Python suites
+need a nonzero test count and an `OK` footer. Packages need a committed lockfile:
+`npm ci --ignore-scripts --include=dev --no-audit --no-fund` installs their development
+dependencies only in the temporary worktree. Registry access or a populated local cache is
+required; an offline dependency failure refuses landing before publication. Have Python 3,
+Bun, Node/npm and `~/.Trash` available; keep the real `HOME`, since OS helpers use it to
+find the installed checkout. `CLAUDE_MODS_HOME` changes only the deployment layout.
+
 ```sh
 scripts/land.sh <reviewed-commit>
 scripts/land.sh --status
@@ -38,9 +48,10 @@ the connection failed). Repeating a non-forced push is safe. Existing successful
 their original `previous_commit` when that same deployment is retried.
 
 Each mod has a private log under `~/.claude/state/claude-mods-land-logs.*`. Tests time out after
-10 minutes per mod; push after 2 minutes. Interrupted children are stopped before the temporary
+10 minutes per native suite or helper command; push after 2 minutes. Interrupted children are stopped before the temporary
 worktree is removed. Receipts record `commit`, `previous_commit`, UTC `deployed_at`, per-mod
-`pass`/`fail` counts and `log_dir`. An unfamiliar test footer fails closed. Keep failure logs for
+native `pass`/`fail` counts and `log_dir`. Additional checks have separate logs in that directory.
+An unfamiliar test footer fails closed. Keep failure logs for
 diagnosis; they are not committed. No arguments/invalid usage exit 2, help/status exit 0 on
 success, runtime failures exit 1, and Ctrl-C exits 130.
 

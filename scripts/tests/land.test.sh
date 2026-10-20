@@ -85,6 +85,114 @@ expect_unchanged() {
   expect_equal "$(cksum < "$receipt")" "$before_receipt" 'receipt changed'
   expect_equal "$(git -C "$repo" worktree list --porcelain | grep -c '^worktree ')" 2 'temporary worktree leaked'
 }
+commit_checks() {
+  git -C "$repo" checkout -q candidate
+  git -C "$repo" add .
+  git -C "$repo" commit -qm 'fixture release checks'
+  target=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" checkout -q main
+}
+
+# GR-1 (2026-10-20): the native runner passed while real helper checks were skipped.
+prepare_repo python-helper
+mkdir -p "$repo/track/tests/helpers"
+cat > "$repo/track/tests/helpers/test_release.py" <<'PYTHON_FAILURE'
+import unittest
+class ReleaseCheck(unittest.TestCase):
+    def test_real_helper_failure(self):
+        self.fail('fixture Python assertion must prevent landing')
+PYTHON_FAILURE
+commit_checks
+run_failure
+expect_unchanged
+printf 'PASS failing Python helper prevents publication\n'
+
+prepare_repo bun-helper
+mkdir -p "$repo/track/tests/helpers"
+cat > "$repo/track/tests/helpers/check_release.ts" <<'BUN_FAILURE'
+import assert from 'node:assert/strict'
+assert.fail('fixture Bun assertion must prevent landing')
+BUN_FAILURE
+commit_checks
+run_failure
+expect_unchanged
+printf 'PASS failing Bun helper prevents publication\n'
+
+prepare_repo release-shell
+cat > "$repo/scripts/tests/land.test.sh" <<'SHELL_FAILURE'
+#!/bin/bash
+printf 'FAIL: fixture release self-test must prevent landing\n' >&2
+exit 1
+SHELL_FAILURE
+commit_checks
+run_failure
+expect_unchanged
+printf 'PASS failing shell self-test prevents publication\n'
+
+prepare_repo release-python
+cat > "$repo/scripts/tests/test_land_state.py" <<'STATE_FAILURE'
+import unittest
+class ReleaseCheck(unittest.TestCase):
+    def test_release_state_failure(self):
+        self.fail('fixture release-state assertion must prevent landing')
+STATE_FAILURE
+commit_checks
+run_failure
+expect_unchanged
+printf 'PASS failing Python self-test prevents publication\n'
+
+prepare_repo typecheck
+cat > "$repo/track/package.json" <<'PACKAGE'
+{"name":"fixture-checks","version":"1.0.0","private":true,"scripts":{"typecheck":"node -e \"process.exit(23)\""}}
+PACKAGE
+cat > "$repo/track/package-lock.json" <<'LOCK'
+{"name":"fixture-checks","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"fixture-checks","version":"1.0.0"}}}
+LOCK
+commit_checks
+run_failure
+expect_unchanged
+printf 'PASS failing typecheck prevents publication\n'
+
+prepare_repo helper-success
+mkdir -p "$repo/track/tests/helpers"
+cat > "$repo/track/tests/helpers/test_release.py" <<'PYTHON_SUCCESS'
+import os
+from pathlib import Path
+import unittest
+class ReleaseCheck(unittest.TestCase):
+    def test_real_helper_runs(self):
+        with (Path(os.environ['CLAUDE_MODS_HOME']) / 'checks').open('a') as output:
+            output.write('python\n')
+        self.assertEqual(Path.cwd().name, 'track')
+PYTHON_SUCCESS
+cat > "$repo/track/tests/helpers/check_release.ts" <<'BUN_SUCCESS'
+import assert from 'node:assert/strict'
+import { appendFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
+assert.equal(basename(process.cwd()), 'track')
+appendFileSync(join(process.env.CLAUDE_MODS_HOME!, 'checks'), 'bun\n')
+BUN_SUCCESS
+cat > "$repo/scripts/tests/land.test.sh" <<'SHELL_SUCCESS'
+#!/bin/bash
+set -euo pipefail
+printf 'shell\n' >> "$CLAUDE_MODS_HOME/checks"
+SHELL_SUCCESS
+cat > "$repo/scripts/tests/test_land_state.py" <<'STATE_SUCCESS'
+import os
+from pathlib import Path
+import unittest
+class ReleaseCheck(unittest.TestCase):
+    def test_release_state_runs(self):
+        with (Path(os.environ['CLAUDE_MODS_HOME']) / 'checks').open('a') as output:
+            output.write('state\n')
+STATE_SUCCESS
+commit_checks
+bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1
+expect_equal "$(sort "$CLAUDE_MODS_HOME/checks" | tr '\n' ' ')" 'bun python shell state ' 'helper checks skipped or repeated'
+expect_equal "$(git -C "$repo" rev-parse HEAD)" "$target" 'helper success did not land'
+python3 "$suite_dir/scripts/tests/verify-receipt.py" "$receipt" "$target" "$base"
+printf 'PASS all helper families execute once before publication\n'
+
 prepare_repo dirty
 printf 'untracked\n' > "$repo/dirty"
 run_failure
@@ -183,4 +291,4 @@ if bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then result=0; else
 expect_equal "$(git --git-dir="$CLAUDE_MODS_HOME/origin.git" rev-parse main)" "$target" 'pushed untested concurrent main'
 expect_equal "$result" 1 'concurrent main change not reported'
 printf 'PASS pinned push detects concurrent main\n'
-printf 'PASS 10 landing cases (FIXTURE; no real Claude or remote service)\n'
+printf 'PASS 16 landing cases (FIXTURE; no real Claude or remote service)\n'

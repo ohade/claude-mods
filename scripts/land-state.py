@@ -74,15 +74,23 @@ def run_bounded(seconds, argv):
     process = subprocess.Popen(argv, start_new_session=True)
     try:
         return process.wait(timeout=seconds)
-    except (subprocess.TimeoutExpired, KeyboardInterrupt):
-        os.killpg(process.pid, signal.SIGTERM)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
+        interrupted = isinstance(error, KeyboardInterrupt)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # The owned group already exited.
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
+            pass  # Kill the whole group below, including children of an exited parent.
+        try:
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+        except ProcessLookupError:
+            pass  # No member remains; a parent exit alone does not prove that.
+        process.wait()
         print(f'land: command interrupted or exceeded {seconds}s: {argv[0]}', file=sys.stderr)
-        return 130 if sys.exc_info()[0] is KeyboardInterrupt else 1
+        return 130 if interrupted else 1
 
 
 def record_counts(log, name, path):
