@@ -17,10 +17,12 @@ for (const component of ['ToolUse', 'ToolResult'] as const) {
       atomStore(on, 'ledger', EMPTY)
       const nativeProps: unknown[] = []
       const nativeText = `Native ${component}: ${tool}`
-      on('ui.render', { component }, (_, e) => {
+      const renderNative = (_: unknown, e: { props: unknown }) => {
         nativeProps.push(e.props)
-        return { type: 'Text', props: {}, children: [nativeText] }
-      })
+        return { type: 'Text' as const, props: {}, children: [nativeText] }
+      }
+      if (component === 'ToolUse') on('ui.render', { component: 'ToolUse' }, renderNative)
+      else on('ui.render', { component: 'ToolResult' }, renderNative)
       const props = {
         tool, tool_use_id: 'expanded-call', isExpanded: true,
         ...(component === 'ToolUse'
@@ -40,10 +42,12 @@ for (const component of ['ToolUse', 'ToolResult'] as const) {
     test(`UI-4 collapsed ${component} for ${tool} keeps Track rendering`, async ($, on) => {
       atomStore(on, 'ledger', EMPTY)
       const nativeCalls: unknown[] = []
-      on('ui.render', { component }, (_, e) => {
+      const renderNative = (_: unknown, e: { props: unknown }) => {
         nativeCalls.push(e.props)
-        return { type: 'Text', props: {}, children: ['Native details must stay folded'] }
-      })
+        return { type: 'Text' as const, props: {}, children: ['Native details must stay folded'] }
+      }
+      if (component === 'ToolUse') on('ui.render', { component: 'ToolUse' }, renderNative)
+      else on('ui.render', { component: 'ToolResult' }, renderNative)
 
       const ui = await $.ui.mount({
         plugin: 'track', surface: 'terminal', component, requestId: 'collapsed-row',

@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { EngineInterface, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
+import type { EngineInterface, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, RenderInput, Timer } from 'claude-code'
 
 import type { Activity, FreshnessCandidate, FreshnessKind, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, StepFreshness, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
@@ -1833,6 +1833,13 @@ const restoreNotice = (r: Restore): string => [
 
 const restoreKey = (q: Question, kind: 'q' | 'a'): string => `restored-${kind}:${q.restoredBy}:${q.id}`
 
+const ownsVisibleQuestionTarget = (q: Question, call: string | undefined): boolean =>
+  call !== undefined && q.cleared !== true && (
+    (q.trackedBy === call && q.askedRequestId === call)
+    || (q.answeredBy === call && q.answerKey === call)
+    || q.restoredBy === call
+  )
+
 // Human labels follow the full uncleared list, not the scroll window. Stored and
 // model-facing ids stay permanent; an old transcript row falls back to that id.
 const questionLabels = (questions: readonly Question[]): ((id: number | string) => string) => {
@@ -1866,6 +1873,28 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
   }))
   const count = r.visibleSteps === undefined ? `${r.steps} saved ${r.steps === 1 ? 'step' : 'steps'}` : restoreStepCount(r)
   return <Box flexDirection="column"><Text bold>{`Restored from the previous session: ${count}, ${counted(r.questions.length, 'question')}`}</Text>{rows}</Box>
+}
+
+// UI-4 (2026-10-21): isExpanded also covers groups Track unfolded for a jump.
+// The SDK exposes no origin bit. Preserve the target label/flash beside native
+// details in both views; a remembered call-id exception would hide ctrl+o later.
+const renderExpandedToolUse = async ($: EngineInterface, e: RenderInput<'ToolUse'>, native: RenderElement): Promise<RenderElement> => {
+  if (![TRACK_QUESTION, MARK_ANSWERED, RESTORE_TRACKER].includes(e.props.tool)) return native
+  const l = await read($, ledger)
+  const q = l.questions.find(one => ownsVisibleQuestionTarget(one, e.props.tool_use_id))
+  if (q === undefined) return native
+  const { Box, Text } = $.ui.resolve(e)
+  if (e.props.tool === RESTORE_TRACKER) {
+    const restore = l.restores?.find(one => one.by === e.props.tool_use_id)
+    if (restore === undefined) return native
+    rememberRender(`restore:${restore.by}`, e.requestId)
+    return <Box flexDirection="column">{await renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))}{native}</Box>
+  }
+  const label = e.props.tool === TRACK_QUESTION
+    ? `${questionLabels(l.questions)(q.id)}. ${q.head}`
+    : `✓ ${questionLabels(l.questions)(q.id)}. ${q.status}`
+  const level = await read($, memberOf(flash, e))
+  return <Box flexDirection="column"><Text dimColor backgroundColor={shade(level)}>{label}</Text>{native}</Box>
 }
 
 // A saved step as a fresh Step, or undefined when the row is not one: restore_tracker reads rows
@@ -3483,13 +3512,7 @@ export const register: Register = on => {
   // or restore snapshots expanded so those owned rows exist. Cleared sources do not hold it open.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     const l = await read($, ledger)
-    const ownsTarget = e.props.calls.some(call => call.tool_use_id !== undefined && (
-      l.questions.some(q => q.cleared !== true && (
-        (q.trackedBy === call.tool_use_id && q.askedRequestId === call.tool_use_id)
-        || (q.answeredBy === call.tool_use_id && q.answerKey === call.tool_use_id)
-        || q.restoredBy === call.tool_use_id
-      ))
-    ))
+    const ownsTarget = e.props.calls.some(call => l.questions.some(q => ownsVisibleQuestionTarget(q, call.tool_use_id)))
     return next(ownsTarget && !e.props.isExpanded ? { ...e, props: { ...e.props, isExpanded: true } } : e)
   })
 
@@ -3497,7 +3520,7 @@ export const register: Register = on => {
   // draw nothing; mark_answered draws one dim acknowledgement, separate from answer targets.
   // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.isExpanded) return next(e)
+    if (e.props.isExpanded) return renderExpandedToolUse($, e, await next(e))
 
     if (e.props.tool === TRACK_QUESTION) {
       const l = await read($, ledger)
