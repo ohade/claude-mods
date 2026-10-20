@@ -3493,10 +3493,12 @@ export const register: Register = on => {
     return next(ownsTarget && !e.props.isExpanded ? { ...e, props: { ...e.props, isExpanded: true } } : e)
   })
 
-  // The model's bookkeeping calls stay quiet in the transcript: track_question and track_steps
+  // Collapsed bookkeeping calls stay quiet in the transcript: track_question and track_steps
   // draw nothing; mark_answered draws one dim acknowledgement, separate from answer targets.
   // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if (e.props.isExpanded) return next(e)
+
     if (e.props.tool === TRACK_QUESTION) {
       const l = await read($, ledger)
       const q = l.questions.find(q => q.trackedBy === e.props.tool_use_id && q.askedRequestId === e.props.tool_use_id)
@@ -3605,6 +3607,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.props.isExpanded) return next(e)
+
     if ([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER].includes(e.props.tool)) {
       const { Box } = $.ui.resolve(e)
 
