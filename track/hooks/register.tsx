@@ -1875,26 +1875,38 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
   return <Box flexDirection="column"><Text bold>{`Restored from the previous session: ${count}, ${counted(r.questions.length, 'question')}`}</Text>{rows}</Box>
 }
 
-// UI-4 (2026-10-21): isExpanded also covers groups Track unfolded for a jump.
-// The SDK exposes no origin bit. Preserve the target label/flash beside native
-// details in both views; a remembered call-id exception would hide ctrl+o later.
-const renderExpandedToolUse = async ($: EngineInterface, e: RenderInput<'ToolUse'>, native: RenderElement): Promise<RenderElement> => {
-  if (![TRACK_QUESTION, MARK_ANSWERED, RESTORE_TRACKER].includes(e.props.tool)) return native
-  const l = await read($, ledger)
-  const q = l.questions.find(one => ownsVisibleQuestionTarget(one, e.props.tool_use_id))
-  if (q === undefined) return native
+const renderAnsweredToolUse = async ($: EngineInterface, e: RenderInput<'ToolUse'>, l: Ledger): Promise<RenderElement> => {
   const { Box, Text } = $.ui.resolve(e)
-  if (e.props.tool === RESTORE_TRACKER) {
-    const restore = l.restores?.find(one => one.by === e.props.tool_use_id)
-    if (restore === undefined) return native
-    rememberRender(`restore:${restore.by}`, e.requestId)
-    return <Box flexDirection="column">{await renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))}{native}</Box>
-  }
-  const label = e.props.tool === TRACK_QUESTION
-    ? `${questionLabels(l.questions)(q.id)}. ${q.head}`
-    : `✓ ${questionLabels(l.questions)(q.id)}. ${q.status}`
+  const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
+  const status = input.status === 'deferred' ? 'deferred' : 'answered'
   const level = await read($, memberOf(flash, e))
-  return <Box flexDirection="column"><Text dimColor backgroundColor={shade(level)}>{label}</Text>{native}</Box>
+  const questionLabel = questionLabels(l.questions)
+  const label = `✓ ${questionLabel(String(input.id ?? '?'))}. ${status}`
+  const q = l.questions.find(one => one.id === Number(input.id))
+  if (q?.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
+    return <Box flexDirection="column"><Text dimColor backgroundColor={e.props.isExpanded ? shade(level) : undefined}>{label}</Text><Box key={`answer:${q.answerKey}`} backgroundColor={shade(level)}><Text wrap="wrap">{q.answerText}</Text></Box></Box>
+  }
+  if (q !== undefined && q.status !== status) return <Text dimColor>{`${questionLabel(q.id)}. ${q.status}`}</Text>
+  return level > 0 ? <Text backgroundColor={shade(level)}>{` ${label} `}</Text> : <Text dimColor>{label}</Text>
+}
+
+// One source drawing for compact rows and expanded rows that own a jump target.
+const renderQuestionToolUse = async ($: EngineInterface, e: RenderInput<'ToolUse'>, l: Ledger): Promise<RenderElement> => {
+  const { Box, Text } = $.ui.resolve(e)
+  if (e.props.tool === TRACK_QUESTION) {
+    const q = l.questions.find(one => one.trackedBy === e.props.tool_use_id && one.askedRequestId === e.props.tool_use_id)
+    if (q === undefined) return <Box />
+    const level = await read($, memberOf(flash, e))
+    return <Text dimColor backgroundColor={shade(level)}>{`${questionLabels(l.questions)(q.id)}. ${q.head}`}</Text>
+  }
+  if (e.props.tool === RESTORE_TRACKER) {
+    // Words come from the copy the call kept; labels follow the current pane.
+    const restore = l.restores?.find(one => one.by === e.props.tool_use_id)
+    if (restore === undefined) return <Box />
+    rememberRender(`restore:${restore.by}`, e.requestId)
+    return renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))
+  }
+  return renderAnsweredToolUse($, e, l)
 }
 
 // A saved step as a fresh Step, or undefined when the row is not one: restore_tracker reads rows
@@ -3520,33 +3532,21 @@ export const register: Register = on => {
   // draw nothing; mark_answered draws one dim acknowledgement, separate from answer targets.
   // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.props.isExpanded) return renderExpandedToolUse($, e, await next(e))
-
-    if (e.props.tool === TRACK_QUESTION) {
+    if ([TRACK_QUESTION, MARK_ANSWERED, RESTORE_TRACKER].includes(e.props.tool)) {
       const l = await read($, ledger)
-      const q = l.questions.find(q => q.trackedBy === e.props.tool_use_id && q.askedRequestId === e.props.tool_use_id)
-      if (q !== undefined) {
-        const { Text } = $.ui.resolve(e)
-        const level = await read($, memberOf(flash, e))
-        return <Text dimColor backgroundColor={shade(level)}>{`${questionLabels(l.questions)(q.id)}. ${q.head}`}</Text>
-      }
+      if (e.props.isExpanded && !l.questions.some(q => ownsVisibleQuestionTarget(q, e.props.tool_use_id))) return next(e)
+      const compact = await renderQuestionToolUse($, e, l)
+      if (!e.props.isExpanded) return compact
+      // UI-4 (2026-10-21): the SDK also marks plugin-unfolded rows expanded.
+      // Keep the full owned target beside native details, without an origin cache.
+      const { Box } = $.ui.resolve(e)
+      return <Box flexDirection="column">{compact}{await next(e)}</Box>
     }
-    if (e.props.tool === TRACK_QUESTION || e.props.tool === TRACK_STEPS) {
+    if (e.props.isExpanded) return next(e)
+    if (e.props.tool === TRACK_STEPS) {
       const { Box } = $.ui.resolve(e)
 
       return <Box />
-    }
-    if (e.props.tool === RESTORE_TRACKER) {
-      const { Box } = $.ui.resolve(e)
-      // Words come from the copy the call kept; labels follow the current pane.
-      // A refused call kept none and draws nothing.
-      const l = await read($, ledger)
-      const restore = l.restores?.find(r => r.by === e.props.tool_use_id)
-      if (restore === undefined) {
-        return <Box />
-      }
-      rememberRender(`restore:${restore.by}`, e.requestId)
-      return renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))
     }
     if (e.props.tool === MARK_STEP) {
       const { Box, Text } = $.ui.resolve(e)
@@ -3578,23 +3578,6 @@ export const register: Register = on => {
       }
       return <Text dimColor>{label}</Text>
     }
-    if (e.props.tool === MARK_ANSWERED) {
-      const { Box, Text } = $.ui.resolve(e)
-      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
-      const status = input.status === 'deferred' ? 'deferred' : 'answered'
-      const level = await read($, memberOf(flash, e))
-      const l = await read($, ledger)
-      const questionLabel = questionLabels(l.questions)
-      const label = `✓ ${questionLabel(String(input.id ?? '?'))}. ${status}`
-      const q = l.questions.find(one => one.id === Number(input.id))
-      if (q?.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
-        return <Box flexDirection="column"><Text dimColor>{label}</Text><Box key={`answer:${q.answerKey}`} backgroundColor={shade(level)}><Text wrap="wrap">{q.answerText}</Text></Box></Box>
-      }
-      if (q !== undefined && q.status !== status) return <Text dimColor>{`${questionLabel(q.id)}. ${q.status}`}</Text>
-
-      return level > 0 ? <Text backgroundColor={shade(level)}>{` ${label} `}</Text> : <Text dimColor>{label}</Text>
-    }
-
     return next(e)
   })
 
