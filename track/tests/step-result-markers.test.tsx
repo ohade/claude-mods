@@ -31,6 +31,98 @@ const prepare = (on: On, steps = [step(), step('plan:2')], seed: Record<string, 
   return { clock, ledger, turn, store, lines, contexts }
 }
 
+// UI-3: a proposed status is not a saved result. Historical labels come from
+// the native call's acknowledged receipt, not a replacement row reusing its id.
+test('UI-3 a refused unknown step never draws a completed claim', async ($, on) => {
+  prepare(on)
+  await complete($, 'plan:9')
+  const source = await $.ui.mount(toolRow('plan:9'))
+  const text = (await source.findAll({ type: 'Text' })).map(row => row.text ?? '').join('\n')
+  expect(text).not.toContain('completed')
+  expect(text).not.toContain('✓')
+  expect(text).toContain('plan:9')
+})
+
+test('UI-3 an unaccepted completion cannot override the saved pending status', async ($, on) => {
+  prepare(on)
+  const source = await $.ui.mount(toolRow())
+  const text = (await source.findAll({ type: 'Text' })).map(row => row.text ?? '').join('\n')
+  expect(text).not.toContain('completed')
+  expect(text).not.toContain('✓')
+  expect(text).toContain('First work')
+})
+
+test('UI-3 an unsaved replacement result cannot claim a completed update', async ($, on) => {
+  const fixture = prepare(on)
+  await complete($)
+  fixture.store.faults.write = 'disk unavailable'
+  const proposed = 'Unsaved replacement result'
+  const rejected = await complete($, 'plan:1', proposed, 'unsaved-call')
+  expect(String(rejected.result)).toContain('unsaved')
+  const row = toolRow('plan:1', proposed, 'unsaved-call')
+  const source = await $.ui.mount({ ...row, props: { ...row.props, output: rejected.result } })
+  const text = (await source.findAll({ type: 'Text' })).map(one => one.text ?? '').join('\n')
+  expect(text).not.toContain('completed')
+  expect(text).not.toContain(proposed)
+  expect(text).toContain('unsaved')
+})
+
+for (const flag of ['isRunning', 'isErrored', 'isInterrupted'] as const) {
+  test(`UI-3 a ${flag} call cannot borrow an earlier completed row`, async ($, on) => {
+    prepare(on)
+    await complete($)
+    const row = toolRow('plan:1', RESULT, 'later-unaccepted-call')
+    const source = await $.ui.mount({ ...row, props: { ...row.props, [flag]: true } })
+    const text = (await source.findAll({ type: 'Text' })).map(one => one.text ?? '').join('\n')
+    expect(text).not.toContain('completed')
+    expect(text).not.toContain('✓')
+  })
+}
+
+test('UI-3 a historical accepted source keeps its title after a saved replacement plan', async ($, on) => {
+  prepare(on)
+  const receipt = await complete($)
+  const row = toolRow()
+  const source = await $.ui.mount({ ...row, props: { ...row.props, output: receipt.result } })
+  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], replace: true, tool_use_id: 'new-plan-call' })
+  const text = (await source.findAll({ type: 'Text' })).map(one => one.text ?? '').join('\n')
+  expect(text).toContain('First work')
+  expect(text).not.toContain('Brand new work')
+  expect(text).toContain(RESULT)
+})
+
+test('UI-3 invalid step status has its own named refusal', async ($, on) => {
+  const fixture = prepare(on)
+  const result = await invoke($, MARK, { id: 'plan:1', status: 'completedd' })
+  expect(String(result.result)).toContain('Unknown step status')
+  expect(fixture.ledger.value.steps[0]?.status).toBe('pending')
+})
+
+test('UI-3 unknown step id has its own named refusal', async ($, on) => {
+  const fixture = prepare(on)
+  const result = await invoke($, MARK, { id: 'plan:9', status: 'completed' })
+  expect(String(result.result)).toContain('Unknown step: plan:9')
+  expect(fixture.ledger.value.steps.map(row => row.status)).toEqual(['pending', 'pending'])
+})
+
+test('UI-3 the success sentence uses the row acknowledged after a concurrent rename', async ($, on) => {
+  let fixture: ReturnType<typeof prepare>
+  let renamed = false
+  on('state.set', { plugin: 'track', key: ['ledger'] }, async (_, e, next) => {
+    if (!renamed && (e.value as Ledger).steps.some(row => row.id === 'plan:1' && row.status === 'completed')) {
+      renamed = true
+      fixture.ledger.value = { ...fixture.ledger.value, steps: fixture.ledger.value.steps.map(row => row.id === 'plan:1' ? { ...row, subject: 'Concurrent canonical title' } : row) }
+      fixture.ledger.version += 1
+    }
+    return next(e)
+  })
+  fixture = prepare(on)
+  const result = await complete($)
+  expect(renamed).toBe(true)
+  expect(String(result.result).startsWith('Step plan:1 "Concurrent canonical title" marked completed.')).toBe(true)
+  expect(fixture.ledger.value.steps[0]).toMatchObject({ subject: 'Concurrent canonical title', status: 'completed' })
+})
+
 test('TRACK-26 completed result is saved and drawn once at its acknowledged ToolUse', async ($, on) => {
   const f = prepare(on)
   await complete($)
