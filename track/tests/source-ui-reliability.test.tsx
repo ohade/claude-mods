@@ -1,6 +1,6 @@
 // FIXTURE release gates: verified sources, reachable fallback, durable explicit UI actions.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pane, pluginStore, trackCommand } from './kit'
 
 const prepare = (on: any, prompts: any[] = [], options: Parameters<typeof pluginStore>[3] = {}) => {
   const l = atomStore(on, 'ledger', { ...EMPTY, prompts })
@@ -67,7 +67,7 @@ test('explicit reopening cannot write preferences without session ownership', as
   const durable = atomStore(on, 'durability', { isUnsaved: false, reason: '' })
   atomStore(on, 'pane', { isOpen: false, hidden: false, closedByPerson: true })
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  await $.command.run({ command: 'track', args: '' })
+  await trackCommand($, '')
   expect(store.held.get('closedByPerson')).toBe(true)
   expect(durable.value.isUnsaved).toBe(true)
   expect(durable.value.reason).toContain('another loaded Track instance')
@@ -81,7 +81,7 @@ test('a refused explicit preference save is visible and retried by the next ackn
   atomStore(on, 'pane', { isOpen: false, hidden: false, closedByPerson: true })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   let failure: unknown
-  try { await $.command.run({ command: 'track', args: '' }) }
+  try { await trackCommand($, '') }
   catch (error) { failure = error }
   expect(failure).toBeUndefined()
   expect(durable.value.isUnsaved).toBe(true)

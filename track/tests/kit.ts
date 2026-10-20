@@ -15,6 +15,11 @@ export const trackCommand = ($: Engine, args: string) => $.command.run({
   presentation: { isFullscreen: true, columns: 120 },
 })
 
+// A direct test event needs the metadata the host stamps on a person's Enter.
+export const trackPrompt = ($: Engine, text: string) => $.prompt.submit({
+  text, wait: false, origin: { kind: 'composer' },
+})
+
 // The track pane's render event, docked beside the transcript or inline above the prompt.
 export const pane = (placement: 'dock' | 'inline', bodyColumns = 60, bodyRows = 20) => ({
   plugin: 'track',
