@@ -159,7 +159,7 @@ for (const receipt of ['track_steps', 'mark_step', 'TaskCreate', 'TaskUpdate', '
     const fixture = await prepare($, on, receipt === 'TaskUpdate' ? [step({ taskId: '7' })] : undefined)
     fixture.claim.kind = 'untracked_edit'
     fixture.claim.reason = EDIT
-    const inputs = { track_steps: { steps: ['Finish'] }, mark_step: { id: 'plan:1', status: 'completed' }, TaskCreate: { subject: 'Finish', description: 'Finish' }, TaskUpdate: { taskId: '7', status: 'completed' }, TodoWrite: { todos: [{ content: 'Finish', status: 'pending' }] } }
+    const inputs = { track_steps: { steps: ['Finish'], replace: true }, mark_step: { id: 'plan:1', status: 'completed' }, TaskCreate: { subject: 'Finish', description: 'Finish' }, TaskUpdate: { taskId: '7', status: 'completed' }, TodoWrite: { todos: [{ content: 'Finish', status: 'pending' }] } }
     await invoke($, receipt.includes('_') ? `mcp__track__${receipt}` : receipt, inputs[receipt])
     await invoke($, 'Edit')
     await response($)

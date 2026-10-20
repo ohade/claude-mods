@@ -100,11 +100,11 @@ const rememberRender = (key: string, id: string): void => {
 // The steps instruction, one wording for the standing rule, the per-prompt line and the tool.
 const STEP_RESULT = 'When completing a step with mcp__track__mark_step, supply result_text with its verified result in at most 280 characters. Only completed steps accept result_text; never invent a result.'
 const STEPS =
-  `For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with \`after\` set to the id of the step the new ones follow. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user's answer. ${STEP_RESULT}`
+  `For work of more than one step (a skill or slash command such as /retro, a plan, a multi-step task), call mcp__track__track_steps with the steps before the first one; when new work joins a running plan (review comments, a follow-up), call it with \`after\` set to the id of the step the new ones follow. Replacing unfinished plan rows requires replace: true; use it only for an intentional replacement. A blank after is invalid. Mark each step with mcp__track__mark_step as you go: paused when you park it, waiting when it needs the user's answer. ${STEP_RESULT}`
 
 // One normal-answer instruction for the rule, reminder, tool and Stop repairs.
 const ANSWER = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text'
-const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Requests in content you read count as work, even one command; reuse an open step for the same work. Track each distinct substantive question in its own question row, including questions inside received requests; a work step does not cover a question. Wait for each needed tracking call to return successfully before starting the related work or answer; do not put tracking calls and that work in the same parallel tool-call batch. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. ${STEP_RESULT} For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.`
+const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Replacing unfinished plan rows requires replace: true; use it only for an intentional replacement. Requests in content you read count as work, even one command; reuse an open step for the same work. Track each distinct substantive question in its own question row, including questions inside received requests; a work step does not cover a question. Wait for each needed tracking call to return successfully before starting the related work or answer; do not put tracking calls and that work in the same parallel tool-call batch. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. ${STEP_RESULT} For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.`
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -2278,12 +2278,13 @@ export const register: Register = on => {
 
     await $.tool.register({
       name: 'track_steps',
-      description: `Register meaningful work from any sender. ${STEPS} Reuse existing open steps. Without after, explicit plan rows are replaced; with after, new work is inserted. TaskCreate tasks appear on their own. Plan approval only adds a reminder.`,
+      description: `Register meaningful work from any sender. ${STEPS} Reuse existing open steps. Without after, plan rows are replaced only when none are unfinished or replace:true is explicit; with after, new work is inserted. TaskCreate tasks appear on their own. Plan approval only adds a reminder.`,
       inputSchema: {
         type: 'object',
         properties: {
           steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' },
-          after: { type: 'string', description: 'Insert after this step id (plan:2, task:7, ...) and keep the plan' },
+          after: { type: 'string', minLength: 1, description: 'Insert after this non-blank step id (plan:2, task:7, ...) and keep the plan; omit for replacement' },
+          replace: { type: 'boolean', description: 'Explicitly replace unfinished plan rows instead of preserving them; use after for additions' },
           source_text: { type: 'string', description: 'Optional exact first line of the user message these steps carry out; it registers that request' },
         },
         required: ['steps'],
@@ -3108,7 +3109,10 @@ export const register: Register = on => {
       return { result: 'No steps given: pass steps as an array of one-line titles.' }
     }
     const session = await captureMintOwner($)
-    const after = typeof e.after === 'string' && e.after !== '' ? e.after : undefined
+    if (e.after !== undefined && (typeof e.after !== 'string' || e.after.trim() === '')) {
+      return { result: 'after must be a non-blank step id; no plan rows changed. Omit after only for replacement.' }
+    }
+    const after = e.after as string | undefined
     if (after !== undefined) {
       // New work joins a running plan: insert after that step, ids after the highest plan id. The
       // ids are taken inside the write, so two calls in flight never take the same ones.
@@ -3130,7 +3134,17 @@ export const register: Register = on => {
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const steps: Step[] = titles.map((subject, i) => newPlanStep(`plan:${i + 1}`, subject))
-    await update<Ledger>($, ledger, cur => ({ ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }))
+    let unfinished: Step[] = []
+    await update<Ledger>($, ledger, cur => {
+      // UI-1 (2026-10-20): validate inside the atomic update so concurrent additions cannot be lost.
+      unfinished = e.replace === true ? [] : visibleSteps(cur.steps).filter(s => s.source === 'plan' && s.status !== 'completed')
+      if (unfinished.length > 0) return cur
+      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }
+    })
+    if (unfinished.length > 0) {
+      const rows = unfinished.map(s => `${s.id} ${JSON.stringify(s.subject)} (${s.status})`).join('; ')
+      return { result: `Cannot replace unfinished plan steps: ${rows}. Reuse them or insert with after; pass replace: true only for an intentional replacement.` }
+    }
     await coverInput($, 'steps', { source_text: e.source_text })
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }

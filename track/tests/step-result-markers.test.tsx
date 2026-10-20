@@ -126,7 +126,7 @@ test('TRACK-26 a new plan reusing an id cannot borrow the old acknowledged R', a
   await complete($)
   await $.ui.mount(toolRow())
   f.store.faults.write = 'disk unavailable'
-  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], tool_use_id: 'new-plan-call' })
+  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], replace: true, tool_use_id: 'new-plan-call' })
   await invoke($, MARK, { id: 'plan:1', status: 'completed' })
   const ui = await $.ui.mount(pane('dock', 80, 30))
   expect(await ui.find({ key: 'r-plan:1' })).toBeUndefined()
@@ -137,7 +137,7 @@ test('TRACK-26 an old result source cannot adopt a new plan title after a failed
   await complete($)
   const source = await $.ui.mount(toolRow())
   f.store.faults.write = 'disk unavailable'
-  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], tool_use_id: 'new-plan-call' })
+  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], replace: true, tool_use_id: 'new-plan-call' })
   await invoke($, MARK, { id: 'plan:1', status: 'completed' })
   const text = (await source.findAll({ type: 'Text' })).map(row => row.text ?? '').join('\n')
   expect(text).toContain('First work')
@@ -147,11 +147,11 @@ test('TRACK-26 an old result source cannot adopt a new plan title after a failed
 
 test('TRACK-26 identical plan titles still cannot retarget an old accepted result', async ($, on) => {
   const f = prepare(on)
-  await invoke($, 'mcp__track__track_steps', { steps: ['First work'], tool_use_id: 'original-plan-call' })
+  await invoke($, 'mcp__track__track_steps', { steps: ['First work'], replace: true, tool_use_id: 'original-plan-call' })
   await complete($)
   await $.ui.mount(toolRow())
   f.store.faults.write = 'disk unavailable'
-  await invoke($, 'mcp__track__track_steps', { steps: ['First work'], tool_use_id: 'new-plan-call' })
+  await invoke($, 'mcp__track__track_steps', { steps: ['First work'], replace: true, tool_use_id: 'new-plan-call' })
   await complete($, 'plan:1', 'New work not yet saved.', 'new-work-call')
   const ui = await $.ui.mount(pane('dock', 80, 30))
   expect(await ui.find({ key: 'r-plan:1' })).toBeUndefined()
@@ -170,7 +170,7 @@ test('TRACK-26 a new plan cannot reveal a restored result under a reused id', as
   await ui.press({ key: 'r-plan:1' })
   expect((await ui.findAll({ type: 'Text' })).some(text => text.text === RESULT)).toBe(true)
   f.store.faults.write = 'disk unavailable'
-  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], tool_use_id: 'new-plan-call' })
+  await invoke($, 'mcp__track__track_steps', { steps: ['Brand new work'], replace: true, tool_use_id: 'new-plan-call' })
   await invoke($, MARK, { id: 'plan:1', status: 'completed' })
   expect(await ui.find({ key: 'r-plan:1' })).toBeUndefined()
   expect((await ui.findAll({ type: 'Text' })).some(text => text.text === RESULT)).toBe(false)
