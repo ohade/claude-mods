@@ -26,7 +26,7 @@ test('native tracking publishes the exact current open question to the ordinary 
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   const values: string[] = []
-  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') values.push(String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') values.push(String(e.value)); return { value: {} } })
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Substantive question', tool_use_id: 'q1' } as never)
   const snapshot = JSON.parse(values.at(-1) ?? '{}')
   expect(snapshot.session_id).toBe(SESSION)

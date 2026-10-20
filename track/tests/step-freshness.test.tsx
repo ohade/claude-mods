@@ -41,7 +41,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   on('prompt.submit', (_, e) => { contexts.push(...(e.context ?? [])); return { text: e.text } })
   on('tool.call', { tool: /^(Edit|Write|MultiEdit|NotebookEdit|Bash)$/ }, () => work.value)
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('process.run', (_, e) => {
     expect(e.argv).toContain('/fixture/track/hooks/stop-gate.py')
     claim.calls++

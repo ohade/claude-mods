@@ -40,7 +40,7 @@ test('unknown-source tracking call renders a visible jump destination', async ($
 test('explicit clearing saves immediately and refreshes the Stop snapshot without rendering writes', async ($, on) => {
   const { l, store } = prepare(on)
   const snapshots: string[] = []
-  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') snapshots.push(String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') snapshots.push(String(e.value)); return { value: {} } })
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Clear me', tool_use_id: 'q1' } as never)
   const ui = await $.ui.mount(pane('dock'))
   expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(1)

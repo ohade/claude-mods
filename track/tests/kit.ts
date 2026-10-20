@@ -7,7 +7,7 @@ export type On = Parameters<TestBody>[1]
 
 export const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
-export const EMPTY = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
+export const EMPTY = { v: 1 as const, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
 // The test engine dispatches the event directly; real slash commands stamp these fields.
 export const trackCommand = ($: Engine, args: string) => $.command.run({

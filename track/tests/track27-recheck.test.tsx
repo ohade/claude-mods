@@ -35,7 +35,7 @@ const prepare = async ($: Engine, on: On, steps: Step[]) => {
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => ({}))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('process.run', (_, e) => {
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as { candidates?: Array<{ kind: string }> }
     const kind = sent.candidates?.[0]?.kind

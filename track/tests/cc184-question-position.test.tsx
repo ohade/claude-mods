@@ -20,7 +20,7 @@ const prepare = (on: On, questions: Question[]) => {
   on('session.messages', () => ({ value: [{ role: 'assistant' as const, text: '', toolUses: questions.map(q => ({
     tool_use_id: q.trackedBy!, tool: 'mcp__track__track_question', input: { summary: q.head },
   })) }] }))
-  on('env.set', () => ({ value: undefined }))
+  on('env.set', () => ({ value: {} }))
   let context = ''
   on('prompt.submit', (_, e) => { context = (e.context ?? []).join('\n'); return { text: e.text } })
   return { ledger, context: () => context }

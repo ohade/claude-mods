@@ -229,7 +229,7 @@ for (const [kind, reason] of freshnessMessages) {
     let calls = 0
     on('session.id', () => ({ value: SESSION }))
     on('env.get', (_, e) => ({ value: env.get(e.name) }))
-    on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+    on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
     on('classic.Stop', () => ({}))
     on('process.run', (_, e) => {
       calls += 1

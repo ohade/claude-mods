@@ -77,7 +77,7 @@ for (const kind of ['question', 'step'] as const) test(`a ${kind} minted before 
   // publishGate yields after the row was minted and before its queued save.
   on('env.set', { name: 'TRACK_GATE_SNAPSHOT' }, () => {
     session = OTHER
-    return { value: undefined }
+    return { value: {} }
   })
   logs(on)
   await $.tool.call(kind === 'question'
