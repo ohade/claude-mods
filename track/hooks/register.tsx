@@ -62,6 +62,8 @@ const MAX_QUESTIONS = 200
 const ANSWER_CHARS = 1000
 // Results use the same saved-text budget; the native source retains full words.
 const RESULT_CHARS = ANSWER_CHARS
+const RESULT_SOURCE_PREFIX = 'Step result source: '
+const STEP_MARK_GLYPHS = { pending: '◻', in_progress: '◧', completed: '✓', paused: '⏸', waiting: '◆' } as const
 // Recent inactive restore rows. A record that still owns a shown question's
 // target stays too; the question and store budgets bound those active copies.
 const MAX_RESTORES = 3
@@ -1946,6 +1948,77 @@ const savedStep = (row: unknown): Step | undefined => {
   }
 }
 
+const resultBelongsToCall = (row: Step | undefined, call: string): row is Step =>
+  row?.status === 'completed' && row.resultRequestId === call && row.resultText !== undefined && row.resultTextHash !== undefined
+
+// UI-3 (2026-10-21): current plan ids can be reused. Keep the acknowledged
+// result's identity and checksum in its native response, without another store.
+const serializeResultSource = (row: Step, call: string): string => {
+  if (!resultBelongsToCall(row, call)) return ''
+  const { id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId } = row
+  return `\n${RESULT_SOURCE_PREFIX}${JSON.stringify({ id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId })}`
+}
+
+const parseResultSource = (output: unknown): Step | undefined => {
+  if (typeof output !== 'string') return undefined
+  // The writer appends the receipt last. Earlier lines may contain quoted data.
+  const line = output.split('\n').at(-1)
+  if (line === undefined || !line.startsWith(RESULT_SOURCE_PREFIX)) return undefined
+  try {
+    return savedStep(JSON.parse(line.slice(RESULT_SOURCE_PREFIX.length)))
+  } catch {
+    // A malformed or legacy response is not an acknowledged result source.
+    return undefined
+  }
+}
+
+const selectResultSource = async ($: EngineInterface, l: Ledger, id: string, call: string, full: string, output: unknown): Promise<Step | undefined> => {
+  const hash = await checksumOf(full)
+  const acknowledged = await read($, durability)
+  const current = acknowledgedLedger(l, acknowledged)?.steps.find(row => row.id === id)
+  return [parseResultSource(output), current].find(row => resultBelongsToCall(row, call) && row.id === id && row.resultTextHash === hash)
+}
+
+const markCallRefusal = (e: RenderInput<'ToolUse'>): string | undefined => {
+  if (e.props.isRunning) return 'update running'
+  if (e.props.isInterrupted) return 'update interrupted'
+  if (e.props.isErrored) return 'update failed'
+  if (typeof e.props.output === 'string' && /(?:^|\n)track: unsaved\b/.test(e.props.output)) return 'update unsaved'
+  return undefined
+}
+
+const renderMarkedResult = async ($: EngineInterface, e: RenderInput<'ToolUse'>, saved: Step, full: string, name: string, current: Step | undefined): Promise<RenderElement> => {
+  const { Box, Text } = $.ui.resolve(e)
+  const key = `result:${e.props.tool_use_id}`
+  rememberRender(key, e.requestId)
+  const level = await read($, memberOf(flash, { requestId: key }))
+  const resultName = current !== undefined && sameResultOwner(current, saved) ? name : `${saved.id}. ${truncate(saved.subject, 60)}`
+  return <Box flexDirection="column"><Text dimColor>{`✓ ${resultName} completed`}</Text><Box key={key} backgroundColor={shade(level)}><Text dimColor wrap="wrap">{full}</Text></Box></Box>
+}
+
+const renderMarkedStep = async ($: EngineInterface, e: RenderInput<'ToolUse'>): Promise<RenderElement> => {
+  const { Text } = $.ui.resolve(e)
+  const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown; result_text?: unknown }
+  const id = String(input.id ?? '?')
+  const status = STEP_STATUSES.find(one => one === input.status)
+  const l = await read($, ledger)
+  const shown = visibleSteps(l.steps)
+  const at = shown.findIndex(row => row.id === id)
+  const step = shown[at]
+  const name = step === undefined ? id : `S${at + 1}. ${truncate(step.subject, 60)}`
+  const refusal = markCallRefusal(e)
+  if (refusal !== undefined) return <Text dimColor>{`${name}: ${refusal}.`}</Text>
+  if (status === undefined) return <Text dimColor>{`${name}: unknown step status.`}</Text>
+  const full = typeof input.result_text === 'string' ? input.result_text.trim() : undefined
+  if (status === 'completed' && full !== undefined) {
+    const saved = await selectResultSource($, l, id, e.props.tool_use_id, full, e.props.output)
+    if (saved === undefined) return <Text dimColor>{`${name}: update not accepted.`}</Text>
+    return renderMarkedResult($, e, saved, full, name, step)
+  }
+  if (step === undefined || step.status !== status) return <Text dimColor>{`${name}: no saved update.`}</Text>
+  return <Text dimColor>{`${STEP_MARK_GLYPHS[status]} ${name} ${status.replace('_', ' ')}`}</Text>
+}
+
 // A saved bucket's register, or undefined when it is not one of this version: a resume reads what
 // an earlier version or a damaged store left. Only well-formed rows are kept, and the next
 // question id stays above every id kept or withdrawn.
@@ -2270,7 +2343,7 @@ export const register: Register = on => {
             await coverInput($, 'steps', { source_text: e.source_text, source_request_id: e.source_request_id })
           }
           const { id, subject, status, note } = row
-          return { ...ran, result: `${ran.result}\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}` }
+          return { ...ran, result: `Step ${id} ${JSON.stringify(subject)} marked ${status}.\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}${serializeResultSource(row, e.tool_use_id)}` }
         }
       }
       return ran
@@ -3380,9 +3453,8 @@ export const register: Register = on => {
     const supplied = typeof e.result_text === 'string' ? e.result_text.trim() : undefined
     if (e.result_text !== undefined && (status !== 'completed' || !supplied)) return { deny: 'track: result_text must contain the verified result and is accepted only for completed steps.' }
     const l = await read($, ledger)
-    if (status === undefined || !l.steps.some(s => s.id === id)) {
-      return { result: `No change. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
-    }
+    if (status === undefined) return { result: `No change. Unknown step status: ${String(e.status)}.` }
+    if (!l.steps.some(s => s.id === id)) return { result: `No change. Unknown step: ${id}. Known steps: ${l.steps.map(s => `${s.id} (${s.status})`).join(', ') || 'none'}.` }
     const now = await $.clock.now()
     const result = supplied === undefined ? undefined : {
       resultText: supplied.slice(0, RESULT_CHARS), resultTextHash: await checksumOf(supplied), resultAt: now,
@@ -3548,36 +3620,7 @@ export const register: Register = on => {
 
       return <Box />
     }
-    if (e.props.tool === MARK_STEP) {
-      const { Box, Text } = $.ui.resolve(e)
-      const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown; result_text?: unknown }
-      const status = STEP_STATUSES.find(one => one === input.status) ?? 'pending'
-      const glyph = status === 'completed' ? '✓' : status === 'in_progress' ? '◧' : status === 'paused' ? '⏸' : status === 'waiting' ? '◆' : '◻'
-      // Named as the pane names it, S<n> and the title: an id such as plan:10 can sit third in
-      // the pane after an insert, and was read as S10.
-      const id = String(input.id ?? '?')
-      const l = await read($, ledger)
-      const shown = visibleSteps(l.steps)
-      const at = shown.findIndex(s => s.id === id)
-      const step = shown[at]
-      const name = step === undefined ? id : `S${at + 1}. ${truncate(step.subject, 60)}`
-      const label = `${glyph} ${name} ${status.replace('_', ' ')}`
-      // Proposed tool input is not an accepted result. Only the durable row
-      // acknowledged for this source and these full words may draw it.
-      const full = typeof input.result_text === 'string' ? input.result_text.trim() : undefined
-      if (status !== 'completed' || full === undefined) return <Text dimColor>{label}</Text>
-      const acknowledged = await read($, durability)
-      const saved = acknowledgedLedger(l, acknowledged)?.steps.find(row => row.id === id)
-      if (status === 'completed' && saved?.status === 'completed' && saved.resultRequestId === e.props.tool_use_id && saved.resultText !== undefined &&
-          full !== undefined && saved.resultTextHash === await checksumOf(full) && !e.props.isRunning && !e.props.isErrored && !e.props.isInterrupted) {
-        const key = `result:${e.props.tool_use_id}`
-        rememberRender(key, e.requestId)
-        const level = await read($, memberOf(flash, { requestId: key }))
-        const resultName = step !== undefined && sameResultOwner(step, saved) ? name : `${saved.id}. ${truncate(saved.subject, 60)}`
-        return <Box flexDirection="column"><Text dimColor>{`${glyph} ${resultName} completed`}</Text><Box key={key} backgroundColor={shade(level)}><Text dimColor wrap="wrap">{full}</Text></Box></Box>
-      }
-      return <Text dimColor>{label}</Text>
-    }
+    if (e.props.tool === MARK_STEP) return renderMarkedStep($, e)
     return next(e)
   })
 

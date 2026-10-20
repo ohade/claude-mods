@@ -79,6 +79,27 @@ for (const flag of ['isRunning', 'isErrored', 'isInterrupted'] as const) {
   })
 }
 
+test('UI-3 an accepted receipt cannot approve changed result words', async ($, on) => {
+  prepare(on)
+  const receipt = await complete($)
+  const proposed = 'Words the source did not save'
+  const row = toolRow('plan:1', proposed)
+  const source = await $.ui.mount({ ...row, props: { ...row.props, output: receipt.result } })
+  const text = (await source.findAll({ type: 'Text' })).map(one => one.text ?? '').join('\n')
+  expect(text).not.toContain(proposed)
+  expect(text).not.toContain('completed')
+})
+
+test('UI-3 an accepted receipt cannot approve a different call identity', async ($, on) => {
+  prepare(on)
+  const receipt = await complete($)
+  const row = toolRow('plan:1', RESULT, 'another-call')
+  const source = await $.ui.mount({ ...row, props: { ...row.props, output: receipt.result } })
+  const text = (await source.findAll({ type: 'Text' })).map(one => one.text ?? '').join('\n')
+  expect(text).not.toContain(RESULT)
+  expect(text).not.toContain('completed')
+})
+
 test('UI-3 a historical accepted source keeps its title after a saved replacement plan', async ($, on) => {
   prepare(on)
   const receipt = await complete($)

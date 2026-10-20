@@ -473,6 +473,9 @@ test('track_steps registers the steps of a plan laid out in chat', async ($, on)
 })
 
 test('track_steps draws no row and mark_step draws one quiet line', async ($, on) => {
+  atomStore(on, 'ledger', { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [
+    { id: 'plan:1', source: 'plan', subject: 'plan:1', status: 'in_progress' },
+  ] })
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
 
   const steps = await $.ui.mount(toolRow('mcp__track__track_steps', { steps: ['a', 'b'] }))
