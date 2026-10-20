@@ -37,7 +37,7 @@ for (const width of [17, 80]) {
     await ui.press({ key: 'clear-answered' })
     expect(fixture.ledger.value.questions.map(q => q.id)).toEqual([7, 24, 25])
     expect(fixture.ledger.value.nextQuestionId).toBe(100)
-    expect(fixture.ledger.value.questions[2].sourceId).toBe(`${SESSION}:Q25`)
+    expect(fixture.ledger.value.questions[2]!.sourceId).toBe(`${SESSION}:Q25`)
     await $.prompt.submit({ text: 'Continue', origin: { kind: 'composer' } } as never)
     expect(fixture.context()).toContain('question:25 "Keep"')
     const marked = await $.tool.call({ tool: 'mcp__track__mark_answered', id: 25, status: 'answered', answer_text: 'Kept answer', tool_use_id: 'mark-25' } as never)
@@ -78,7 +78,7 @@ test('question and acknowledgement tool rows match the pane while cleared rows f
   await acknowledgement.redraw()
   expect((await source.findAll({ type: 'Text' })).map(t => t.text)).toContain('Q25. Keep')
   expect((await acknowledgement.findAll({ type: 'Text' })).map(t => t.text)).toContain('✓ Q25. answered')
-  expect(fixture.ledger.value.questions[1].id).toBe(25)
+  expect(fixture.ledger.value.questions[1]!.id).toBe(25)
 })
 
 test('restored tool rows use current pane positions but retain snapshot words and permanent ids after clear', async ($, on) => {
@@ -90,5 +90,5 @@ test('restored tool rows use current pane positions but retain snapshot words an
   await ui.press({ key: 'clear-questions' })
   await row.redraw()
   expect((await row.findAll({ type: 'Text' })).map(t => t.text)).toContain('Q25. Saved words')
-  expect(fixture.ledger.value.restores?.[0].questions[0].id).toBe(25)
+  expect(fixture.ledger.value.restores?.[0]!.questions[0]!.id).toBe(25)
 })

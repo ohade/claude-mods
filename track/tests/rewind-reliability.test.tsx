@@ -1,6 +1,6 @@
 // FIXTURE: an old transcript read cannot remove rows added or compacted while
 // it waited. A confirmed rewind must survive restart.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore, trackPrompt } from './kit'
 import type { On } from './kit'
 
@@ -84,11 +84,12 @@ test('a durable rewind clears its pending marker before a later unrelated store 
 })
 
 test('concurrent rewind checks share one transcript observation', async ($, on) => {
+  const clock = mock.clock(on)
   const { entered, release, reads } = prepare(on)
   const first = trackPrompt($, 'status')
   await entered
   const second = trackPrompt($, 'later status')
-  await new Promise(go => setTimeout(go, 20))
+  await clock.settle()
   release()
   await Promise.all([first, second])
   expect(reads.count).toBe(1)

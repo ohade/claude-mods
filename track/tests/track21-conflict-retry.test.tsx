@@ -24,7 +24,6 @@ test('TRACK-21 repeated conflict resumes without growing recovery copies', async
     await $.tool.call({ tool: 'mcp__track__track_question', summary: `probe question ${i}` } as never)
     counts.push([...store.held.keys()].filter(k => k.startsWith(`r:${SESSION}:`)).length)
   }
-  console.log('PROBE-F4 r-counts', JSON.stringify(counts), 'durable rev', (store.held.get(`s:${SESSION}`) as any).checkpoint.revision)
   expect(counts[5]).toBeLessThanOrEqual(2)
   const archived = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${SESSION}:`)).map(([, value]) => JSON.stringify(value)).join('\n')
   expect(archived.includes('"head":"b"')).toBe(true)
@@ -50,6 +49,5 @@ test('TRACK-21 an unverified rewind can resume and acknowledge a later save', as
     const r = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
     receipts.push(r.ok === true ? 'ok' : String(r.reason).slice(0, 90))
   }
-  console.log('PROBE-F1 receipts', JSON.stringify(receipts), 'durable heads', JSON.stringify((store.held.get(`s:${SESSION}`) as any).ledger.questions.map((x: any) => x.head)))
   expect(receipts[2]).toBe('ok')
 })

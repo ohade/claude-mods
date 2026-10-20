@@ -1,6 +1,7 @@
 // FIXTURE: TRACK-27's approved Stop contract. The Python tests exercise the real
 // exclusive claim file; this kit controls only the plugin's helper receipt.
 import { expect, mock, test } from 'claude-code/testing'
+import type { ToolCallResult } from 'claude-code'
 import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Activity, Ledger, Step, Turn } from '../types'
@@ -30,7 +31,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   pluginStore(on)
   const lines = logs(on)
   const lower = { block: undefined as string | undefined, payload: {} as { background_tasks?: Array<{ id: string }> } }
-  const work = { value: { result: 'fixture success' } as { result?: unknown; deny?: string; isError?: boolean } }
+  const work = { value: { result: 'fixture success' } as ToolCallResult }
   const claim = { kind: 'stale_in_progress', reason: STALE, taken: false, denied: false, calls: 0 }
   const env = new Map<string, string>([['CLAUDE_PLUGIN_ROOT', '/fixture/track'], ['CLAUDE_CONFIG_DIR', '/fixture/config']])
   const contexts: string[] = []
@@ -57,7 +58,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
     const answer = eligible && !claim.taken ? { decision: 'block', reason: claim.reason } : {}
     if ('decision' in answer) claim.taken = true
     const stderr = !responseKnown ? 'track: main response receipt unavailable' : needsOwner && !ownerKnown ? 'track: owner or background task list unavailable' : ''
-    return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.turn.start({ text: 'Continue the agreed work', turnId: 't1' } as never)
   return { ledger, turn, activity, lines, lower, work, claim, contexts,

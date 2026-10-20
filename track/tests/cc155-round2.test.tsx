@@ -3,6 +3,7 @@
 // A short pane still shows one line of the saved answer.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import type { Question } from '../types'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const BY = '66666666-7777-4888-8999-aaaaaaaaaaaa'
@@ -33,7 +34,7 @@ test('a wheel scroll in the questions region moves the window while a restored r
 test('a question tracked while a restored row is open is shown', async ($, on) => {
   mock.clock(on)
   const qs = [restored(1), ...ids(6).slice(1).map(native)]
-  const ledger = atomStore(on, 'ledger', ledgerOf(qs, [{ by: BY, from: OLD, steps: 0, questions: [qs[0]], display: 'user' }]) as never)
+  const ledger = atomStore(on, 'ledger', ledgerOf(qs, [{ by: BY, from: OLD, steps: 0, questions: [qs[0]], display: 'user' }]))
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
@@ -82,8 +83,8 @@ test('arrows count exactly the question rows not drawn while a row is open', asy
 
 test('a restored answer reveal is not drawn once the row has a native answer', async ($, on) => {
   mock.clock(on)
-  const q = { id: 1, head: 'Restored', at: 1, turnId: 'restored', status: 'answered', answerText: 'Saved answer', restoredFrom: OLD, restoredBy: BY, sourceId: `${OLD}:Q1` }
-  const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [q], restores: [{ by: BY, from: OLD, steps: 0, questions: [q], display: 'user' }] } as never)
+  const q: Question = { id: 1, head: 'Restored', at: 1, turnId: 'restored', status: 'answered', answerText: 'Saved answer', restoredFrom: OLD, restoredBy: BY, sourceId: `${OLD}:Q1` }
+  const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [q], restores: [{ by: BY, from: OLD, steps: 0, questions: [q], display: 'user' }] })
   const ui = await $.ui.mount(pane('dock'))
   await ui.press({ key: 'a-1' })
   expect((await ui.find({ key: 'reveal-a-1' }))?.text).toBe('Saved answer')

@@ -22,6 +22,7 @@ type Q = {
   answerRequestId?: string
   answerKey?: string
   trackedBy?: string
+  trackedOrder?: number
   cleared?: true
 }
 type L = { nextQuestionId: number; questions: Q[]; steps: Array<{ id: string; subject: string; status: string }> }

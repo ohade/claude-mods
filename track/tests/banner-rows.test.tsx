@@ -8,7 +8,8 @@ const GREY = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6']
 const AMBER = ['#7a5410', '#9a6c16', '#bb861d', '#dba126']
 const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[], tasks: [] as string[] }
 
-type El = { key?: string; text?: string; type?: string; props: { backgroundColor?: string; color?: string }; children?: Array<{ type?: string; text?: string; props?: { color?: string }; children?: string[] }> }
+type El = { key?: string; text?: string; type?: string; props: { backgroundColor?: string; color?: string }; children?: unknown[] }
+type Glyph = { type?: string; text?: string; props?: { color?: string }; children?: string[] }
 
 const draw = async (
   $: any,
@@ -211,7 +212,7 @@ test('the you glyph stays still and the agents glyph pulses, never in its row ba
   const first = await $.ui.mount(pane('dock', 80, 30))
   const glyph = async (ui: { findAll: (q: { type?: string }) => Promise<El[]> }, key: string) => {
     const row = (await ui.findAll({ type: 'Box' })).find(el => el.key === key)
-    const child = row?.children?.find(el => el.type === 'Text')
+    const child = (row?.children as Glyph[] | undefined)?.find(el => el.type === 'Text')
 
     return { text: child?.text ?? child?.children?.join('') ?? '', props: { color: child?.props?.color } }
   }

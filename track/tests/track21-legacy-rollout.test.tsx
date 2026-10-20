@@ -37,7 +37,7 @@ for (const scenario of ['newer legacy', 'corrupt checksum', 'older legacy', 'for
   expect(memory.value.questions.map((row: any) => row.head)).toEqual(['new-code row', 'legacy row'])
   const archives = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${SESSION}:legacy-head-`))
   expect(archives).toHaveLength(1)
-  expect((archives[0][1] as any).value).toEqual(oldHead)
+  expect((archives[0]![1] as any).value).toEqual(oldHead)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'after rollout' } as never)
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(receipt.ok).toBe(true)

@@ -9,10 +9,10 @@ test('checkpoint lease and write helpers use the plugin root as their cwd', asyn
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
   const modes: string[] = []
   const store = pluginStore(on, {}, undefined, { beforeLockSpawn: request => {
-    const root = request.argv[1].slice(0, -'/hooks/writer-lock.py'.length)
+    const root = request.argv[1]!.slice(0, -'/hooks/writer-lock.py'.length)
     expect(root.startsWith('/')).toBe(true)
     expect(request.cwd).toBe(root)
-    modes.push(request.argv[2])
+    modes.push(request.argv[2]!)
   } })
   on('session.id', () => ({ value: SESSION }))
 

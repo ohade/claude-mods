@@ -23,7 +23,7 @@ test('A25 binds stable id 25 while its visible acknowledgement uses Q1', async (
   await ask($)
   await response($)
   expect((ledger.value as any).questions[0]).toMatchObject({ id: 25, status: 'answered', answerText: BODY })
-  const ui = await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: UUID, props: { text: TEXT } })
+  const ui = await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: UUID, props: { text: TEXT, isFirstOfReply: true } })
   expect((await ui.findAll({ type: 'Text' })).map(node => node.children.join('')).join('\n')).toContain('Q1. answered')
 })
 

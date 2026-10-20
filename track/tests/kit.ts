@@ -1,9 +1,11 @@
 import type { TestBody } from 'claude-code/testing'
+import type { PluginState } from 'claude-code'
 
 // Stand-ins the track tests share: a state atom and the plugin's store, each held in the test.
 
 export type Engine = Parameters<TestBody>[0]
 export type On = Parameters<TestBody>[1]
+export type StateKey = keyof PluginState['track']
 
 export const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
@@ -34,11 +36,11 @@ export const pane = (placement: 'dock' | 'inline', bodyColumns = 60, bodyRows = 
 // `ifVersion` misses once another write beat it, as the engine's compare-and-set does.
 // `holdReads` holds the first that many reads until all of them arrived, so two calls in flight
 // both read the same version before either writes.
-export const atomStore = <T>(on: On, key: string, initial: T, options: { holdReads?: number } = {}) => {
+export const atomStore = <T>(on: On, key: StateKey, initial: T, options: { holdReads?: number } = {}) => {
   const held = { value: initial, version: 1, writes: [] as T[] }
   let waiting = options.holdReads ?? 0
   const arrived: Array<() => void> = []
-  on('state.get', { plugin: 'track', key }, async () => {
+  on('state.get', { plugin: 'track', key: [key] }, async () => {
     if (waiting > 0) {
       waiting--
       await new Promise<void>(resolve => {
@@ -49,7 +51,7 @@ export const atomStore = <T>(on: On, key: string, initial: T, options: { holdRea
 
     return { value: { value: held.value, version: held.version } }
   })
-  on('state.set', { plugin: 'track', key }, (_, e) => {
+  on('state.set', { plugin: 'track', key: [key] }, (_, e) => {
     if (e.ifVersion !== undefined && e.ifVersion !== held.version) {
       return { value: { isSet: false as const, version: held.version } }
     }
@@ -70,7 +72,7 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
   on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
     options.beforeLockSpawn?.(e)
     if (e.argv[2] === 'guard' && options.guardWait !== undefined) await options.guardWait
-    const text = JSON.stringify(e.argv[2] === 'lease' && options.leaseFailure !== undefined ? { ok: false, reason: options.leaseFailure } : { ok: true, mode: e.argv[2], token: e.argv[4], ...(e.argv[2] === 'guard' && { state: options.guardStates?.[e.argv[3]] ?? 'live' }) })
+    const text = JSON.stringify(e.argv[2] === 'lease' && options.leaseFailure !== undefined ? { ok: false, reason: options.leaseFailure } : { ok: true, mode: e.argv[2], token: e.argv[4], ...(e.argv[2] === 'guard' && { state: options.guardStates?.[e.argv[3]!] ?? 'live' }) })
     if (e.argv[2] === 'lease' && options.leaseEnding !== undefined) options.leaseEnding.count++
     if (options.splitLockReceipt) {
       yield { stream: 'stderr' as const, text: 'A harmless diagnostic\n' }

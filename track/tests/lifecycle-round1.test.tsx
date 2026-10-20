@@ -1,6 +1,6 @@
 // CC-170 correction round 1. These fail on the merged banner base and lock items 1-9.
 import { expect, mock, test } from 'claude-code/testing'
-import type { Activity, Ledger, Step } from '../types'
+import type { Activity, Ledger, Step, Turn } from '../types'
 import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 
@@ -12,7 +12,7 @@ const step = (id: string, extra: Partial<Step> = {}): Step => ({ id, source: 'pl
 const setup = (on: On, steps: Step[]) => {
   mock.clock(on)
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
-  const turn = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
+  const turn = atomStore<Turn>(on, 'turn', { currentId: 't1', gatedTurnId: null })
   const activity = atomStore<Activity>(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [] })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
@@ -44,7 +44,7 @@ test('a rejection sentence at the start of an error result marks the step refuse
 
 test('a Grep line that quotes a permission denial does not park the step', async ($, on) => {
   const { ledger } = setup(on, [step('plan:1', { status: 'in_progress', activeTurnId: 't1' })])
-  on('tool.call', { tool: 'Grep' }, () => ({ result: 'docs/notes.md:12: Permission to use Bash has been denied.', isError: true }))
+  on('tool.call', { tool: /^Grep$/ }, () => ({ result: 'docs/notes.md:12: Permission to use Bash has been denied.', isError: true }))
   await call($, { tool: 'Grep', tool_use_id: 'toolu_g', pattern: 'denied' })
   expect(view(ledger)).toEqual([{ id: 'plan:1', status: 'in_progress', note: undefined, followUp: undefined }])
 })
@@ -98,7 +98,7 @@ test('a stale open step id does not rewrite a paused step after the next turn st
   await call($, { tool: 'mcp__track__mark_step', id: 'plan:1', status: 'paused', note: 'blocked on vendor' })
   await $.turn.start({ text: 'next', turnId: 't2' } as never)
   await call($, { tool: 'Bash', tool_use_id: 'toolu_b', command: 'ls' })
-  expect(turn.value.openStepId).toBeUndefined()
+  expect((turn.value as Turn & { openStepId?: unknown }).openStepId).toBeUndefined()
   expect(view(ledger)).toEqual([{ id: 'plan:1', status: 'paused', note: 'blocked on vendor', followUp: undefined }])
 })
 

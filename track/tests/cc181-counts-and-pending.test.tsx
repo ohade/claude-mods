@@ -40,7 +40,7 @@ test('75 retained rows count as 25 current steps in both reminder and public che
 })
 
 const mechanicalCaller = { plugins: [{ name: 'fixture-caller', register(on: On) {
-  on('tool.call', { tool: 'fixture__restore' }, async ($, e) => $.tool.call({ ...e, tool: 'mcp__track__restore_tracker' }))
+  on('tool.call', { tool: /^fixture__restore$/ }, async ($, e) => $.tool.call({ ...e, tool: 'mcp__track__restore_tracker' }))
 } }] }
 
 test('mechanical restore notices label 25 current steps and 50 cleared history while retaining all 75 rows', mechanicalCaller, async ($, on) => {

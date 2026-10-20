@@ -48,7 +48,7 @@ test('same-turn text before the question is never its answer, even at equal time
 
   expect(refused.deny).toContain('answer_text')
   expect(JSON.stringify(ledger.value)).toBe(before)
-  expect(ledger.value.questions[0].status).toBe('open')
+  expect(ledger.value.questions[0]!.status).toBe('open')
 })
 
 test('same-turn answer linking fails closed when event order is unknown', async ($, on) => {
@@ -74,7 +74,7 @@ test('step-update result identifies the affected step by id and title', async ($
 test('a question tracked in a later plugin turn cannot bind earlier text through the previous composer turn', async ($, on) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, prompts: [{ head: 'Previous composer prompt', turnId: 't1', at: 10, rowKey: 'previous-prompt' }], questions: [] as any[] })
   atomStore(on, 'turn', { currentId: 't2', gatedTurnId: null, eventOrder: 1, lastText: { row: 'before-question', turnId: 't2', order: 1 } })
-  atomStore(on, 'scrollAt', { questions: null, steps: null })
+  atomStore(on, 'scroll', { questions: null, steps: null })
 
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'New plugin-delivered question', tool_use_id: 'track-q' } as never)
   await $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered' } as never)
@@ -100,7 +100,7 @@ test('a question from an earlier turn may link to text in a fresh later turn', a
 for (const failure of ['error', 'agent']) {
   test(`plan approval from an ${failure} result is unchanged`, async ($, on) => {
     const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [PLAN] })
-    const answer = { result: { plan: '1. Do not import', isAgent: failure === 'agent' }, ...(failure === 'error' && { isError: true }), context: ['keep'], ref: 42 }
+    const answer = { result: { plan: '1. Do not import', isAgent: failure === 'agent' }, ...(failure === 'error' && { isError: true as const }), context: ['keep'], ref: 42 }
     on('tool.call', { tool: 'ExitPlanMode' }, () => answer)
     expect(await $.tool.call({ tool: 'ExitPlanMode' })).toEqual(answer)
     expect(ledger.writes).toEqual([])
