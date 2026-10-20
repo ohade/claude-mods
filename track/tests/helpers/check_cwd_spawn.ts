@@ -26,7 +26,7 @@ const compile = (start: string, end: string, name: string) => {
   })
 }
 const launch = (argv: readonly string[], cwd?: string) => {
-  const child = spawn(argv[0], argv.slice(1), { cwd, env: { ...process.env, TRACK_LOCK_DIR: `${scratch}/locks` } })
+  const child = spawn(argv[0]!, argv.slice(1), { cwd, env: { ...process.env, TRACK_LOCK_DIR: `${scratch}/locks` } })
   children.push(child)
   const result = new Promise<{ code: number | null; signal: string | null }>((resolve, reject) => {
     child.once('error', reject)

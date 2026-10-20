@@ -261,9 +261,15 @@ claude --plugin-dir "$PWD/track"                                         # one s
 or list the clone's `track` folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
 `~/.claude/settings.json`.
 
-Check it with `claude plugin validate track`, test it with `claude plugin test track`, and
-type-check it with `tsc -p track` once Claude Code has loaded it: `track/tsconfig.json` extends
-the API types that loading writes into `track/.claude-plugin/types/`.
+Check it with `claude plugin validate track` and test it with `claude plugin test track`.
+Once Claude Code has loaded it, run `npm --prefix track ci --ignore-scripts` followed by
+`npm --prefix track run typecheck`. This checks the sandbox hooks and native fixtures,
+then the OS helper scripts with their pinned Bun API types. The split fixes the
+2026-10-20 compile failure caused by checking OS helpers in the sandbox environment.
+`tsc -p track` remains the sandbox-only check. Both configs inherit strict compiler
+settings. The sandbox uses the API types that loading writes into
+`track/.claude-plugin/types/`, without Node or Bun globals. The OS helpers use Bun's
+types. The development packages are not loaded by the plugin.
 
 What it saves: acknowledged tracking mutations, captured answers, explicit UI actions, completed
 turns, and session end write through the existing `$.store` API and verify the result. Save failures
