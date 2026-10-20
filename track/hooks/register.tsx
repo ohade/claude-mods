@@ -62,7 +62,7 @@ const MAX_QUESTIONS = 200
 const ANSWER_CHARS = 1000
 // Results use the same saved-text budget; the native source retains full words.
 const RESULT_CHARS = ANSWER_CHARS
-const RESULT_SOURCE_PREFIX = 'Step result source: '
+const STEP_SOURCE_PREFIX = 'Step update source: '
 const STEP_MARK_GLYPHS = { pending: '◻', in_progress: '◧', completed: '✓', paused: '⏸', waiting: '◆' } as const
 // Recent inactive restore rows. A record that still owns a shown question's
 // target stays too; the question and store budgets bound those active copies.
@@ -1881,11 +1881,15 @@ const renderAnsweredToolUse = async ($: EngineInterface, e: RenderInput<'ToolUse
   const { Box, Text } = $.ui.resolve(e)
   const input = (e.props.input ?? {}) as { id?: unknown; status?: unknown }
   const status = input.status === 'deferred' ? 'deferred' : 'answered'
-  const level = await read($, memberOf(flash, e))
   const questionLabel = questionLabels(l.questions)
-  const label = `✓ ${questionLabel(String(input.id ?? '?'))}. ${status}`
+  const name = questionLabel(String(input.id ?? '?'))
+  const refusal = markCallRefusal(e)
+  if (refusal !== undefined) return <Text dimColor>{`${name}: ${refusal}.`}</Text>
   const q = l.questions.find(one => one.id === Number(input.id))
-  if (q?.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
+  if (q === undefined) return <Text dimColor>{`${name}: no saved update.`}</Text>
+  const label = `✓ ${name}. ${status}`
+  const level = await read($, memberOf(flash, e))
+  if (q.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
     return <Box flexDirection="column"><Text dimColor backgroundColor={e.props.isExpanded ? shade(level) : undefined}>{label}</Text><Box key={`answer:${q.answerKey}`} backgroundColor={shade(level)}><Text wrap="wrap">{q.answerText}</Text></Box></Box>
   }
   if (q !== undefined && q.status !== status) return <Text dimColor>{`${questionLabel(q.id)}. ${q.status}`}</Text>
@@ -1952,22 +1956,44 @@ const resultBelongsToCall = (row: Step | undefined, call: string): row is Step =
   row?.status === 'completed' && row.resultRequestId === call && row.resultText !== undefined && row.resultTextHash !== undefined
 
 // UI-3 (2026-10-21): current plan ids can be reused. Keep the acknowledged
-// result's identity and checksum in its native response, without another store.
-const serializeResultSource = (row: Step, call: string): string => {
-  if (!resultBelongsToCall(row, call)) return ''
+// update's identity and result checksum in its native response, without another store.
+const serializeStepSource = (row: Step, call: string): string => {
   const { id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId } = row
-  return `\n${RESULT_SOURCE_PREFIX}${JSON.stringify({ id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId })}`
+  return `\n${STEP_SOURCE_PREFIX}${JSON.stringify({ markedBy: call, id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId })}`
 }
 
-const parseResultSource = (output: unknown): Step | undefined => {
+const parseStepSource = (output: unknown, call: string): Step | undefined => {
   if (typeof output !== 'string') return undefined
   // The writer appends the receipt last. Earlier lines may contain quoted data.
   const line = output.split('\n').at(-1)
-  if (line === undefined || !line.startsWith(RESULT_SOURCE_PREFIX)) return undefined
+  if (line === undefined || !line.startsWith(STEP_SOURCE_PREFIX)) return undefined
   try {
-    return savedStep(JSON.parse(line.slice(RESULT_SOURCE_PREFIX.length)))
+    const row: unknown = JSON.parse(line.slice(STEP_SOURCE_PREFIX.length))
+    if (typeof row !== 'object' || row === null || !('markedBy' in row) || row.markedBy !== call) return undefined
+    return savedStep(row)
   } catch {
     // A malformed or legacy response is not an acknowledged result source.
+    return undefined
+  }
+}
+
+const parseSavedStepMark = (output: unknown, call: string): (Pick<Step, 'id' | 'subject' | 'status'> & { owner?: Step }) | undefined => {
+  const owner = parseStepSource(output, call)
+  if (owner !== undefined) return { ...owner, owner }
+  if (typeof output !== 'string') return undefined
+  // Pre-UI-3 native responses end with the already acknowledged Saved row.
+  // A malformed modern receipt cannot fall back to an earlier line.
+  const line = output.split('\n').at(-1)
+  const prefix = 'Saved row: '
+  if (line === undefined || !line.startsWith(prefix)) return undefined
+  try {
+    const row = JSON.parse(line.slice(prefix.length)) as Record<string, unknown> | null
+    if (row === null || typeof row !== 'object') return undefined
+    const status = STEP_STATUSES.find(one => one === row.status)
+    if (typeof row.id !== 'string' || typeof row.subject !== 'string' || status === undefined) return undefined
+    return { id: row.id, subject: headOf(row.subject), status }
+  } catch {
+    // An unreadable historical receipt cannot establish a saved update.
     return undefined
   }
 }
@@ -1976,7 +2002,7 @@ const selectResultSource = async ($: EngineInterface, l: Ledger, id: string, cal
   const hash = await checksumOf(full)
   const acknowledged = await read($, durability)
   const current = acknowledgedLedger(l, acknowledged)?.steps.find(row => row.id === id)
-  return [parseResultSource(output), current].find(row => resultBelongsToCall(row, call) && row.id === id && row.resultTextHash === hash)
+  return [parseStepSource(output, call), current].find(row => resultBelongsToCall(row, call) && row.id === id && row.resultTextHash === hash)
 }
 
 const markCallRefusal = (e: RenderInput<'ToolUse'>): string | undefined => {
@@ -2015,6 +2041,13 @@ const renderMarkedStep = async ($: EngineInterface, e: RenderInput<'ToolUse'>): 
     if (saved === undefined) return <Text dimColor>{`${name}: update not accepted.`}</Text>
     return renderMarkedResult($, e, saved, full, name, step)
   }
+  const saved = parseSavedStepMark(e.props.output, e.props.tool_use_id)
+  if (saved !== undefined && saved.id === id && saved.status === status) {
+    const savedName = saved.owner !== undefined && step !== undefined && sameResultOwner(step, saved.owner)
+      ? name : `${saved.id}. ${truncate(saved.subject, 60)}`
+    return <Text dimColor>{`${STEP_MARK_GLYPHS[status]} ${savedName} ${status.replace('_', ' ')}`}</Text>
+  }
+  if (e.props.output !== undefined) return <Text dimColor>{`${name}: no saved update.`}</Text>
   if (step === undefined || step.status !== status) return <Text dimColor>{`${name}: no saved update.`}</Text>
   return <Text dimColor>{`${STEP_MARK_GLYPHS[status]} ${name} ${status.replace('_', ' ')}`}</Text>
 }
@@ -2343,7 +2376,7 @@ export const register: Register = on => {
             await coverInput($, 'steps', { source_text: e.source_text, source_request_id: e.source_request_id })
           }
           const { id, subject, status, note } = row
-          return { ...ran, result: `Step ${id} ${JSON.stringify(subject)} marked ${status}.\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}${serializeResultSource(row, e.tool_use_id)}` }
+          return { ...ran, result: `Step ${id} ${JSON.stringify(subject)} marked ${status}.\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}${serializeStepSource(row, e.tool_use_id)}` }
         }
       }
       return ran

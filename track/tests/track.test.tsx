@@ -148,6 +148,9 @@ test('a restore_tracker row with nothing restored draws no row, and no result', 
 })
 
 test('the mark_answered call draws one quiet line naming the question', async ($, on) => {
+  atomStore(on, 'ledger', { ...ANSWERED, nextQuestionId: 3,
+    questions: [...ANSWERED.questions, { ...ANSWERED.questions[0], id: 2 }],
+  })
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
 
   const ui = await $.ui.mount(toolRow('mcp__track__mark_answered', { id: 2, status: 'answered' }))
@@ -767,6 +770,7 @@ test('a lit prompt row is drawn on a highlight; an unlit one is left alone', asy
 })
 
 test('the lit answer mark is drawn on a highlight', async ($, on) => {
+  atomStore(on, 'ledger', ANSWERED)
   flashAt(on, { toolu_row: 3 })
   on('ui.render', { component: 'ToolUse' }, () => ({ type: 'Text', props: {}, children: ['engine row'] }))
 
