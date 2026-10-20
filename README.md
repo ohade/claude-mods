@@ -28,6 +28,22 @@ required; an offline dependency failure refuses landing before publication. Have
 Bun, Node/npm and `~/.Trash` available; keep the real `HOME`, since OS helpers use it to
 find the installed checkout. `CLAUDE_MODS_HOME` changes only the deployment layout.
 
+TypeScript mods also need the engine-written SDK input. Test/validate do not generate it.
+`CLAUDE_MODS_SDK_ROOT` selects an absolute mod-layout root containing
+`<mod>/.claude-plugin/types/`; by default the gate reads the live layout. The engine version
+must match `scripts/sdk-types.json`, every SDK file must match its reviewed digest, and the
+API declaration header must name that version. Only then are the checked bytes copied into
+the temporary test tree. Missing, stale or changed inputs refuse landing.
+
+Bootstrap this input by loading the reviewed mod once in the matching Claude Code version.
+Retain the engine-written folder outside the temporary landing tree. On an engine update,
+regenerate those files and review the API changes and new manifest hashes together. Do not
+edit the generated declarations or replace them with stubs. For an explicit input:
+
+```sh
+CLAUDE_MODS_SDK_ROOT=/absolute/path/to/engine-written-mod-layout scripts/land.sh <reviewed-commit>
+```
+
 ```sh
 scripts/land.sh <reviewed-commit>
 scripts/land.sh --status
@@ -51,6 +67,7 @@ Each mod has a private log under `~/.claude/state/claude-mods-land-logs.*`. Test
 10 minutes per native suite or helper command; push after 2 minutes. Interrupted children are stopped before the temporary
 worktree is removed. Receipts record `commit`, `previous_commit`, UTC `deployed_at`, per-mod
 native `pass`/`fail` counts and `log_dir`. Additional checks have separate logs in that directory.
+For TypeScript mods, `sdk` records the engine version and SHA-256 of the reviewed SDK manifest.
 An unfamiliar test footer fails closed. Keep failure logs for
 diagnosis; they are not committed. No arguments/invalid usage exit 2, help/status exit 0 on
 success, runtime failures exit 1, and Ctrl-C exits 130.

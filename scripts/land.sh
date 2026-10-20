@@ -88,6 +88,8 @@ temporary_tree="$log_dir/test-tree"
 git -C "$repo" worktree add --detach "$temporary_tree" "$target" > "$log_dir/worktree.log" 2>&1
 mods_file="$log_dir/mods.json"
 printf '{}\n' > "$mods_file"
+sdk_file="$log_dir/sdk.json"
+printf '{}\n' > "$sdk_file"
 phase=tests
 mod_count=0
 has_failed=false
@@ -139,6 +141,13 @@ for mod in "$temporary_tree"/*; do
     if ! run_check "$name-${check##*/}" "$mod" bun "$check"; then has_failed=true; fi
   done
   if [ -f "$mod/package.json" ]; then
+    if [ -f "$mod/tsconfig.json" ]; then
+      if ! run_check "$name-engine-version" "$mod" claude --version; then has_failed=true; continue; fi
+      if ! run_check "$name-sdk" "$mod" python3 "$helper" sdk "${CLAUDE_MODS_SDK_ROOT:-$live}" "$mod" "$script_dir/sdk-types.json" "$log_dir/$name-engine-version.log" "$sdk_file"; then
+        has_failed=true
+        continue
+      fi
+    fi
     # Install only locked development dependencies; never run dependency lifecycle scripts.
     if ! run_check "$name-dependencies" "$mod" npm ci --ignore-scripts --include=dev --no-audit --no-fund; then
       has_failed=true
@@ -165,7 +174,7 @@ check_layout
 [ "$(head_at "$repo")" = "$main_before" ] || die 'main moved during testing'
 [ "$(head_at "$live")" = "$live_before" ] || die 'live moved during testing'
 receipt_tmp=$(mktemp "$state/.claude-mods-live.XXXXXX")
-python3 "$helper" receipt "$receipt" "$target" "$live_before" "$mods_file" "$log_dir" > "$receipt_tmp"
+python3 "$helper" receipt "$receipt" "$target" "$live_before" "$mods_file" "$log_dir" --sdk "$sdk_file" > "$receipt_tmp"
 
 # Publication is resumable, not atomic across two worktrees and a remote.
 phase=merge
