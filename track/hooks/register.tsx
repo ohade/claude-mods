@@ -10,7 +10,7 @@ import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuest
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { RetentionStore } from './retention'
 import { indexedStore } from './size-index'
-import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
+import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerValue } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 
@@ -1957,9 +1957,10 @@ const resultBelongsToCall = (row: Step | undefined, call: string): row is Step =
 
 // UI-3 (2026-10-21): current plan ids can be reused. Keep the acknowledged
 // update's identity and result checksum in its native response, without another store.
-const serializeStepSource = (row: Step, call: string): string => {
-  const { id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId } = row
-  return `\n${STEP_SOURCE_PREFIX}${JSON.stringify({ markedBy: call, id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId })}`
+const formatStepReceipt = (row: Step, call: string): string => {
+  const { id, source, subject, status, note, sourceId, taskId, resultText, resultTextHash, resultRequestId } = row
+  const sourceRow = { markedBy: call, id, source, subject, status, sourceId, taskId, resultText, resultTextHash, resultRequestId }
+  return `Step ${id} ${JSON.stringify(subject)} marked ${status}.\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}\n${STEP_SOURCE_PREFIX}${JSON.stringify(sourceRow)}`
 }
 
 const parseStepSource = (output: unknown, call: string): Step | undefined => {
@@ -2353,9 +2354,27 @@ export const register: Register = on => {
     const afterLedger = await read($, ledger)
     const touched = stepReceiptIds(e.tool, e, ran.result, beforeLedger, afterLedger)
     const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeActivity)
-    if (before === JSON.stringify(afterLedger) && reusedStep === undefined) {
-      if (recorded) await publishGate($)
-      return ran
+    const unchanged = e.tool === MARK_STEP ? sameLedgerValue(beforeLedger, afterLedger) : before === JSON.stringify(afterLedger)
+    if (unchanged && reusedStep === undefined) {
+      if (e.tool !== MARK_STEP || touched.length === 0) {
+        if (recorded) await publishGate($)
+        return ran
+      }
+      const acknowledged = await read($, durability)
+      const saved = acknowledged.baseline
+      const row = saved?.session_id === await $.session.id()
+        ? saved.ledger.steps.find(step => step.id === String(e.id)) : undefined
+      const currentRow = afterLedger.steps.find(step => step.id === String(e.id))
+      if (row !== undefined && sameLedgerValue(row, currentRow)) {
+        if (recorded) await publishGate($)
+        return { ...ran, result: formatStepReceipt(row, e.tool_use_id) }
+      }
+      if (!acknowledged.isUnsaved) {
+        // Legacy memory without an acknowledgement keeps its existing response.
+        if (recorded) await publishGate($)
+        return ran
+      }
+      // Unchanged memory is not a save acknowledgement; retry the normal save.
     }
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
     await publishGate($)
@@ -2375,8 +2394,7 @@ export const register: Register = on => {
               row.taskId === reusedStep.taskId && row.createdRequestId === reusedStep.createdRequestId) {
             await coverInput($, 'steps', { source_text: e.source_text, source_request_id: e.source_request_id })
           }
-          const { id, subject, status, note } = row
-          return { ...ran, result: `Step ${id} ${JSON.stringify(subject)} marked ${status}.\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}${serializeStepSource(row, e.tool_use_id)}` }
+          return { ...ran, result: formatStepReceipt(row, e.tool_use_id) }
         }
       }
       return ran

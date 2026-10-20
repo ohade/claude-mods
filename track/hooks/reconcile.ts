@@ -9,6 +9,7 @@ const canonical = (value: unknown): string | undefined => JSON.stringify(value, 
   entry !== null && typeof entry === 'object' && !Array.isArray(entry)
     ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left.localeCompare(right))) : entry)
 const equal = (left: unknown, right: unknown): boolean => canonical(left) === canonical(right)
+export { equal as sameLedgerValue }
 
 export const assertLedgerOwner = (value: unknown, session: string): void => {
   const record = value as Record<string, unknown> | undefined
