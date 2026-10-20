@@ -21,7 +21,7 @@ const prepare = (on: On) => {
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('env.get', () => ({ value: undefined }))
-  on('env.set', () => ({ value: undefined }))
+  on('env.set', () => ({ value: {} }))
   return { ledger, pending, store }
 }
 const complete = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call({

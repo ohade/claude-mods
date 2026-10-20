@@ -14,7 +14,7 @@ for (const tool of ['TaskUpdate', 'TodoWrite'] as const) {
       ? [{ id: 'task:native-task', source: 'task', taskId: 'native-task', subject: 'Legacy completion', status: 'pending' }] : [] } as any)
     pluginStore(on)
     on('session.id', () => ({ value: SESSION }))
-    on('tool.call', { tool }, () => tool === 'TodoWrite'
+    on('tool.call', { tool: [tool] }, () => tool === 'TodoWrite'
       ? { result: { newTodos: [{ content: 'Legacy completion', status: 'completed' }] } }
       : { result: 'Updated' })
     await $.tool.call({ tool, taskId: 'native-task', status: 'completed', todos: [{ content: 'Legacy completion', status: 'completed' }] } as never)

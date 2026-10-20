@@ -25,7 +25,7 @@ const prepare = (on: On, row = ACTIVE, inputs = [input()]) => {
   logs(on)
   on('session.id', () => ({ value: SESSION }))
   on('env.get', () => ({ value: undefined }))
-  on('env.set', () => ({ value: undefined }))
+  on('env.set', () => ({ value: {} }))
   on('classic.Stop', () => ({}))
   return { ledger, pending, store }
 }

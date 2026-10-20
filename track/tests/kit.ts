@@ -9,6 +9,12 @@ export const SESSION = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 
 export const EMPTY = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
+// The test engine dispatches the event directly; real slash commands stamp these fields.
+export const trackCommand = ($: Engine, args: string) => $.command.run({
+  command: 'track', args, origin: { kind: 'composer' },
+  presentation: { isFullscreen: true, columns: 120 },
+})
+
 // The track pane's render event, docked beside the transcript or inline above the prompt.
 export const pane = (placement: 'dock' | 'inline', bodyColumns = 60, bodyRows = 20) => ({
   plugin: 'track',

@@ -25,7 +25,7 @@ const prepare = (on: On, steps = [step(), step('plan:2')], seed: Record<string, 
   const contexts: string[] = []
   on('session.id', () => ({ value: SESSION }))
   on('env.get', () => ({ value: undefined }))
-  on('env.set', () => ({ value: undefined }))
+  on('env.set', () => ({ value: {} }))
   on('classic.Stop', () => ({}))
   on('prompt.submit', (_, e) => { contexts.push(...(e.context ?? [])); return { text: e.text } })
   return { clock, ledger, turn, store, lines, contexts }
