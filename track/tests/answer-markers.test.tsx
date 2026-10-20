@@ -2,6 +2,7 @@
 // formatted response again. A completed A block must be the only answer source.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
+import type { Engine, On } from './kit'
 
 const UUID = '15151515-2222-4333-8444-555555555555'
 const DRAWN = '15151515-2222-4333-8444-000000000000'
@@ -9,7 +10,7 @@ const ROW = '15151515-2222-4333-8444'
 const FIRST = '## First answer\n\n- **Buyer:** any buyer.\n- Existing deals only.'
 const SECOND = '**Second answer:** the deal floor still applies.'
 const marked = (id: number, text: string) => `<!-- A${id}:start -->\n${text}\n<!-- A${id}:end -->`
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const clock = mock.clock(on)
   const ledger = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
@@ -22,7 +23,7 @@ const prepare = (on: any) => {
 }
 const ask = ($: any, head: string) => $.tool.call({ tool: 'mcp__track__track_question', summary: head, tool_use_id: `ask-${head}` })
 const response = ($: any, text: string, extra: object = {}) => $.session.append({ door: 'response', uuid: UUID, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, origin: { kind: 'model', model: 'fixture' }, ...extra })
-const mountAnswer = ($: any, text: string) => $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: DRAWN, props: { text, isFirstOfReply: true } })
+const mountAnswer = ($: Engine, text: string) => $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: DRAWN, props: { text, isFirstOfReply: true } })
 
 test('one marked formatted response closes the question without answer_text or another answer', async ($, on) => {
   const { ledger, store } = prepare(on)

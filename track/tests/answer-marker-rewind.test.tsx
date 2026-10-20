@@ -2,11 +2,12 @@
 // The transcript API supplies text and tool IDs, but no response UUIDs.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import type { On } from './kit'
 
 const UUID = '15151515-2222-4333-8444-555555555555'
 const BODY = '**Complete answer:** existing deals only.'
 const marked = (body = BODY) => `<!-- A25:start -->\n${body}\n<!-- A25:end -->`
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 25 })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)

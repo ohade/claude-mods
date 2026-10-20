@@ -2,10 +2,11 @@
 // The model must identify completed answer content; event order cannot identify its meaning.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
+import type { On } from './kit'
 
 const UUID = '11111111-2222-4333-8444-555555555555'
 const KEY = '11111111-2222-4333-8444'
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const clock = mock.clock(on)
   const lines = logs(on)
   const l = atomStore(on, 'ledger', EMPTY)

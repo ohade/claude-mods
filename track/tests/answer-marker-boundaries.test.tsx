@@ -1,11 +1,12 @@
 // FIXTURE: stable marker IDs and source/order guards must not depend on ordinals.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import type { On } from './kit'
 
 const UUID = '25252525-2222-4333-8444-555555555555'
 const BODY = '**Answer:** one formatted response.'
 const TEXT = `<!-- A25:start -->\n${BODY}\n<!-- A25:end -->\n\nLeft: review.`
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 25 })
   const turn = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   pluginStore(on)

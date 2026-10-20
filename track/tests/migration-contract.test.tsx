@@ -1,11 +1,11 @@
 // FIXTURE: supported store export/import preserves and verifies raw legacy records.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
-import type { Engine } from './kit'
+import type { Engine, On } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const legacy = { v: 1, savedAt: 1, ledger: { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'Legacy question 😀', at: 1, turnId: 'old', status: 'deferred', note: 'unfinished' }] } }
-const prepare = (on: any, records: Record<string, unknown> = {}, options: Parameters<typeof pluginStore>[3] = {}) => {
+const prepare = (on: On, records: Record<string, unknown> = {}, options: Parameters<typeof pluginStore>[3] = {}) => {
   atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on, records, undefined, options)
   const files = new Map<string, string>()

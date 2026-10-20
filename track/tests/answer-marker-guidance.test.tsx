@@ -1,8 +1,9 @@
 // FIXTURE: 2026-10-12 generic reminders still requested a second tool answer.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore, logs } from './kit'
+import type { On } from './kit'
 
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   mock.clock(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })

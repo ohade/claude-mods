@@ -2,8 +2,9 @@
 // Unidentified thinking/narration cannot supply unknown answer words.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import type { On } from './kit'
 
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const l = atomStore(on, 'ledger', EMPTY)
   const t = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)

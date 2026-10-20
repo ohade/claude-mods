@@ -2,9 +2,10 @@
 // it waited. A confirmed rewind must survive restart.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import type { On } from './kit'
 
 const old = { id: 1, head: 'Old question', at: 1, turnId: 'old', status: 'open', trackedBy: 'old-call' }
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const initial = { ...EMPTY, nextQuestionId: 2, questions: [old] }
   const l = atomStore(on, 'ledger', initial)
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null, eventOrder: 0 })
