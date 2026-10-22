@@ -12,8 +12,8 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')
 const CALLER = id(99)
 type Lease = 'live' | 'closed' | 'error'
 type Eviction = { caller: string; protect?: string[]; probe: (session: string) => Promise<{ state: 'closed' | 'live'; release: () => Promise<void> }> }
-// The eviction options are the behaviour under test; the alias keeps the call
-// reaching that behaviour even where the parameter does not exist yet.
+// The alias lets these eviction contract tests execute against the
+// pre-eviction baseline, whose capacity check has no eviction parameter.
 const evicting = ensureCapacity as unknown as (store: RetentionStore, replacements: Record<string, unknown>, budget: number, eviction: Eviction) => Promise<unknown>
 
 const memory = (initial: Record<string, unknown>, options: { failDelete?: string } = {}) => {

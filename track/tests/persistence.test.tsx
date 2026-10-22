@@ -100,27 +100,59 @@ test('a resume that fails says so in the debug log, and the session starts', asy
   expect(lines.some(line => line.startsWith('track:') && line.includes('resume'))).toBe(true)
 })
 
-// TRACK-21 replaces count/byte eviction with refusal: every protected record stays.
-test('a save that would pass the store cap refuses without deleting history', async ($, on) => {
-  const big = (n: number) => Array.from({ length: 200 }, (_, i) => ({ rowKey: `r${i}`, head: 'p'.repeat(1300), turnId: null, at: n }))
+// FIXTURE: recent UUID-owned history fills Track's budget but fits the engine's cap.
+const capacityHistory = () => {
+  const now = Date.now()
+  const big = (at: number) => Array.from({ length: 200 }, (_, i) => ({ rowKey: `r${i}`, head: 'é'.repeat(650), turnId: null, at }))
   const initial: Record<string, unknown> = {}
-  const ids = Array.from({ length: 15 }, (_, i) => `old-${String(i + 1).padStart(2, '0')}`)
+  const ids = Array.from({ length: 15 }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`)
   ids.forEach((id, i) => {
-    initial[`s:${id}`] = { v: 1, savedAt: i + 1, ledger: { ...EMPTY, prompts: big(i) } }
+    const at = now - (ids.length - i) * 1000
+    initial[`s:${id}`] = { v: 1, session_id: id, savedAt: at, ledger: { ...EMPTY, session_id: id, prompts: big(at) } }
+    initial[`h:${id}`] = { v: 1, session_id: id, retentionOnly: true, closedAt: at }
   })
   initial.sessions = [...ids].reverse()
-  atomStore(on, 'ledger', { ...EMPTY, prompts: big(99) })
+  return { initial, ids, callerLedger: { ...EMPTY, session_id: SESSION, prompts: big(now).map(row => ({ ...row, session_id: SESSION })) } }
+}
+const storeBytes = (records: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify(records)).byteLength
+
+test('a save over the Track budget evicts oldest CLOSED history and persists the caller', async ($, on) => {
+  const { initial, ids, callerLedger } = capacityHistory()
+  expect(storeBytes(initial)).toBeGreaterThan(3 * 1024 * 1024)
+  expect(storeBytes(initial)).toBeLessThan(4 * 1024 * 1024)
+  atomStore(on, 'ledger', callerLedger)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
-  const store = pluginStore(on, initial)
+  const store = pluginStore(on, initial, 4 * 1024 * 1024, { guardStates: Object.fromEntries(ids.map(id => [id, 'closed' as const])) })
+  const lines = logs(on)
+  on('session.id', () => ({ value: SESSION }))
+
+  await finishTurn($, on)
+
+  expect({ callerPersisted: store.held.has(`s:${SESSION}`), saveFailures: lines.filter(line => line.includes('save failed:')) })
+    .toEqual({ callerPersisted: true, saveFailures: [] })
+  expect((store.held.get(`s:${SESSION}`) as Saved).ledger.prompts).toEqual(callerLedger.prompts)
+  expect(store.held.has(`s:${ids[0]}`)).toBe(false)
+  expect(store.held.has(`h:${ids[0]}`)).toBe(false)
+  expect(store.held.get(`s:${ids[ids.length - 1]}`)).toEqual(initial[`s:${ids[ids.length - 1]}`])
+  expect(storeBytes(Object.fromEntries(store.held))).toBeLessThan(3 * 1024 * 1024)
+})
+
+test('a save over the Track budget refuses and preserves all LIVE history bodies', async ($, on) => {
+  const { initial, ids, callerLedger } = capacityHistory()
+  const before = ids.map(id => JSON.stringify(initial[`s:${id}`]))
+  expect(storeBytes(initial)).toBeGreaterThan(3 * 1024 * 1024)
+  expect(storeBytes(initial)).toBeLessThan(4 * 1024 * 1024)
+  atomStore(on, 'ledger', callerLedger)
+  atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
+  const store = pluginStore(on, initial, 4 * 1024 * 1024, { guardStates: Object.fromEntries(ids.map(id => [id, 'live' as const])) })
+  const lines = logs(on)
   on('session.id', () => ({ value: SESSION }))
 
   await finishTurn($, on)
 
   expect(store.held.has(`s:${SESSION}`)).toBe(false)
-  expect(store.held.has('s:old-15')).toBe(true)
-  expect(store.held.has('s:old-01')).toBe(true)
-  for (const id of ids) expect(store.held.get(`s:${id}`)).toEqual(initial[`s:${id}`])
-  expect(store.size()).toBeLessThanOrEqual(4 * 1024 * 1024)
+  expect(ids.map(id => JSON.stringify(store.held.get(`s:${id}`)))).toEqual(before)
+  expect(lines.some(line => line.includes('capacity: protected or unexpired history fills the UTF-8 store budget'))).toBe(true)
 })
 
 // An incomplete index does not give a caller authority to delete an unexpired bucket.

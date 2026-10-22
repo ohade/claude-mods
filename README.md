@@ -309,10 +309,21 @@ remain visibly **Unsaved**. Rendering performs no persistence. For each session 
   optional note, stable source identity, and answer text (up to 1,000 code points); up to 200;
 - each step's title (up to 200 characters), status and complete optional note; up to 300 steps.
 
-The store budgets serialized UTF-8 conservatively below its 4 MiB limit. Ordinary saves stop
-at 3 MiB, including bodies, heads, indexes and recovery records. No count or byte eviction
-removes another session. A full protected store returns a visible capacity failure; cleanup
-reserves the remaining space for verified rollback and refuses if that reserve is insufficient.
+The store budgets serialized UTF-8 conservatively below its 4 MiB limit. Ordinary saves and
+imports must fit below 3 MiB, including bodies, heads, indexes and recovery records. If a write
+would reach that budget, Track evicts eligible CLOSED sessions until the write fits. It selects
+the oldest by the later valid save or closing time; sessions without a usable clock sort last.
+Imported history without a valid closing time also sorts last. Capacity eviction can remove
+history before its seven-day expiry, including previously imported history.
+
+Track keeps the caller, sessions being written or imported, explicitly protected sessions,
+pending cleanup and conflict records. It also keeps LIVE or unknown owners and ambiguous
+records. A session-switch archive is eligible only while its source's CLOSED guard is held too.
+Nothing is deleted unless confirmed eligible sessions can make room. Each eviction completed
+during the save or import names the removed session in a toast. An interrupted eviction can
+remove some records before failing; its recovery intent lets later cleanup finish, currently
+without an eviction toast. A full protected store returns a visible capacity failure; cleanup
+reserves the remaining space for verified recovery and refuses if that reserve is insufficient.
 One process owns a session writer lease, and a shared lock serializes store writes. Startup
 owns both before reading its bucket. Each saved body has an explicit owner, generation and
 checkpoint, with a separate durable head. Missing acknowledged bodies recover current rows
@@ -350,7 +361,9 @@ Export and import join the save queue, require writer ownership, and reconcile p
 recovery under the shared store lock before reading records. Repeated imports are safe.
 An exact retention-only marker does not count as a durable head. After the lease check,
 import replaces that marker with the verified head. The next cleanup observation starts
-a new seven-day retention clock, so imported history can remain longer.
+a new seven-day expiry clock. Capacity eviction can still remove this history sooner.
+Import receipts include `evicted`, the IDs of sessions removed to make room. If a later import
+write fails, the failure receipt still lists completed evictions; the source bundle is kept.
 Do not retire a legacy store until its original values and the added metadata have been verified.
 
 ### Local checkpoint/restore contract v1

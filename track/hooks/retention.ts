@@ -19,7 +19,7 @@ const BATCH = 8
 const WORK_MS = 250
 const CLEANUP = 'cleanup'
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-type Guard = { state: 'closed' | 'live'; release: () => Promise<void> }
+export type Guard = { state: 'closed' | 'live'; release: () => Promise<void> }
 type Probe = (session: string) => Promise<Guard>
 type Value = Record<string, unknown>
 type RecoveryEntry = { key: string; before: unknown; missing?: true; after?: unknown; stamp?: { session_id: string; closedAt: number } }
@@ -375,7 +375,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   if (failures.length) throw new Error(failures.join('; '))
 }
 
-type Eviction = { caller: string; probe: Probe; protect?: string[]; afterEviction?: (session: string) => Promise<void> }
+type Eviction = { caller: string; probe: Probe; protect?: string[]; afterEviction?: (session: string) => Promise<void>; heldGuards?: ReadonlyMap<string, Guard> }
 const CONFLICT_RECORD = /^r:[^:]+:(cleanup-)?conflict-/
 
 // Oldest first by the later valid save or closing clock; no clock sorts last.
@@ -400,7 +400,8 @@ const evictionOrder = async (store: RetentionStore, keys: string[], replacements
 // Holds a CLOSED guard in `guards` until the caller releases it, reusing one
 // already held: a second writer-lock guard on a held session reports live.
 const holdClosed = async (session: string, guards: Map<string, Guard>, probe: Probe): Promise<boolean> => {
-  if (guards.has(session)) return true
+  const held = guards.get(session)
+  if (held !== undefined) return held.state === 'closed'
   const guard = await probe(session)
   if (guard.state === 'closed') {
     guards.set(session, guard)
@@ -410,9 +411,25 @@ const holdClosed = async (session: string, guards: Map<string, Guard>, probe: Pr
   return false
 }
 
+// A release can unlock before throwing. Remove its CLOSED authority first;
+// retain a failed release only for cleanup, never for a later candidate.
+const releaseRejectedGuards = async (store: RetentionStore, guards: Map<string, Guard>, priorGuards: Set<Guard>, releaseRetries: Map<Guard, string>): Promise<void> => {
+  for (const [session, guard] of guards) {
+    if (guard.state !== 'closed' || priorGuards.has(guard)) continue
+    guards.delete(session)
+    try { await guard.release() }
+    catch (error) {
+      releaseRetries.set(guard, session)
+      store.log(`track: eviction guard release failed for ${session}: ${String(error)}`)
+    }
+  }
+}
+
 // Returns the eviction intent only when the candidate and every switch-archive
 // source are CLOSED under guards held in `guards`, so the planned space is real.
-const confirmEviction = async (store: RetentionStore, session: string, clock: number, eviction: Eviction, guards: Map<string, Guard>): Promise<ExpiryIntent | undefined> => {
+const confirmEviction = async (store: RetentionStore, session: string, clock: number, eviction: Eviction, guards: Map<string, Guard>, releaseRetries: Map<Guard, string>): Promise<ExpiryIntent | undefined> => {
+  const priorGuards = new Set(guards.values())
+  let confirmed = false
   try {
     if (!(await holdClosed(session, guards, eviction.probe))) return undefined
     const entries: Array<[string, unknown]> = []
@@ -431,10 +448,16 @@ const confirmEviction = async (store: RetentionStore, session: string, clock: nu
         return undefined
       }
     }
-    return deletionIntent(session, Number.isFinite(clock) ? clock : Date.now(), entries, 'eviction')
+    const intent = await deletionIntent(session, Number.isFinite(clock) ? clock : Date.now(), entries, 'eviction')
+    confirmed = true
+    return intent
   } catch (error) {
     store.log(`track: eviction keeps ${session}: ${String(error)}`)
     return undefined
+  } finally {
+    // A rejected candidate must not block a returning owner while later
+    // candidates are probed. Earlier accepted candidates still need their guards.
+    if (!confirmed) await releaseRejectedGuards(store, guards, priorGuards, releaseRetries)
   }
 }
 
@@ -471,11 +494,18 @@ export const ensureCapacity = async (store: RetentionStore, replacements: Record
   for (const [session] of candidates) for (const key of ownedKeys(keys, session)) floor.delete(key)
   checkSizes(floor, replacements, budget)
   const guards = new Map<string, Guard>()
+  const releaseRetries = new Map<Guard, string>()
+  const borrowed = new Set<Guard>()
+  for (const [session, guard] of eviction.heldGuards ?? []) {
+    if (guard.state !== 'closed') continue
+    guards.set(session, guard)
+    borrowed.add(guard)
+  }
   const evicted: string[] = []
   let ready: ExpiryIntent[] = []
   try {
     for (const [session, clock] of candidates) {
-      const intent = await confirmEviction(store, session, clock, eviction, guards)
+      const intent = await confirmEviction(store, session, clock, eviction, guards, releaseRetries)
       if (intent === undefined) continue
       ready.push(intent)
       const freed = new Map(await readSizes(store))
@@ -492,7 +522,10 @@ export const ensureCapacity = async (store: RetentionStore, replacements: Record
     checkSizes(await readSizes(store), replacements, budget)
     return evicted
   } finally {
-    for (const [session, guard] of guards) {
+    const cleanup = new Map(releaseRetries)
+    for (const [session, guard] of guards) cleanup.set(guard, session)
+    for (const [guard, session] of cleanup) {
+      if (borrowed.has(guard)) continue
       try { await guard.release() }
       catch (error) { store.log(`track: eviction guard release failed for ${session}: ${String(error)}`) }
     }

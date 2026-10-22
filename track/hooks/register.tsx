@@ -8,7 +8,7 @@ import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
-import type { RetentionStore } from './retention'
+import type { Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
@@ -1332,9 +1332,12 @@ const probeGuard = ($: EngineInterface) => async (target: string) => {
 // session and `protect`, and returns their ids. Each eviction also drops its
 // session from the stored saved index; a caller that publishes its own planned
 // index removes the returned ids from it.
-const ensureCapacity = async ($: EngineInterface, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = []): Promise<string[]> =>
-  checkCapacity(retentionStore($), replacements, budget, { caller: id, protect, probe: probeGuard($),
+const ensureCapacity = async ($: EngineInterface, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = [], onEvicted?: (session: string) => void, heldGuards?: ReadonlyMap<string, Guard>): Promise<string[]> =>
+  checkCapacity(retentionStore($), replacements, budget, { caller: id, protect, probe: probeGuard($), heldGuards,
     afterEviction: async session => {
+      // The history is already deleted; a later index or save failure must not hide it.
+      onEvicted?.(session)
+      $.ui.toast(`track: closed history for session ${session} was evicted to make room`)
       const stored = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
       if (stored === undefined || !Object.hasOwn(stored, session)) return
       await writeVerified($, SAVED_INDEX, Object.fromEntries(Object.entries(stored).filter(([other]) => other !== session)))
@@ -1647,6 +1650,8 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
   const run = persistence.queue.then(async () => {
   let lock: LockStream | undefined
   const guards: LockStream[] = []
+  const heldGuards = new Map<string, Guard>()
+  const evicted: string[] = []
   try {
     if (!path.startsWith('/') || path.includes('\0')) throw new Error('an absolute bundle path is required')
     const session = await $.session.id()
@@ -1694,6 +1699,7 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
           const guard = await acquireLock($, 'guard', target)
           guards.push(guard)
           if (guardStates.get(guard) !== 'closed') throw new Error(`migration keeps live or unknown session ${target}`)
+          heldGuards.set(target, { state: 'closed', release: () => closeLock(guard) })
         }
         replacements[record.key] = value
         replacements[`h:${target}`] = head
@@ -1709,8 +1715,8 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     }
     replacements[SAVED_INDEX] = index
     // Unchanged records are verified below, so every bundle session is kept.
-    const evicted = await ensureCapacity($, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)))
-    for (const other of evicted) delete index[other]
+    const completedEvictions = await ensureCapacity($, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)), other => { evicted.push(other) }, heldGuards)
+    for (const other of completedEvictions) delete index[other]
     const verified: string[] = []
     for (const record of normalized) {
       if (Object.hasOwn(replacements, record.key)) {
@@ -1721,9 +1727,9 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       verified.push(record.key.slice(2))
     }
     await writeVerified($, SAVED_INDEX, index)
-    return JSON.stringify({ v: 1, ok: true, checksum: bundle.checksum, imported, verified })
+    return JSON.stringify({ v: 1, ok: true, checksum: bundle.checksum, imported, verified, evicted })
   } catch (error) {
-    return JSON.stringify({ v: 1, ok: false, reason: reason(error) })
+    return JSON.stringify({ v: 1, ok: false, reason: reason(error), ...(mode === 'import' && { evicted }) })
   } finally {
     for (const guard of guards) await closeLock(guard).catch(error => $.ui.log(`track: import lease cleanup failed: ${reason(error)}`, { to: 'debug' }))
     if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: migration lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
