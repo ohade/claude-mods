@@ -13,6 +13,8 @@ import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
+import { readBlob } from './blob-store'
+import type { BlobFs } from './blob-store'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -1200,6 +1202,12 @@ const nudgeMissingResults = async ($: EngineInterface, observed: Turn): Promise<
   if (show) $.ui.toast(text)
 }
 
+// Unset is normal: Claude Code then uses ~/.claude, as stop-gate.py and writer-lock.py do.
+const configDir = async ($: EngineInterface): Promise<string | undefined> => {
+  const home = await $.env.get('HOME')
+  return (await $.env.get('CLAUDE_CONFIG_DIR')) || (home?.startsWith('/') ? `${home}/.claude` : undefined)
+}
+
 const stepStop = async ($: EngineInterface, payload: { session_id?: string; background_tasks?: readonly { id: string; type: string }[] }): Promise<string | undefined> => {
   const snapshot = await publishGate($)
   if (snapshot === undefined || !snapshot.session_id || !snapshot.turn_id || (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) {
@@ -1211,9 +1219,7 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
   if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) await freshnessNudge($, 'bash', BASH_NUDGE, true)
   if (snapshot.candidates.length === 0) return undefined
   const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
-  // Unset is normal: Claude Code then uses ~/.claude, as stop-gate.py and writer-lock.py do.
-  const home = await $.env.get('HOME')
-  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home?.startsWith('/') ? `${home}/.claude` : undefined)
+  const config = await configDir($)
   if (!root?.startsWith('/') || !config?.startsWith('/')) {
     await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.')
     return undefined
@@ -1251,8 +1257,51 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
   return undefined
 }
 
+// TRACK-35: a v:2 body keeps its ledger in a content-addressed blob file. The
+// raw stored body stays the value for rollback, read-back, hashing and
+// compare-and-set; the logical view below is only for reading rows.
+const blobFailure = (detail: string, cause?: unknown): Error =>
+  new Error(`saved history blob is missing or damaged (${detail}); pointer was kept`, cause === undefined ? undefined : { cause })
+
+const refuseBlobMutation = async (): Promise<never> => { throw new Error('track blob readers never write or delete blobs') }
+const blobFs = ($: EngineInterface): BlobFs => ({
+  read: async path => {
+    // A missing file reads as absent, so readBlob refuses it; any other read
+    // failure keeps its cause. Either way the caller fails closed with the pointer kept.
+    try { return await $.fs.read(path) as string }
+    catch (error) {
+      if (reason(error).includes('ENOENT')) return undefined
+      throw blobFailure('blob unreadable', error)
+    }
+  },
+  write: refuseBlobMutation,
+  list: refuseBlobMutation,
+  remove: refuseBlobMutation,
+})
+
+// Returns undefined for no body, a non-v:2 body unchanged, or a v:2 body as its
+// v:1 inline equivalent (`v: 1`, `ledger` from the verified blob in place of
+// `ledger_blob`). An invalid pointer or blob throws; it is never absent.
+const logicalBody = async ($: EngineInterface, raw: unknown): Promise<unknown> => {
+  if ((raw as { v?: unknown } | undefined)?.v !== 2) return raw
+  const body = raw as Record<string, unknown>
+  if (Object.hasOwn(body, 'ledger')) throw blobFailure('a v:2 body also holds an inline ledger')
+  const config = await configDir($)
+  if (!config?.startsWith('/')) throw blobFailure('blob directory unavailable')
+  const text = await readBlob(blobFs($), `${config}/state/track/blobs`, body.ledger_blob as never)
+  if (text === undefined) throw blobFailure('blob missing, changed or invalid')
+  let ledger: unknown
+  try { ledger = JSON.parse(text) }
+  catch (error) { throw blobFailure('blob is not JSON', error) }
+  if (typeof ledger !== 'object' || ledger === null || Array.isArray(ledger)) throw blobFailure('blob is not a ledger')
+  return Object.fromEntries(Object.entries(body).map(([key, value]) =>
+    key === 'v' ? [key, 1] : key === 'ledger_blob' ? ['ledger', ledger] : [key, value]))
+}
+
 // Existing entries are verified save metadata. Read only newly discovered
 // bodies; capacity uses the separate byte-size index for all stored keys.
+// A v:2 body is metadata here: its blob is not read, it counts as unfinished,
+// and it is sized by its raw stored value.
 const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
   const keys = await $.store.keys()
   const cached = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
@@ -1362,8 +1411,9 @@ const bodyMatchesHead = (body: { generation?: string; checkpoint?: Checkpoint },
 // Under the owner's lease and store lock, complete a torn next-revision write
 // or accept a checksummed legacy successor after preserving the prior head.
 const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
-  const body = await $.store.get(`s:${id}`) as { v?: number; session_id?: string; generation?: string; checkpoint?: Checkpoint; ledger?: Ledger } | undefined
+  const raw = await $.store.get(`s:${id}`)
   const head = sessionHead(await $.store.get(`h:${id}`), id)
+  const body = await logicalBody($, raw) as { v?: number; session_id?: string; generation?: string; checkpoint?: Checkpoint; ledger?: Ledger } | undefined
   if (body === undefined) return
   if (body.session_id !== undefined && body.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
   assertLedgerOwner(body.ledger, id)
@@ -1382,7 +1432,7 @@ const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
     const baseline = pending.baseline?.session_id === id ? pending.baseline : undefined
     // Foreign or unknown memory is preserved by the session-switch path.
     const local = owner === id || owner === undefined ? memory : baseline?.ledger
-    if (local !== undefined) await preserveConflict($, id, local, baseline, { body, head })
+    if (local !== undefined) await preserveConflict($, id, local, baseline, { body: raw, head })
     await preserveVersion($, id, 'legacy-head', head)
   } else if (body.checkpoint?.revision !== head.checkpoint.revision + 1) throw new Error('durable head/body checkpoint mismatch; both were kept')
   await writeVerified($, `h:${id}`, { v: 1, session_id: id, generation: head.generation, checkpoint: body.checkpoint })
@@ -1454,7 +1504,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
         acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) &&
         (await $.store.get(`s:${id}`) !== undefined || await $.store.get(`h:${id}`) !== undefined) &&
         (acknowledged.rewindBaseline?.session_id !== id || await $.store.get(`s:${id}`) === undefined ||
-         !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await $.store.get(`s:${id}`), id) ?? EMPTY_LEDGER, id)))) {
+         !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await logicalBody($, await $.store.get(`s:${id}`)), id) ?? EMPTY_LEDGER, id)))) {
       await resumeLedger($, id)
     }
     try { await cleanupOwned($, id) }
@@ -1468,13 +1518,15 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const memory = await read($, ledger)
     let current = identifyLedger(memory, id)
     const previous = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string; generation?: string } | undefined
+    // Rows come from the logical view; rollback and compare-and-set keep `previous` raw.
+    const previousView = await logicalBody($, previous)
     const previousHead = await $.store.get(`h:${id}`)
     const head = sessionHead(previousHead, id)
     if (previous?.session_id !== undefined && previous.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
     const revision = previous?.checkpoint?.revision ?? head?.checkpoint.revision ?? 0
     let baseline = pending.baseline?.session_id === id ? pending.baseline : undefined
     if (baseline === undefined && pending.rewindBaseline?.session_id === id && previous !== undefined) {
-      const restored = savedLedger(previous, id)
+      const restored = savedLedger(previousView, id)
       if (restored === undefined || !sameValue(identifyLedger(pending.rewindBaseline.ledger, id), identifyLedger(restored, id))) throw new Error('rewind baseline differs; resume before saving; durable ledger was kept')
       baseline = { session_id: id, ledger: identifyLedger(restored, id), checkpoint: previous.checkpoint, generation: head?.generation }
     }
@@ -1490,7 +1542,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     if (previous !== undefined && head !== undefined && !bodyMatchesHead(previous, head)) throw new Error('durable head/body checkpoint mismatch; both were kept')
     if (previous !== undefined && ((expected !== undefined && expected !== revision) ||
         (baseline?.generation !== undefined && head !== undefined && baseline.generation !== head.generation))) {
-      const durable = savedLedger(previous, id)
+      const durable = savedLedger(previousView, id)
       if (durable === undefined) throw new Error('stale writer revision; newer durable ledger was kept')
       try { current = reconcileLedger(baseline?.ledger, durable, current, id) }
       catch (error) {
@@ -1572,7 +1624,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
       const head = sessionHead(await $.store.get(`h:${id}`), id)
       if (raw?.session_id !== undefined && raw.session_id !== id) throw new Error('resume record identity is ambiguous')
       if (raw !== undefined && head !== undefined && !bodyMatchesHead(raw, head)) throw new Error('durable head/body checkpoint mismatch; both were kept')
-      const restored = savedLedger(raw, id)
+      const restored = savedLedger(await logicalBody($, raw), id)
       if (raw !== undefined && restored === undefined) throw new Error('resume record is incompatible; current rows were kept')
       let memory = await read($, ledger)
       const memoryOwner = memory.session_id ?? (await read($, durability)).memorySession
@@ -1660,7 +1712,7 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     await recoverSave($, session)
     if (mode === 'export') {
       const records = [] as Array<{ key: string; value: unknown }>
-      for (const key of (await $.store.keys()).filter(key => key.startsWith('s:')).sort()) records.push({ key, value: await $.store.get(key) })
+      for (const key of (await $.store.keys()).filter(key => key.startsWith('s:')).sort()) records.push({ key, value: await logicalBody($, await $.store.get(key)) })
       const checksum = await checksumOf(records)
       await $.fs.write(path, JSON.stringify({ v: 1, source_identity: $.plugin.root, checksum, records }))
       const verified = JSON.parse(await $.fs.read(path) as string) as { checksum?: string; records?: unknown }
@@ -1673,13 +1725,16 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     if (new Set(records.map(r => r.key)).size !== records.length || records.some(r => !r.key.startsWith('s:') || !SESSION_ID.test(r.key.slice(2)) || savedLedger(r.value) === undefined)) throw new Error('migration contains invalid or duplicate session records')
     const imported: string[] = []
     const replacements: Record<string, unknown> = {}
-    const normalized: Array<{ key: string; value: unknown; head: SessionHead }> = []
+    const normalized: Array<{ key: string; value: unknown; head: SessionHead; stored: unknown; isKept: boolean }> = []
     for (const record of records) {
       const target = record.key.slice(2)
       if (await $.store.get(`cleanup:${target}`) !== undefined) throw new Error(`migration keeps session ${target}: pending cleanup must be resolved by its owner`)
       const owner = (record.value as { session_id?: unknown }).session_id
       if (owner !== undefined && owner !== target) throw new Error('migration record identity is ambiguous')
       const current = await $.store.get(record.key)
+      // A v:2 destination is compared by its logical view and, when equal, kept raw.
+      const currentView = await logicalBody($, current)
+      const isPointer = (current as { v?: unknown } | undefined)?.v === 2
       const source = record.value as { ledger: Ledger; generation?: string; checkpoint?: Checkpoint }
       const provenance = { source_identity: bundle.source_identity ?? null, bundle_checksum: bundle.checksum, source_session: target }
       const destination = current as { generation?: string; import_provenance?: unknown } | undefined
@@ -1692,9 +1747,10 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       const value = { ...source, session_id: target, ledger: identified, generation, checkpoint, import_provenance: provenance }
       const head: SessionHead = { v: 1, session_id: target, generation, checkpoint }
       const currentHead = sessionHead(await $.store.get(`h:${target}`), target)
-      if (current !== undefined && !sameValue(current, value) && !sameValue(current, record.value)) throw new Error(`migration conflict for session ${target}; both records were kept`)
+      if (current !== undefined && !sameValue(currentView, value) && !sameValue(currentView, record.value)) throw new Error(`migration conflict for session ${target}; both records were kept`)
       if (currentHead !== undefined && !sameValue(currentHead, head)) throw new Error(`migration conflict: session ${target} has a durable head; source was kept`)
-      if (!sameValue(current, value) || currentHead === undefined) {
+      const isKept = isPointer && currentHead !== undefined
+      if (!isKept && (!sameValue(current, value) || currentHead === undefined)) {
         if (target !== session) {
           const guard = await acquireLock($, 'guard', target)
           guards.push(guard)
@@ -1705,13 +1761,13 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
         replacements[`h:${target}`] = head
         if (current === undefined) imported.push(target)
       }
-      normalized.push({ key: record.key, value, head })
+      normalized.push(isKept ? { key: record.key, value: currentView, head, stored: current, isKept } : { key: record.key, value, head, stored: value, isKept })
     }
     const index = await savedIndex($)
     for (const record of normalized) {
       const bucket = record.value as { savedAt: number; ledger: Ledger }
       const unfinished = bucket.ledger.questions.some(q => q.cleared !== true && q.status !== 'answered') || bucket.ledger.steps.some(s => s.cleared !== true && s.status !== 'completed')
-      index[record.key.slice(2)] = { at: bucket.savedAt, bytes: utf8Bytes({ [record.key]: record.value }) + 1, unfinished }
+      index[record.key.slice(2)] = { at: bucket.savedAt, bytes: utf8Bytes({ [record.key]: record.stored }) + 1, unfinished }
     }
     replacements[SAVED_INDEX] = index
     // Unchanged records are verified below, so every bundle session is kept.
@@ -1723,7 +1779,8 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
         await writeVerified($, record.key, record.value)
         await writeVerified($, `h:${record.key.slice(2)}`, record.head)
       }
-      if (!sameValue(await $.store.get(record.key), record.value) || !sameValue(await $.store.get(`h:${record.key.slice(2)}`), record.head)) throw new Error(`migration verification failed for session ${record.key.slice(2)}; source was kept`)
+      const reread = await $.store.get(record.key)
+      if (!sameValue(record.isKept ? await logicalBody($, reread) : reread, record.value) || !sameValue(await $.store.get(`h:${record.key.slice(2)}`), record.head)) throw new Error(`migration verification failed for session ${record.key.slice(2)}; source was kept`)
       verified.push(record.key.slice(2))
     }
     await writeVerified($, SAVED_INDEX, index)
@@ -2398,7 +2455,10 @@ export const register: Register = on => {
     if (e.agentId !== undefined) return failure('a subagent cannot checkpoint the main ledger')
     if (e.expected_session !== session) return failure('expected session does not match the current session')
     if (!(await saveLedger($))) return failure(persistence.failure)
-    const bucket = await $.store.get(`s:${session}`) as { checkpoint?: Checkpoint; ledger?: Ledger } | undefined
+    const stored = await $.store.get(`s:${session}`)
+    let bucket: { checkpoint?: Checkpoint; ledger?: Ledger } | undefined
+    try { bucket = await logicalBody($, stored) as typeof bucket }
+    catch (error) { return failure(reason(error)) }
     if (bucket?.checkpoint === undefined || bucket.ledger === undefined) return failure('saved checkpoint is missing')
     // Inventory and checksum come from the same acknowledged saved snapshot,
     // never a later atom read that could already contain a different blocker.
@@ -3203,7 +3263,7 @@ export const register: Register = on => {
     if (!SESSION_ID.test(from)) {
       return failed(`track: "${truncate(from, 60)}" is not a session id; nothing changed.`)
     }
-    const saved = (await $.store.get(`s:${from}`)) as { checkpoint?: Checkpoint; ledger?: { steps?: unknown; questions?: unknown } } | undefined
+    const saved = (await logicalBody($, await $.store.get(`s:${from}`))) as { checkpoint?: Checkpoint; ledger?: { steps?: unknown; questions?: unknown } } | undefined
     const source = savedLedger(saved, from)
     let checkpoint: Checkpoint | undefined
     if (expected !== undefined) {
