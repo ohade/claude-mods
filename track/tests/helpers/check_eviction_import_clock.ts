@@ -110,7 +110,7 @@ check('LIVE and unknown leases stay intact and all acquired guards release', asy
   }
   const remove = fixture.store.delete
   fixture.store.delete = async key => {
-    if (/^[shr]:/.test(key)) assert.ok(held.has(key.split(':')[1]), 'deletion must hold the target guard')
+    if (/^[shr]:/.test(key)) assert.ok(held.has(key.split(':')[1]!), 'deletion must hold the target guard')
     await remove(key)
   }
   const before = Object.fromEntries(fixture.values)

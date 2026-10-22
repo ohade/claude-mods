@@ -1,6 +1,6 @@
 // FIXTURE release gates: verified sources, reachable fallback, durable explicit UI actions.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pane, pluginStore, trackCommand } from './kit'
 
 const prepare = (on: any, prompts: any[] = [], options: Parameters<typeof pluginStore>[3] = {}) => {
   const l = atomStore(on, 'ledger', { ...EMPTY, prompts })
@@ -40,7 +40,7 @@ test('unknown-source tracking call renders a visible jump destination', async ($
 test('explicit clearing saves immediately and refreshes the Stop snapshot without rendering writes', async ($, on) => {
   const { l, store } = prepare(on)
   const snapshots: string[] = []
-  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') snapshots.push(String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') snapshots.push(String(e.value)); return { value: {} } })
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Clear me', tool_use_id: 'q1' } as never)
   const ui = await $.ui.mount(pane('dock'))
   expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(1)
@@ -67,7 +67,7 @@ test('explicit reopening cannot write preferences without session ownership', as
   const durable = atomStore(on, 'durability', { isUnsaved: false, reason: '' })
   atomStore(on, 'pane', { isOpen: false, hidden: false, closedByPerson: true })
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  await $.command.run({ command: 'track', args: '' })
+  await trackCommand($, '')
   expect(store.held.get('closedByPerson')).toBe(true)
   expect(durable.value.isUnsaved).toBe(true)
   expect(durable.value.reason).toContain('another loaded Track instance')
@@ -81,7 +81,7 @@ test('a refused explicit preference save is visible and retried by the next ackn
   atomStore(on, 'pane', { isOpen: false, hidden: false, closedByPerson: true })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   let failure: unknown
-  try { await $.command.run({ command: 'track', args: '' }) }
+  try { await trackCommand($, '') }
   catch (error) { failure = error }
   expect(failure).toBeUndefined()
   expect(durable.value.isUnsaved).toBe(true)

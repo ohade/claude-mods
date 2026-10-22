@@ -88,9 +88,33 @@ temporary_tree="$log_dir/test-tree"
 git -C "$repo" worktree add --detach "$temporary_tree" "$target" > "$log_dir/worktree.log" 2>&1
 mods_file="$log_dir/mods.json"
 printf '{}\n' > "$mods_file"
+sdk_file="$log_dir/sdk.json"
+printf '{}\n' > "$sdk_file"
 phase=tests
 mod_count=0
 has_failed=false
+
+# GR-1 (2026-10-20): native fixture tests do not execute OS helpers or type checks.
+# Every check uses the tested tree, a bounded child group and its own private log.
+run_check() {
+  local label=$1 directory=$2
+  shift 2
+  if (cd "$directory" && python3 "$helper" run 600 "$@") > "$log_dir/$label.log" 2>&1; then
+    return 0
+  fi
+  printf 'land: failing check %s; log %s\n' "$label" "$log_dir/$label.log" >&2
+  return 1
+}
+run_python_checks() {
+  local label=$1 directory=$2 tests=$3
+  if ! run_check "$label" "$directory" python3 -m unittest discover -s "$tests" -p 'test_*.py'; then
+    return 1
+  fi
+  if ! grep -Eq '^Ran [1-9][0-9]* tests? in ' "$log_dir/$label.log" || ! grep -qx OK "$log_dir/$label.log"; then
+    printf 'land: missing nonzero unittest success footer; log %s\n' "$log_dir/$label.log" >&2
+    return 1
+  fi
+}
 for mod in "$temporary_tree"/*; do
   # A mod has a plugin manifest; scripts/tests is land.sh's own suite, not a mod.
   [ -f "$mod/.claude-plugin/plugin.json" ] && [ -d "$mod/tests" ] || continue
@@ -108,8 +132,40 @@ for mod in "$temporary_tree"/*; do
     printf 'land: non-passing or unverified counts for mod %s; log %s\n' "$name" "$log" >&2
     has_failed=true
   fi
+  python_tests=("$mod"/tests/helpers/test_*.py)
+  if [ -f "${python_tests[0]}" ]; then
+    if ! run_python_checks "$name-python" "$mod" "$mod/tests/helpers"; then has_failed=true; fi
+  fi
+  for check in "$mod"/tests/helpers/check_*.ts; do
+    [ -f "$check" ] || continue
+    if ! run_check "$name-${check##*/}" "$mod" bun "$check"; then has_failed=true; fi
+  done
+  if [ -f "$mod/package.json" ]; then
+    if [ -f "$mod/tsconfig.json" ]; then
+      if ! run_check "$name-engine-version" "$mod" claude --version; then has_failed=true; continue; fi
+      if ! run_check "$name-sdk" "$mod" python3 "$helper" sdk "${CLAUDE_MODS_SDK_ROOT:-$live}" "$mod" "$script_dir/sdk-types.json" "$log_dir/$name-engine-version.log" "$sdk_file"; then
+        has_failed=true
+        continue
+      fi
+    fi
+    # Install only locked development dependencies; never run dependency lifecycle scripts.
+    if ! run_check "$name-dependencies" "$mod" npm ci --ignore-scripts --include=dev --no-audit --no-fund; then
+      has_failed=true
+    elif ! run_check "$name-typecheck" "$mod" npm run --if-present typecheck; then
+      has_failed=true
+    fi
+  fi
 done
 [ "$mod_count" -gt 0 ] || die 'no top-level mod test directories found'
+# Fixture candidate repositories contain no release suites unless a case installs one.
+# Checking the target tree therefore runs the real self-tests once, without a skip flag.
+if [ -f "$temporary_tree/scripts/tests/land.test.sh" ]; then
+  if ! run_check release-shell "$temporary_tree" bash scripts/tests/land.test.sh; then has_failed=true; fi
+fi
+release_python=("$temporary_tree"/scripts/tests/test_*.py)
+if [ -f "${release_python[0]}" ]; then
+  if ! run_python_checks release-python "$temporary_tree" "$temporary_tree/scripts/tests"; then has_failed=true; fi
+fi
 [ "$has_failed" = false ] || die 'tests did not pass; main, live and receipt were not changed'
 
 # Repeat preflight after tests: the lock serializes land.sh, not unrelated Git commands.
@@ -118,7 +174,7 @@ check_layout
 [ "$(head_at "$repo")" = "$main_before" ] || die 'main moved during testing'
 [ "$(head_at "$live")" = "$live_before" ] || die 'live moved during testing'
 receipt_tmp=$(mktemp "$state/.claude-mods-live.XXXXXX")
-python3 "$helper" receipt "$receipt" "$target" "$live_before" "$mods_file" "$log_dir" > "$receipt_tmp"
+python3 "$helper" receipt "$receipt" "$target" "$live_before" "$mods_file" "$log_dir" --sdk "$sdk_file" > "$receipt_tmp"
 
 # Publication is resumable, not atomic across two worktrees and a remote.
 phase=merge

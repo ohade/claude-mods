@@ -14,7 +14,7 @@ for (const tool of ['TaskUpdate', 'TodoWrite'] as const) {
       ? [{ id: 'task:native-task', source: 'task', taskId: 'native-task', subject: 'Legacy completion', status: 'pending' }] : [] } as any)
     pluginStore(on)
     on('session.id', () => ({ value: SESSION }))
-    on('tool.call', { tool }, () => tool === 'TodoWrite'
+    on('tool.call', { tool: [tool] }, () => tool === 'TodoWrite'
       ? { result: { newTodos: [{ content: 'Legacy completion', status: 'completed' }] } }
       : { result: 'Updated' })
     await $.tool.call({ tool, taskId: 'native-task', status: 'completed', todos: [{ content: 'Legacy completion', status: 'completed' }] } as never)
@@ -111,4 +111,43 @@ test('two todos with the same normalized title get distinct ids', async ($, on) 
   const ids = ledger.value.steps.map(s => s.id)
   expect(ids).toHaveLength(2)
   expect(new Set(ids).size).toBe(2)
+})
+
+// UI-1 review, 2026-10-20: an ordinary refusal must not bump the ledger revision;
+// a race after that preflight still needs the check inside the atomic retry.
+test('UI-1 refusing replacement leaves the ledger revision and writes unchanged', async ($, on) => {
+  mock.clock(on)
+  const ledger = atomStore<Held>(on, 'ledger', { ...EMPTY, steps: [plan(1)] })
+  atomStore(on, 'scroll', { questions: null, steps: null })
+  const revision = ledger.version
+  const result = await call($, { tool: 'mcp__track__track_steps', steps: ['Replacement'] })
+  expect(String(result.result)).toContain('replace: true')
+  expect(ledger.writes).toHaveLength(0)
+  expect(ledger.version).toBe(revision)
+})
+
+test('UI-1 a replacement retry preserves work inserted after its first read', async ($, on) => {
+  mock.clock(on)
+  let ledger: ReturnType<typeof atomStore<Held>>
+  let inserted = false
+  on('state.set', { plugin: 'track', key: ['ledger'] }, async (_, e, next) => {
+    if (!inserted && (e.value as Held).steps.some(row => row.subject === 'Replacement')) {
+      // A completed plan passed the preflight. Another insertion wins just before
+      // this write, forcing the real update helper to retry with the waiting row.
+      inserted = true
+      ledger.value = { ...ledger.value, steps: [...ledger.value.steps, plan(2, 'waiting')] }
+      ledger.version += 1
+    }
+    return next(e)
+  })
+  ledger = atomStore<Held>(on, 'ledger', { ...EMPTY, steps: [plan(1, 'completed')] })
+  atomStore(on, 'scroll', { questions: null, steps: null })
+  pluginStore(on)
+  on('session.id', () => ({ value: SESSION }))
+  const result = await call($, { tool: 'mcp__track__track_steps', steps: ['Replacement'] })
+  expect(inserted).toBe(true)
+  expect(ledger.value.steps.map(row => [row.id, row.subject, row.status])).toEqual([
+    ['plan:1', 'step 1', 'completed'], ['plan:2', 'step 2', 'waiting'],
+  ])
+  expect(String(result.result)).toContain('replace: true')
 })

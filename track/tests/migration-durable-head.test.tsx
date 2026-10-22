@@ -1,6 +1,6 @@
 // FIXTURE: retention-marker handling must keep genuine durable history protected.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const OTHER_GENERATION = '99999999-2222-4333-8444-555555555555'
@@ -14,11 +14,11 @@ for (const state of ['different-generation', 'missing-body', 'retention-marker']
     on('session.id', () => ({ value: SESSION }))
     on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
     on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
-    const exported = JSON.parse((await $.command.run({ command: 'track', args: 'export /backup.json' })).text ?? '{}')
+    const exported = JSON.parse((await trackCommand($, 'export /backup.json')).text ?? '{}')
     expect(exported.ok).toBe(true)
     const source = files.get('/backup.json')
     store.held.delete(`s:${OLD}`)
-    const imported = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+    const imported = JSON.parse((await trackCommand($, 'import /backup.json')).text ?? '{}')
     expect(imported).toMatchObject({ ok: true, imported: [OLD], verified: [OLD] })
     const saved = store.held.get(`s:${OLD}`)
     const head = store.held.get(`h:${OLD}`) as object
@@ -28,7 +28,7 @@ for (const state of ['different-generation', 'missing-body', 'retention-marker']
     store.held.set(`h:${OLD}`, protectedHead)
     if (state === 'missing-body') store.held.delete(`s:${OLD}`)
 
-    const result = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text ?? '{}')
+    const result = JSON.parse((await trackCommand($, 'import /backup.json')).text ?? '{}')
     if (state === 'retention-marker') {
       expect(result).toMatchObject({ ok: true, imported: [], verified: [OLD] })
       expect(store.held.get(`s:${OLD}`)).toEqual(saved)

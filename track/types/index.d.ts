@@ -206,7 +206,7 @@ declare module 'claude-code' {
       scroll: ScrollAt
       // The time the step clocks were last moved on, by a timer while a step is under way.
       tick: number
-      durability: { isUnsaved: boolean; reason: string; memorySession?: string; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] }
+      durability: { isUnsaved: boolean; reason: string; memorySession?: string | null; rewindSession?: string; closedByPerson?: boolean; baseline?: Baseline; rewindBaseline?: Pick<Baseline, 'session_id' | 'ledger'>; unverifiedQuestions?: Pick<Question, 'id' | 'at' | 'head'>[] }
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
       reveal: Record<string, 'q' | 'a' | 'r' | undefined>
     }

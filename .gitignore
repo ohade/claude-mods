@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 # Local test repositories and private verification logs.
 .local/
+# Track's pinned development-only compiler and OS-helper API definitions.
+track/node_modules/

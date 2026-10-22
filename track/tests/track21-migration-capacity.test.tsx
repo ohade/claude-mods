@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 const WEEK = 7 * 24 * 60 * 60 * 1000
@@ -13,10 +13,10 @@ test('TRACK-21 imported legacy rows have explicit owners, provenance and a match
   on('session.id', () => ({ value: SESSION }))
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
   on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
-  await $.command.run({ command: 'track', args: 'export /backup.json' })
+  await trackCommand($, 'export /backup.json')
   const source = JSON.parse(files.get('/backup.json')!)
   store.held.delete(`s:${FOREIGN}`)
-  const result = await $.command.run({ command: 'track', args: 'import /backup.json' })
+  const result = await trackCommand($, 'import /backup.json')
   expect(JSON.parse(result.text!).ok).toBe(true)
   const saved = store.held.get(`s:${FOREIGN}`) as any
   expect(saved.session_id).toBe(FOREIGN)

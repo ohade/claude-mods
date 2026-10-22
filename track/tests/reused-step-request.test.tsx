@@ -25,7 +25,7 @@ const prepare = (on: On, row = ACTIVE, inputs = [input()]) => {
   logs(on)
   on('session.id', () => ({ value: SESSION }))
   on('env.get', () => ({ value: undefined }))
-  on('env.set', () => ({ value: undefined }))
+  on('env.set', () => ({ value: {} }))
   on('classic.Stop', () => ({}))
   return { ledger, pending, store }
 }
@@ -156,4 +156,73 @@ test('TRACK-8 a sourceless unchanged mark keeps its existing result text', async
   prepare(on)
   const result = await mark($, { source_text: undefined })
   expect(result.result).toBe('Step plan:1 "Original work" marked in_progress.')
+})
+
+// FIXTURE: UI-1, 2026-10-20 review: track_steps without after, or with after: '',
+// deleted unfinished work while presenting the new rows as successful registration.
+const registerPlan = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call({
+  tool: 'mcp__track__track_steps', tool_use_id: 'plan-call', steps: ['New work'], source_text: REQUEST, ...extra,
+} as never)
+
+for (const status of ['pending', 'in_progress', 'waiting', 'paused'] as const) {
+  test(`UI-1 implicit replacement preserves ${status} work and refuses registration`, async ($, on) => {
+    const original = { ...ACTIVE, status }
+    const f = prepare(on, original)
+    const result = await registerPlan($)
+    expect(f.ledger.value.steps).toEqual([original])
+    expect(f.pending.value.inputs[0]?.covered).toBeUndefined()
+    expect(String(result.result)).toContain('replace: true')
+    expect(String(result.result)).toContain('plan:1')
+    expect(String(result.result)).toContain('Original work')
+  })
+}
+
+for (const after of ['', '   ', null, 3, false]) {
+  test(`UI-1 invalid after ${JSON.stringify(after)} cannot replace or acknowledge work`, async ($, on) => {
+    const f = prepare(on)
+    await registerPlan($, { after, replace: true })
+    expect(f.ledger.value.steps).toEqual([ACTIVE])
+    expect(f.pending.value.inputs[0]?.covered).toBeUndefined()
+  })
+}
+
+test('UI-1 explicit replacement is usable and keeps unrelated task rows', async ($, on) => {
+  const f = prepare(on)
+  const task: Step = { id: 'task:7', source: 'task', taskId: '7', subject: 'Separate task', status: 'waiting' }
+  f.ledger.value.steps.push(task)
+  await registerPlan($, { replace: true })
+  expect(f.ledger.value.steps.find(row => row.id === task.id)).toEqual({ ...task, session_id: SESSION })
+  expect(f.ledger.value.steps.filter(row => row.source === 'plan')).toMatchObject([
+    { id: 'plan:1', subject: 'New work', status: 'pending' },
+  ])
+  expect(f.pending.value.inputs[0]?.covered).toBe('steps')
+})
+
+test('UI-1 insertion preserves unfinished work and registers its addition', async ($, on) => {
+  const f = prepare(on)
+  await registerPlan($, { after: 'plan:1' })
+  expect(f.ledger.value.steps[0]).toEqual({ ...ACTIVE, session_id: SESSION })
+  expect(f.ledger.value.steps[1]).toMatchObject({ id: 'plan:2', subject: 'New work', status: 'pending' })
+  expect(f.pending.value.inputs[0]?.covered).toBe('steps')
+})
+
+test('UI-1 a completed plan can be replaced without a redundant flag', async ($, on) => {
+  const f = prepare(on, { ...ACTIVE, status: 'completed', endedAt: 200 })
+  await registerPlan($)
+  expect(f.ledger.value.steps).toMatchObject([{ id: 'plan:1', subject: 'New work', status: 'pending' }])
+  expect(f.pending.value.inputs[0]?.covered).toBe('steps')
+})
+
+test('UI-1 the native track_steps schema exposes explicit replacement', async ($, on) => {
+  prepare(on)
+  let properties: Record<string, unknown> = {}
+  on('ui.panes', () => ({ value: [] }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_, e) => {
+    if (e.name === 'track_steps') properties = (e.inputSchema as { properties: Record<string, unknown> }).properties
+    return { value: { tool: `mcp__track__${e.name}` } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/fixture', surface: 'terminal', isInteractive: false })
+  expect(properties.replace).toMatchObject({ type: 'boolean' })
 })

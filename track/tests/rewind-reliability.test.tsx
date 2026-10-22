@@ -1,10 +1,11 @@
 // FIXTURE: an old transcript read cannot remove rows added or compacted while
 // it waited. A confirmed rewind must survive restart.
-import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { expect, mock, test } from 'claude-code/testing'
+import { EMPTY, SESSION, atomStore, pluginStore, trackPrompt } from './kit'
+import type { On } from './kit'
 
 const old = { id: 1, head: 'Old question', at: 1, turnId: 'old', status: 'open', trackedBy: 'old-call' }
-const prepare = (on: any) => {
+const prepare = (on: On) => {
   const initial = { ...EMPTY, nextQuestionId: 2, questions: [old] }
   const l = atomStore(on, 'ledger', initial)
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null, eventOrder: 0 })
@@ -24,7 +25,7 @@ const prepare = (on: any) => {
 
 test('a stale rewind read keeps a question added while the transcript call waited', async ($, on) => {
   const { l, entered, release } = prepare(on)
-  const pending = $.prompt.submit({ text: 'status' })
+  const pending = trackPrompt($, 'status')
   await entered
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Added after the read', tool_use_id: 'new-call' } as never)
   release()
@@ -34,7 +35,7 @@ test('a stale rewind read keeps a question added while the transcript call waite
 
 test('compaction during a rewind read prevents dropping the compacted question', async ($, on) => {
   const { l, entered, release } = prepare(on)
-  const pending = $.prompt.submit({ text: 'status' })
+  const pending = trackPrompt($, 'status')
   await entered
   l.value = { ...l.value, compactedAt: 2 } as any
   release()
@@ -44,7 +45,7 @@ test('compaction during a rewind read prevents dropping the compacted question',
 
 test('a confirmed rewind is saved before the model-bound prompt continues', async ($, on) => {
   const { l, store, entered, release } = prepare(on)
-  const pending = $.prompt.submit({ text: 'status' })
+  const pending = trackPrompt($, 'status')
   await entered
   release()
   await pending
@@ -55,7 +56,7 @@ test('a confirmed rewind is saved before the model-bound prompt continues', asyn
 test('a refused rewind save blocks the model prompt and retries the same pending save', async ($, on) => {
   const { store, entered, release, proceeded } = prepare(on)
   store.faults.write = 'rewind store unavailable'
-  const pending = $.prompt.submit({ text: 'status' })
+  const pending = trackPrompt($, 'status')
   await entered
   release()
   const refused = await pending
@@ -63,7 +64,7 @@ test('a refused rewind save blocks the model prompt and retries the same pending
   expect(refused.drop).toContain('rewind')
   expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toEqual([old])
   store.faults.write = ''
-  const retried = await $.prompt.submit({ text: 'status' })
+  const retried = await trackPrompt($, 'status')
   expect(retried.drop).toBeUndefined()
   expect(proceeded.count).toBe(1)
   expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
@@ -71,23 +72,24 @@ test('a refused rewind save blocks the model prompt and retries the same pending
 
 test('a durable rewind clears its pending marker before a later unrelated store refusal', async ($, on) => {
   const { store, entered, release, proceeded } = prepare(on)
-  const first = $.prompt.submit({ text: 'status' })
+  const first = trackPrompt($, 'status')
   await entered
   release()
   await first
   expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
   store.faults.write = 'unrelated later store refusal'
-  const later = await $.prompt.submit({ text: 'later status' })
+  const later = await trackPrompt($, 'later status')
   expect(later.drop).toBeUndefined()
   expect(proceeded.count).toBe(2)
 })
 
 test('concurrent rewind checks share one transcript observation', async ($, on) => {
+  const clock = mock.clock(on)
   const { entered, release, reads } = prepare(on)
-  const first = $.prompt.submit({ text: 'status' })
+  const first = trackPrompt($, 'status')
   await entered
-  const second = $.prompt.submit({ text: 'later status' })
-  await new Promise(go => setTimeout(go, 20))
+  const second = trackPrompt($, 'later status')
+  await clock.settle()
   release()
   await Promise.all([first, second])
   expect(reads.count).toBe(1)
@@ -95,7 +97,7 @@ test('concurrent rewind checks share one transcript observation', async ($, on) 
 
 test('a transcript observation from the old session cannot remove a new-session row', async ($, on) => {
   const { l, entered, release, setSession } = prepare(on)
-  const pending = $.prompt.submit({ text: 'status' })
+  const pending = trackPrompt($, 'status')
   await entered
   setSession('11111111-2222-4333-8444-555555555555')
   const newer = { ...old, head: 'A new-session row with a reused display id' }

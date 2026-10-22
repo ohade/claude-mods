@@ -42,7 +42,7 @@ const prepare = async ($: Engine, on: On, launcher: 'Bash' | 'Agent', steps: Ste
   on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'async_launched', agentId: launch.task } }))
   on('tool.call', { tool: 'TodoWrite' }, (_, e) => ({ result: { newTodos: (e as unknown as { todos: unknown }).todos } }))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('process.run', (_, e) => {
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as Sent
     const running = ((JSON.parse(e.init?.stdin ?? '{}') as { background_tasks?: Array<{ id: string }> }).background_tasks ?? []).map(task => task.id)

@@ -2,7 +2,7 @@
 // journal must not lock its returning owner out; import must not create one.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, logs, pluginStore, trackCommand } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 const GEN = '22222222-3333-4444-8555-666666666666'
@@ -35,12 +35,12 @@ test('import refuses a pending cleanup journal without changing source or destin
   on('session.id', () => ({ value: SESSION }))
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
   on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
-  await $.command.run({ command: 'track', args: 'export /backup.json' })
+  await trackCommand($, 'export /backup.json')
   const bundle = files.get('/backup.json')
   store.held.delete(`s:${FOREIGN}`)
   const journal = { v: 1, session_id: FOREIGN, entries: [{ key: `h:${FOREIGN}`, missing: true, after: { v: 1, retentionOnly: true, session_id: FOREIGN, closedAt: 1 } }] }
   store.held.set(`cleanup:${FOREIGN}`, journal)
-  const imported = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text!)
+  const imported = JSON.parse((await trackCommand($, 'import /backup.json')).text!)
   expect(imported.ok).toBe(false)
   expect(imported.reason).toContain('pending cleanup')
   expect(store.held.has(`s:${FOREIGN}`)).toBe(false)

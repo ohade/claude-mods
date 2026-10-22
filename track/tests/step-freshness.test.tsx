@@ -1,6 +1,7 @@
 // FIXTURE: TRACK-27's approved Stop contract. The Python tests exercise the real
 // exclusive claim file; this kit controls only the plugin's helper receipt.
 import { expect, mock, test } from 'claude-code/testing'
+import type { ToolCallResult } from 'claude-code'
 import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Activity, Ledger, Step, Turn } from '../types'
@@ -30,7 +31,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   pluginStore(on)
   const lines = logs(on)
   const lower = { block: undefined as string | undefined, payload: {} as { background_tasks?: Array<{ id: string }> } }
-  const work = { value: { result: 'fixture success' } as { result?: unknown; deny?: string; isError?: boolean } }
+  const work = { value: { result: 'fixture success' } as ToolCallResult }
   const claim = { kind: 'stale_in_progress', reason: STALE, taken: false, denied: false, calls: 0 }
   const env = new Map<string, string>([['CLAUDE_PLUGIN_ROOT', '/fixture/track'], ['CLAUDE_CONFIG_DIR', '/fixture/config']])
   const contexts: string[] = []
@@ -41,7 +42,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   on('prompt.submit', (_, e) => { contexts.push(...(e.context ?? [])); return { text: e.text } })
   on('tool.call', { tool: /^(Edit|Write|MultiEdit|NotebookEdit|Bash)$/ }, () => work.value)
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('process.run', (_, e) => {
     expect(e.argv).toContain('/fixture/track/hooks/stop-gate.py')
     claim.calls++
@@ -57,7 +58,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
     const answer = eligible && !claim.taken ? { decision: 'block', reason: claim.reason } : {}
     if ('decision' in answer) claim.taken = true
     const stderr = !responseKnown ? 'track: main response receipt unavailable' : needsOwner && !ownerKnown ? 'track: owner or background task list unavailable' : ''
-    return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.turn.start({ text: 'Continue the agreed work', turnId: 't1' } as never)
   return { ledger, turn, activity, lines, lower, work, claim, contexts,
@@ -158,7 +159,7 @@ for (const receipt of ['track_steps', 'mark_step', 'TaskCreate', 'TaskUpdate', '
     const fixture = await prepare($, on, receipt === 'TaskUpdate' ? [step({ taskId: '7' })] : undefined)
     fixture.claim.kind = 'untracked_edit'
     fixture.claim.reason = EDIT
-    const inputs = { track_steps: { steps: ['Finish'] }, mark_step: { id: 'plan:1', status: 'completed' }, TaskCreate: { subject: 'Finish', description: 'Finish' }, TaskUpdate: { taskId: '7', status: 'completed' }, TodoWrite: { todos: [{ content: 'Finish', status: 'pending' }] } }
+    const inputs = { track_steps: { steps: ['Finish'], replace: true }, mark_step: { id: 'plan:1', status: 'completed' }, TaskCreate: { subject: 'Finish', description: 'Finish' }, TaskUpdate: { taskId: '7', status: 'completed' }, TodoWrite: { todos: [{ content: 'Finish', status: 'pending' }] } }
     await invoke($, receipt.includes('_') ? `mcp__track__${receipt}` : receipt, inputs[receipt])
     await invoke($, 'Edit')
     await response($)

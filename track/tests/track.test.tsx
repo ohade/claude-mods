@@ -672,7 +672,7 @@ const jumpLog = (on: Parameters<TestBody>[1]) => {
 
 // Successful assistant-answer jumps require the exact observed render host.
 const mountAnswerRow = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
-  const text = ANSWERED.questions[0].answerText
+  const text = ANSWERED.questions[0]!.answerText
   on('ui.render', { component: 'AssistantMessage' }, () => ({ type: 'Text', props: {}, children: [text] }))
   return $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: 'aaaa1111-bbbb-cccc-dddd-000000000000', props: { text, isFirstOfReply: true } } as never)
 }
@@ -1138,7 +1138,7 @@ const drawPrompts = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[
     await ui.unmount()
   }
 
-  return current as typeof THREE_PROMPTS & { prompts: Array<{ rowKey: string; requestId?: string }>; questions: Array<{ askedRequestId?: string }> }
+  return current as Omit<typeof THREE_PROMPTS, 'prompts' | 'questions'> & { prompts: Array<(typeof THREE_PROMPTS.prompts)[number] & { requestId?: string }>; questions: Array<(typeof THREE_PROMPTS.questions)[number] & { askedRequestId?: string }> }
 }
 
 test('a drawn row links only the prompt with its own id; a placeholder or another row links none', async ($, on) => {

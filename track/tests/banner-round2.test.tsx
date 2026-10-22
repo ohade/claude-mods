@@ -5,7 +5,7 @@ import { EMPTY, atomStore, pane } from './kit'
 const GREY = '#5f6670'
 const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[], tasks: [] as string[] }
 
-type El = { key?: string; text?: string; type?: string; props: { backgroundColor?: string; color?: string }; children?: Array<{ type?: string; text?: string; props?: { color?: string } }> }
+type El = { key?: string; text?: string; type?: string; props: { backgroundColor?: string; color?: string }; children?: Array<{ type?: string; text?: string; props?: { color?: string }; children?: string[] }> }
 
 const step = (n: number, status: string, extra: Record<string, unknown> = {}) => ({
   id: `plan:${n}`, source: 'plan', subject: `step ${n}`, status, ...extra,

@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import { SESSION } from './kit'
+import type { StateKey } from './kit'
 import type { FreshnessKind, Step, Turn } from '../types'
 
 // Pins the two gates the model meets: the track_question tool (it mints a question) and the
@@ -13,10 +14,10 @@ type QuestionRow = { id: number; head: string; status: string; turnId: string | 
 type LedgerRow = { nextQuestionId: number; questions: QuestionRow[] }
 
 // One atom held in the test: every read sees the last write, and each write is recorded.
-const store = <T,>(on: On, key: string, initial: T) => {
+const store = <T,>(on: On, key: StateKey, initial: T) => {
   const held = { value: initial, version: 1, writes: [] as T[] }
-  on('state.get', { plugin: 'track', key }, () => ({ value: { value: held.value, version: held.version } }))
-  on('state.set', { plugin: 'track', key }, (_, e) => {
+  on('state.get', { plugin: 'track', key: [key] }, () => ({ value: { value: held.value, version: held.version } }))
+  on('state.set', { plugin: 'track', key: [key] }, (_, e) => {
     held.value = e.value as T
     held.version += 1
     held.writes.push(e.value as T)
@@ -229,7 +230,7 @@ for (const [kind, reason] of freshnessMessages) {
     let calls = 0
     on('session.id', () => ({ value: SESSION }))
     on('env.get', (_, e) => ({ value: env.get(e.name) }))
-    on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+    on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
     on('classic.Stop', () => ({}))
     on('process.run', (_, e) => {
       calls += 1

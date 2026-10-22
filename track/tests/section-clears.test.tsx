@@ -21,7 +21,7 @@ const setup = (on: On) => {
   atomStore(on, 'turn', { currentId: 't', gatedTurnId: null })
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
-  on('env.set', () => ({ value: undefined }))
+  on('env.set', () => ({ value: {} }))
   return { l, store }
 }
 

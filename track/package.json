@@ -1,0 +1,11 @@
+{
+  "name": "track-checks",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json && tsc --project tests/helpers/tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.6",
+    "typescript": "5.9.3"
+  }
+}

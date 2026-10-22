@@ -2,6 +2,7 @@
 // or grant a source to different full words that share the saved prefix.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import type { On } from './kit'
 
 const UUID = '11111111-2222-4333-8444-555555555555'
 const KEY = '11111111-2222-4333-8444'
@@ -9,7 +10,7 @@ const PREFIX = 'ת😀'.repeat(600)
 const ANSWER = PREFIX + ' completed answer'
 const OTHER = PREFIX + ' different answer'
 const SAVED = Array.from(ANSWER).slice(0, 999).join('') + '…'
-const prepare = async ($: any, on: any) => {
+const prepare = async ($: any, on: On) => {
   const l = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   pluginStore(on)

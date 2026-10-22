@@ -13,10 +13,10 @@ const checks: Array<[string, () => void]> = [
     const reordered = { turnId: null, at: 1, status: 'open' as const, head: 'same', id: 1 }
     const merged = reconcileLedger(undefined, { ...empty, questions: [row] }, { ...empty, questions: [reordered] }, session)
     assert.equal(merged.questions.length, 1)
-    assert.equal(merged.questions[0].head, 'same')
+    assert.equal(merged.questions[0]!.head, 'same')
   }],
   ['a durable withdrawn-row deletion is not resurrected', () => {
-    const base = { ...empty, withdrawn: [{ id: 1, head: 'withdrawn', at: 1 }] } as Ledger
+    const base = { ...empty, withdrawn: [{ id: 1, head: 'withdrawn', at: 1 }] }
     const merged = reconcileLedger(base, { ...empty, withdrawn: [] }, base, session)
     assert.deepEqual(merged.withdrawn, [])
   }],

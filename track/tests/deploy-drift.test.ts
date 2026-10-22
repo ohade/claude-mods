@@ -14,10 +14,10 @@ const setup = (on: On, main: string, gitError = false, receipt = LIVE, ancestor 
     // Contract pin: the native kit does not actually start a Git process.
     expect(e.init?.cwd).toBe('/fixture/git/claude-mods')
     expect(e.init?.timeoutMs).toBeLessThanOrEqual(2000)
-    if (gitError) return { value: { exitCode: 128, stdout: '', stderr: 'fixture git error' } }
-    if (e.argv.includes('merge-base')) return { value: { exitCode: ancestor ? 0 : 1, stdout: '', stderr: '' } }
+    if (gitError) return { value: { exitCode: 128, stdout: '', stderr: 'fixture git error', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv.includes('merge-base')) return { value: { exitCode: ancestor ? 0 : 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     const sha = e.argv.includes('/fixture/git/claude-mods') ? main : LIVE
-    return { value: { exitCode: 0, stdout: sha + '\n', stderr: '' } }
+    return { value: { exitCode: 0, stdout: sha + '\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.status', (_, e) => { if (typeof e.text === 'string') lines.push(e.text); return { value: undefined } })
   on('session.start', (_, e) => ({ cwd: e.cwd }))

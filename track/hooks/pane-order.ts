@@ -26,7 +26,7 @@ export const reorderVisibleSteps = (steps: Step[], ids: unknown): Step[] | undef
   if (!ids.every(id => byId.has(id))) return undefined
   let index = 0
   // Keep cleared history in its existing slots. Only the current row order changes.
-  return steps.map(step => step.cleared === true ? step : byId.get(ids[index++])!)
+  return steps.map(step => step.cleared === true ? step : byId.get(ids[index++]!)!)
 }
 
 // TRACK-29 (2026-10-19): pane ordinals change when rows are cleared. Resolve

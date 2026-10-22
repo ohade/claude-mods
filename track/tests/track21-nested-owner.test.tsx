@@ -2,7 +2,7 @@
 // nested owner before resume, stale-save reconciliation, or rewind validation.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, logs, pluginStore, trackPrompt } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 const question = { id: 1, head: 'saved question', at: 1, turnId: null, status: 'open' as const }
@@ -65,7 +65,7 @@ test('TRACK-21 rewind cannot adopt a durable question whose conflicting owner wa
   const proceeded = { count: 0 }
   on('prompt.submit', (_, e) => { proceeded.count++; return { text: e.text, context: e.context } })
   logs(on)
-  const result = await $.prompt.submit({ text: 'status' })
+  const result = await trackPrompt($, 'status')
   expect(proceeded.count).toBe(0)
   expect(result.drop).toContain('rewind')
   expect(store.held.get(`s:${SESSION}`)).toEqual(body)

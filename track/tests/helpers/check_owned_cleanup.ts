@@ -43,7 +43,7 @@ try {
   assert.equal(values.has(intentKey), false)
   const archives = [...values.entries()].filter(([key]) => key.startsWith(`r:${session}:cleanup-conflict-`))
   assert.equal(archives.length, 1)
-  assert.deepEqual((archives[0][1] as any).value, { recovery, values: [{ key: headKey, value: currentHead }] })
+  assert.deepEqual((archives[0]![1] as any).value, { recovery, values: [{ key: headKey, value: currentHead }] })
   console.log('PASS only the owner archives a mismatched journal and preserves current values')
 } catch (error) { failures++; console.error(`FAIL returning owner stamp: ${String(error)}`) }
 try {

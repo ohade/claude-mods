@@ -165,7 +165,7 @@ export const recoverCleanup = async (store: RetentionStore, session: string, opt
         entry.stamp !== undefined && (entry.stamp.session_id !== session || !Number.isFinite(entry.stamp.closedAt) || entry.stamp.closedAt < 0 || entry.after !== undefined))) throw new Error('cleanup rollback pending: ambiguous durable recovery record')
   if (options.owner) {
     const values = await Promise.all(recovery.entries.map(async entry => ({ key: entry.key, value: await store.get(entry.key) })))
-    if (values.some((current, index) => !sameRecord(current.value, recovery.entries[index].before) && !sameRecord(current.value, recoveryAfter(recovery.entries[index])))) {
+    if (values.some((current, index) => !sameRecord(current.value, recovery.entries[index]!.before) && !sameRecord(current.value, recoveryAfter(recovery.entries[index]!)))) {
       // Only the owner may resolve an unexpected value. Archive the journal
       // and current values before clearing it; never replay over them.
       const value = { recovery, values }
@@ -223,11 +223,11 @@ const checkSizes = (sizes: Map<string, number>, replacements: Record<string, unk
 }
 
 const changeRecord = async (store: RetentionStore, session: string, entries: Array<[string, unknown]>, changes: Array<[string, unknown]>, sizes: Map<string, number>, canStart: () => boolean): Promise<boolean> => {
-  if (changes.every(([key, value], index) => key === entries[index][0] && sameRecord(value, entries[index][1]))) return false
+  if (changes.every(([key, value], index) => key === entries[index]![0] && sameRecord(value, entries[index]![1]))) return false
   const journalKey = recoveryKey(session)
   const recovery: CleanupRecovery = { v: 1, session_id: session,
     entries: entries.map(([key, before], index) => {
-      const after = changes[index][1] as Value | undefined
+      const after = changes[index]![1] as Value | undefined
       const stamp = after === undefined ? undefined : { session_id: session, closedAt: after.closedAt as number }
       return stamp !== undefined && sameRecord({ ...before as Value, ...stamp }, after)
         ? { key, before, stamp } : { key, before, ...(before === undefined && { missing: true as const }), after }
@@ -258,7 +258,7 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
       try {
         const current = await store.get(key)
         if (sameRecord(current, value)) continue
-        if (!sameRecord(current, changes[index][1])) throw new Error(`could not verify ${key}; later value was kept`)
+        if (!sameRecord(current, changes[index]![1])) throw new Error(`could not verify ${key}; later value was kept`)
         await write(key, value)
       }
       catch (rollback) { failures.push(String(rollback)) }

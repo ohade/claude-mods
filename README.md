@@ -18,6 +18,32 @@ The default layout is `~/git/claude-mods`, `~/git/worktrees/claude-mods/live` an
 worktree; the script does not install or change them. `CLAUDE_MODS_HOME` replaces the home
 prefix for an alternate layout or isolated tests; unset means the current user's home.
 
+The gate also runs each mod's Python `tests/helpers/test_*.py` suite, Bun
+`tests/helpers/check_*.ts` checks, and any declared npm `typecheck` script. It runs the
+landing script's shell and Python self-tests once from the tested tree. Python suites
+need a nonzero test count and an `OK` footer. Packages need a committed lockfile:
+`npm ci --ignore-scripts --include=dev --no-audit --no-fund` installs their development
+dependencies only in the temporary worktree. Registry access or a populated local cache is
+required; an offline dependency failure refuses landing before publication. Have Python 3,
+Bun, Node/npm and `~/.Trash` available; keep the real `HOME`, since OS helpers use it to
+find the installed checkout. `CLAUDE_MODS_HOME` changes only the deployment layout.
+
+TypeScript mods also need the engine-written SDK input. Test/validate do not generate it.
+`CLAUDE_MODS_SDK_ROOT` selects an absolute mod-layout root containing
+`<mod>/.claude-plugin/types/`; by default the gate reads the live layout. The engine version
+must match `scripts/sdk-types.json`, every SDK file must match its reviewed digest, and the
+API declaration header must name that version. Only then are the checked bytes copied into
+the temporary test tree. Missing, stale or changed inputs refuse landing.
+
+Bootstrap this input by loading the reviewed mod once in the matching Claude Code version.
+Retain the engine-written folder outside the temporary landing tree. On an engine update,
+regenerate those files and review the API changes and new manifest hashes together. Do not
+edit the generated declarations or replace them with stubs. For an explicit input:
+
+```sh
+CLAUDE_MODS_SDK_ROOT=/absolute/path/to/engine-written-mod-layout scripts/land.sh <reviewed-commit>
+```
+
 ```sh
 scripts/land.sh <reviewed-commit>
 scripts/land.sh --status
@@ -38,9 +64,11 @@ the connection failed). Repeating a non-forced push is safe. Existing successful
 their original `previous_commit` when that same deployment is retried.
 
 Each mod has a private log under `~/.claude/state/claude-mods-land-logs.*`. Tests time out after
-10 minutes per mod; push after 2 minutes. Interrupted children are stopped before the temporary
+10 minutes per native suite or helper command; push after 2 minutes. Interrupted children are stopped before the temporary
 worktree is removed. Receipts record `commit`, `previous_commit`, UTC `deployed_at`, per-mod
-`pass`/`fail` counts and `log_dir`. An unfamiliar test footer fails closed. Keep failure logs for
+native `pass`/`fail` counts and `log_dir`. Additional checks have separate logs in that directory.
+For TypeScript mods, `sdk` records the engine version and SHA-256 of the reviewed SDK manifest.
+An unfamiliar test footer fails closed. Keep failure logs for
 diagnosis; they are not committed. No arguments/invalid usage exit 2, help/status exit 0 on
 success, runtime failures exit 1, and Ctrl-C exits 130.
 
@@ -261,9 +289,15 @@ claude --plugin-dir "$PWD/track"                                         # one s
 or list the clone's `track` folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
 `~/.claude/settings.json`.
 
-Check it with `claude plugin validate track`, test it with `claude plugin test track`, and
-type-check it with `tsc -p track` once Claude Code has loaded it: `track/tsconfig.json` extends
-the API types that loading writes into `track/.claude-plugin/types/`.
+Check it with `claude plugin validate track` and test it with `claude plugin test track`.
+Once Claude Code has loaded it, run `npm --prefix track ci --ignore-scripts` followed by
+`npm --prefix track run typecheck`. This checks the sandbox hooks and native fixtures,
+then the OS helper scripts with their pinned Bun API types. The split fixes the
+2026-10-20 compile failure caused by checking OS helpers in the sandbox environment.
+`tsc -p track` remains the sandbox-only check. Both configs inherit strict compiler
+settings. The sandbox uses the API types that loading writes into
+`track/.claude-plugin/types/`, without Node or Bun globals. The OS helpers use Bun's
+types. The development packages are not loaded by the plugin.
 
 What it saves: acknowledged tracking mutations, captured answers, explicit UI actions, completed
 turns, and session end write through the existing `$.store` API and verify the result. Save failures

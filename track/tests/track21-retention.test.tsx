@@ -41,7 +41,7 @@ test('TRACK-21 startup owns its lease and store lock before reading the bucket',
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const modes: string[] = []
   pluginStore(on, {}, 4 * 1024 * 1024, {
-    beforeLockSpawn: request => modes.push(request.argv[2]),
+    beforeLockSpawn: request => modes.push(request.argv[2]!),
     beforeGet: key => {
       if (key === `s:${SESSION}`) {
         expect(modes).toContain('lease')

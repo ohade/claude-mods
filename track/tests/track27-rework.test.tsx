@@ -47,13 +47,13 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()], options: Opt
   on('classic.Stop', () => ({}))
   on('tool.call', { tool: 'Bash' }, () => ({ result: 'fixture success' }))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('process.run', (_, e) => {
     helper.configs.push(e.init?.env?.CLAUDE_CONFIG_DIR)
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as { candidates?: Array<{ kind: string }> }
     const block = !helper.taken && sent.candidates?.some(row => row.kind === 'stale_in_progress') === true
     if (block) helper.taken = true
-    return { value: { exitCode: 0, stdout: JSON.stringify(block ? { decision: 'block', reason: STALE } : {}), stderr: '' } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(block ? { decision: 'block', reason: STALE } : {}), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.turn.start({ text: 'Continue the agreed work', turnId: 't1' } as never)
   return { turn, activity, lines, helper, snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') }

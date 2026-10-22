@@ -20,7 +20,7 @@ test('TRACK-21 a stalled foreign guard does not consume the store lock wait', as
   await spawned
   await clock.advance(2999)
   // Flush asynchronous cleanup/save hooks while the guard remains stalled.
-  await new Promise(go => setTimeout(go, 30))
+  await clock.settle()
   const finishedBeforeWriterTimeout = finished
   release()
   const result = await saving

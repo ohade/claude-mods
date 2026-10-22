@@ -42,7 +42,7 @@ const prepare = async ($: Engine, on: On, launcher: 'Bash' | 'Agent', steps: Ste
   on('tool.call', { tool: 'Agent' }, () => ({ result: { status: 'async_launched', agentId: TASK } }))
   on('tool.call', { tool: 'TodoWrite' }, () => ({ result: { newTodos: [{ content: 'Start the dev server!', status: 'in_progress' }] } }))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: undefined } })
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('process.run', (_, e) => {
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as Sent
     const running = ((JSON.parse(e.init?.stdin ?? '{}') as { background_tasks?: Array<{ id: string }> }).background_tasks ?? []).map(task => task.id)
@@ -76,7 +76,7 @@ for (const launcher of ['Bash', 'Agent'] as const) {
     const fixture = await prepare($, on, launcher)
     await mark($, 'in_progress')
     await fixture.launch()
-    await invoke($, 'mcp__track__track_steps', { steps: ['START the dev server!', 'Write the migration'] })
+    await invoke($, 'mcp__track__track_steps', { steps: ['START the dev server!', 'Write the migration'], replace: true })
     await mark($, 'in_progress')
     await response($)
     expect((await stop($, launcher)).block).toBeUndefined()
@@ -110,7 +110,7 @@ for (const launcher of ['Bash', 'Agent'] as const) {
     const fixture = await prepare($, on, launcher)
     await mark($, 'in_progress')
     await fixture.launch()
-    await invoke($, 'mcp__track__track_steps', { steps: ['Write the migration'] })
+    await invoke($, 'mcp__track__track_steps', { steps: ['Write the migration'], replace: true })
     await mark($, 'in_progress')
     await mark($, 'completed')
     await response($)

@@ -1,7 +1,7 @@
 // FIXTURE, TRACK-21 (2026-10-11): revision equality alone cannot authorize
 // overwriting a conflicting head, or reassign ambiguous imported ownership.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 
@@ -13,10 +13,10 @@ test('TRACK-21 import refuses a conflicting embedded ledger owner and keeps the 
   on('session.id', () => ({ value: SESSION }))
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
   on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
-  await $.command.run({ command: 'track', args: 'export /backup.json' })
+  await trackCommand($, 'export /backup.json')
   const source = files.get('/backup.json')
   store.held.delete(`s:${FOREIGN}`)
-  const imported = JSON.parse((await $.command.run({ command: 'track', args: 'import /backup.json' })).text!)
+  const imported = JSON.parse((await trackCommand($, 'import /backup.json')).text!)
   expect(imported.ok).toBe(false)
   expect(imported.reason).toContain('identity')
   expect(store.held.has(`s:${FOREIGN}`)).toBe(false)

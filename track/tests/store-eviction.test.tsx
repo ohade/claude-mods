@@ -369,7 +369,7 @@ test('TRACK-31 each evicted record is deleted while its session guard is held', 
   const unguarded: string[] = []
   const remove = store.delete
   store.delete = async key => {
-    if (/^[shr]:/.test(key) && !locked.has(key.split(':')[1])) unguarded.push(key)
+    if (/^[shr]:/.test(key) && !locked.has(key.split(':')[1]!)) unguarded.push(key)
     await remove(key)
   }
   await expect(evicting(store, write, bytesOf({ [`s:${c}`]: initial[`s:${c}`], ...write }) + 1, { caller: CALLER, probe })).resolves.toEqual([a, b])

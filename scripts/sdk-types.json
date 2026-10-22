@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "version": "2.1.305",
+  "provenance": "Engine-written SDK from a native Claude Code 2.1.305 load on 2026-10-21; reviewed after the 2026-10-20 cold landing failure. Contains digests only, no copied API or machine-specific tool schemas.",
+  "files": {
+    "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
+    "track/.claude-plugin/types/claude-code/index.d.ts": "ddeef952e0c0d8820ceb61913154057a38b73447f635e1b66dfd56e1b13a4056",
+    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "f0d26297df0f5b73abc59be828686324cbaa05d0bcdddcf1d7fb28986dcfbe6f",
+    "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "0cab298516885f406c7762cf83b84334b5f5f02e1207abc79a02d136f518354b"
+  }
+}

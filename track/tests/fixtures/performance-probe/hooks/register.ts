@@ -10,7 +10,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: 'track' }, async (_, e, next) => {
     const before = Date.now()
     const result = await next(e)
-    if (running && renders.length < 2500) renders.push({ ms: Date.now() - before, columns: e.viewport.columns, rows: e.viewport.rows, body_columns: e.props.bodyColumns, body_rows: e.props.scroll.bodyRows, placement: e.props.placement })
+    if (running && renders.length < 2500) renders.push({ ms: Date.now() - before, columns: e.viewport!.columns, rows: e.viewport!.rows, body_columns: e.props.bodyColumns, body_rows: e.props.scroll.bodyRows, placement: e.props.placement })
     return result
   })
   on('session.start', async ($, e, next) => {
