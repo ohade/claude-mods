@@ -155,11 +155,18 @@ const checks: Array<[string, () => Promise<void>]> = [
       delete prototype.savedAt
     }
   }],
-  ['writeBlob repairs a damaged blob under its name', async () => {
-    const { fs, files } = fakeFs()
-    files.set(`${dir}/${helloSum}.json`, 'jello')
-    assert.deepEqual(await writeBlob(fs, dir, 'hello'), { checksum: helloSum, bytes: 5 })
-    assert.equal(files.get(`${dir}/${helloSum}.json`), 'hello')
+  ['writeBlob refuses a damaged existing blob and keeps it', async () => {
+    for (const damagedText of ['jello', '']) {
+      const { fs, files, calls } = fakeFs()
+      const path = `${dir}/${helloSum}.json`
+      files.set(path, damagedText)
+      await assert.rejects(writeBlob(fs, dir, 'hello'), {
+        name: 'Error',
+        message: `existing blob differs from its name; it was kept: ${path}`,
+      }, 'damaged existing blob was not refused')
+      assert.equal(files.get(path), damagedText, 'damaged existing blob was changed')
+      assert.equal(calls.filter(call => call.startsWith('write ')).length, 0, 'damaged existing blob was written')
+    }
   }],
 ]
 

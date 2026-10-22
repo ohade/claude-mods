@@ -53,12 +53,14 @@ export const readBlob = async (fs: BlobFs, dir: string, ref: BlobRef): Promise<s
   return await matches(text, copy) ? text : undefined
 }
 
-// An existing verified blob is left alone. A missing or damaged one is written
-// with the content its name stands for, then read back before the ref is returned.
+// An existing verified blob is left alone; a damaged one is refused and kept.
+// Only a missing blob is written, then read back before the ref is returned.
 export const writeBlob = async (fs: BlobFs, dir: string, text: string): Promise<BlobRef> => {
   const ref = await refOf(text)
   const path = blobPath(dir, ref.checksum)
-  if (await matches(await fs.read(path), ref)) return ref
+  const existingText = await fs.read(path)
+  if (await matches(existingText, ref)) return ref
+  if (existingText !== undefined) throw new Error(`existing blob differs from its name; it was kept: ${path}`)
   await fs.write(path, text)
   if (!await matches(await fs.read(path), ref)) throw new Error(`blob read-back mismatch: ${path}`)
   return ref
