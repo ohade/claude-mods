@@ -120,6 +120,7 @@ class BlobFsTests(unittest.TestCase):
     def test_symlinked_dir_is_refused(self):
         real = self.root / "elsewhere"
         real.mkdir(mode=0o755)
+        os.chmod(real, 0o755)
         self.dir.parent.mkdir(parents=True)
         os.symlink(real, self.dir)
         self.assertRefused(self.dir)
