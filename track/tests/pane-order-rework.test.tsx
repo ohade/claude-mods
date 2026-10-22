@@ -118,7 +118,7 @@ test('TRACK-29 newer durable membership cannot receive a successful mismatched-o
     { session_id: SESSION, id: 'plan:4', source: 'plan', subject: 'Concurrent new work', status: 'pending' },
   ] }
   const checkpoint = await describeCheckpoint(ledger, SESSION, prior.checkpoint)
-  replacement = { body: { ...prior, ledger, checkpoint }, head: { v: 1, session_id: SESSION, generation: prior.generation, checkpoint } }
+  replacement = { body: { ...logical, v: 1, ledger, checkpoint }, head: { v: 1, session_id: SESSION, generation: prior.generation, checkpoint } }
   const result = receipt(await invoke($, 'mcp__track__reorder_steps', { ids: ['plan:3', 'plan:2'] }))
   expect(injected).toBe(true)
   expect(result.ok).toBe(false)

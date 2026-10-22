@@ -23,7 +23,7 @@ test('a stale revision refuses to overwrite the newer durable ledger', async ($,
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'first' } as never)
   const saved = store.held.get(`s:${SESSION}`) as any
   const logical = await store.pool.logical(store, `s:${SESSION}`) as any
-  const newer = { ...saved, checkpoint: { ...saved.checkpoint, revision: saved.checkpoint.revision + 1 }, ledger: { ...logical.ledger, questions: [{ ...logical.ledger.questions[0], head: 'newer owner value' }] } }
+  const newer = { ...logical, v: 1, checkpoint: { ...saved.checkpoint, revision: saved.checkpoint.revision + 1 }, ledger: { ...logical.ledger, questions: [{ ...logical.ledger.questions[0], head: 'newer owner value' }] } }
   store.held.set(`s:${SESSION}`, newer)
   const result = await $.tool.call({ tool: 'mcp__track__track_question', summary: 'stale mutation' } as never)
   expect(JSON.stringify(result)).toContain('unsaved')

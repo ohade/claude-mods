@@ -85,7 +85,7 @@ test('a corrected native answer does not overwrite a concurrently saved unrelate
     { session_id: SESSION, id: 'plan:9', source: 'plan', subject: 'Concurrent durable work', status: 'paused' },
   ] }
   const checkpoint = await describeCheckpoint(concurrent, SESSION, saved.checkpoint)
-  store.held.set(`s:${SESSION}`, { ...saved, ledger: concurrent, checkpoint })
+  store.held.set(`s:${SESSION}`, { ...logical, v: 1, ledger: concurrent, checkpoint })
   store.held.set(`h:${SESSION}`, { v: 1, session_id: SESSION, generation: saved.generation, checkpoint })
   await response($, marked('Corrected.'))
   const durable = (await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger }).ledger

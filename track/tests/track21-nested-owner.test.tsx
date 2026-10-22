@@ -46,7 +46,7 @@ test('TRACK-21 stale save keeps a newer body with a conflicting nested owner byt
   const logical = await pool.logical(store, `s:${SESSION}`) as any
   const newerLedger = { ...logical.ledger, nextQuestionId: 3, questions: [...logical.ledger.questions, { ...question, id: 2, session_id: FOREIGN }] }
   const newerCheckpoint = await describeCheckpoint(newerLedger, SESSION, saved.checkpoint)
-  const body = { ...saved, ledger: newerLedger, checkpoint: newerCheckpoint }
+  const body = { ...logical, v: 1, ledger: newerLedger, checkpoint: newerCheckpoint }
   const head = { ...(store.held.get(`h:${SESSION}`) as any), checkpoint: newerCheckpoint }
   store.held.set(`s:${SESSION}`, body)
   store.held.set(`h:${SESSION}`, head)
