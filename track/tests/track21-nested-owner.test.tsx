@@ -2,7 +2,7 @@
 // nested owner before resume, stale-save reconciliation, or rewind validation.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore, trackPrompt } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore, trackPrompt } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 const question = { id: 1, head: 'saved question', at: 1, turnId: null, status: 'open' as const }
@@ -19,6 +19,7 @@ const conflictingLedgers = [
 ] as const
 
 for (const [kind, conflicting] of conflictingLedgers) test(`TRACK-21 resume refuses a conflicting ${kind} owner before parsing`, async ($, on) => {
+  blobPool(on)
   const memory = atomStore(on, 'ledger', EMPTY)
   const body = { v: 1, session_id: SESSION, savedAt: 1, ledger: conflicting }
   const store = pluginStore(on, { [`s:${SESSION}`]: body })
@@ -35,13 +36,15 @@ for (const [kind, conflicting] of conflictingLedgers) test(`TRACK-21 resume refu
 })
 
 test('TRACK-21 stale save keeps a newer body with a conflicting nested owner byte-identical', async ($, on) => {
+  const pool = blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'acknowledged local row' } as never)
   const saved = store.held.get(`s:${SESSION}`) as any
-  const newerLedger = { ...saved.ledger, nextQuestionId: 3, questions: [...saved.ledger.questions, { ...question, id: 2, session_id: FOREIGN }] }
+  const logical = await pool.logical(store, `s:${SESSION}`) as any
+  const newerLedger = { ...logical.ledger, nextQuestionId: 3, questions: [...logical.ledger.questions, { ...question, id: 2, session_id: FOREIGN }] }
   const newerCheckpoint = await describeCheckpoint(newerLedger, SESSION, saved.checkpoint)
   const body = { ...saved, ledger: newerLedger, checkpoint: newerCheckpoint }
   const head = { ...(store.held.get(`h:${SESSION}`) as any), checkpoint: newerCheckpoint }
@@ -55,6 +58,7 @@ test('TRACK-21 stale save keeps a newer body with a conflicting nested owner byt
 })
 
 test('TRACK-21 rewind cannot adopt a durable question whose conflicting owner was parsed away', async ($, on) => {
+  blobPool(on)
   const row = { ...question, trackedBy: 'rewound-call' }
   const local = { ...EMPTY, nextQuestionId: 2, questions: [row] }
   atomStore(on, 'ledger', local)

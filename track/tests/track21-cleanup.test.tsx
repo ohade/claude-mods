@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 const FOREIGN = '00000000-0000-4000-8000-000000000001'
 const WEEK = 7 * 24 * 60 * 60 * 1000
@@ -9,6 +9,7 @@ const save = async ($: Parameters<import('claude-code/testing').TestBody>[0]) =>
 }
 
 test('TRACK-21 first closed sighting stamps closure without expiring old unfinished rows', async ($, on) => {
+  blobPool(on)
   const foreign = { v: 1, savedAt: 1, ledger: { ...EMPTY, questions: [{ id: 1, head: 'unfinished', status: 'open', at: 1, turnId: null }] } }
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
@@ -25,6 +26,7 @@ test('TRACK-21 first closed sighting stamps closure without expiring old unfinis
 })
 
 test('TRACK-21 expired closed unfinished records are removed', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const foreign = { v: 1, session_id: FOREIGN, savedAt: 1, closedAt: Date.now() - WEEK - 1000, ledger: { ...EMPTY, questions: [{ id: 1, head: 'unfinished', status: 'open', at: 1, turnId: null }] } }
@@ -38,6 +40,7 @@ test('TRACK-21 expired closed unfinished records are removed', async ($, on) => 
 // Design amended by lead, refuter M5: foreign LIVE/unknown values stay exact;
 // the owner clears its clock while holding its own lease and the store lock.
 test('TRACK-21 a live lease keeps every foreign record byte-identical', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const foreign = { v: 1, session_id: FOREIGN, savedAt: 1, closedAt: Date.now() - WEEK - 1000, ledger: EMPTY }
@@ -49,6 +52,7 @@ test('TRACK-21 a live lease keeps every foreign record byte-identical', async ($
 })
 
 test('TRACK-21 owner resume clears its own clock without needing a later save', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   const own = { v: 1, session_id: SESSION, savedAt: 1, closedAt: Date.now() - WEEK - 1000, ledger: EMPTY }
   const store = pluginStore(on, { [`s:${SESSION}`]: own })
@@ -60,6 +64,7 @@ test('TRACK-21 owner resume clears its own clock without needing a later save', 
 })
 
 test('TRACK-21 reload cannot authorize replacing newer saved rows with nonempty memory', async ($, on) => {
+  const pool = blobPool(on)
   const local = { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'local row', status: 'open', at: 1, turnId: null }] }
   const newer = { v: 1, savedAt: 2, checkpoint: { revision: 5 }, ledger: { ...EMPTY, nextQuestionId: 3, questions: [{ id: 2, head: 'newer row', status: 'open', at: 2, turnId: null }] } }
   atomStore(on, 'ledger', local)
@@ -70,7 +75,7 @@ test('TRACK-21 reload cannot authorize replacing newer saved rows with nonempty 
   on('turn.complete', (_, e) => ({ text: e.answer }))
   await $.classic.SessionStart({ source: 'resume', session_id: SESSION } as never)
   await save($)
-  const stored = store.held.get(`s:${SESSION}`) as { ledger: typeof local }
+  const stored = await pool.logical(store, `s:${SESSION}`) as { ledger: typeof local }
   expect(stored.ledger.questions.some(q => q.head === 'newer row')).toBe(true)
   expect(stored.ledger.questions.some(q => q.head === 'local row')).toBe(true)
 })

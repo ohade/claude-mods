@@ -156,3 +156,66 @@ export const logs = (on: On) => {
 
   return lines
 }
+
+// FIXTURE: opt-in blob storage and publication in memory, not host filesystem atomicity.
+export const blobPool = (on: On, options: { configDir?: string } = {}) => {
+  const files = new Map<string, string>()
+  const configDir = options.configDir ?? '/fixture/config'
+  const dir = `${configDir}/state/track/blobs`
+  const checksumPattern = /^[0-9a-f]{64}$/
+  const helperPattern = /\/hooks\/blob-fs\.py$/
+  const escapedDir = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const encoder = new TextEncoder()
+  const digest = async (text: string) => {
+    const bytes = encoder.encode(text)
+    const hash = await crypto.subtle.digest('SHA-256', bytes)
+    return { checksum: Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''), bytes: bytes.length }
+  }
+  let publishCalls = 0
+  const answer = (exitCode: number, stdout: string, stderr = '') => ({
+    value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
+  })
+  on('env.get', { name: /^CLAUDE_CONFIG_DIR$/ }, () => ({ value: configDir }))
+  on('env.get', { name: /^HOME$/ }, () => ({ value: undefined }))
+  on('fs.read', { path: new RegExp(`^${escapedDir}/[0-9a-f]{64}\\.json$`) }, (_, e) => {
+    const text = files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: missing blob ${e.path}`)
+    return { value: text }
+  })
+  on('process.run', { argv: helperPattern }, async (_, e) => {
+    publishCalls++
+    const [interpreter, helper, operation, poolDir, checksum] = e.argv
+    const text = e.init?.stdin
+    if (e.argv.length !== 5 || interpreter !== 'python3' || helper === undefined || !helperPattern.test(helper)
+      || operation !== 'publish' || poolDir !== dir || checksum === undefined || !checksumPattern.test(checksum) || typeof text !== 'string') {
+      return answer(1, '', 'invalid blob publication request')
+    }
+    const ref = await digest(text)
+    if (ref.checksum !== checksum) return answer(1, '', 'blob checksum differs from stdin')
+    const path = `${dir}/${checksum}.json`
+    const existing = files.get(path)
+    if (existing !== undefined && existing !== text) return answer(1, '', 'existing blob differs; refused and kept')
+    if (existing === undefined) files.set(path, text)
+    return answer(0, `${JSON.stringify({ ok: true, ...ref })}\n`)
+  })
+
+  return {
+    files,
+    get publishes() { return publishCalls },
+    async logical(store: { held: Map<string, unknown> }, key: string) {
+      const raw = store.held.get(key)
+      if (typeof raw !== 'object' || raw === null || !('v' in raw) || raw.v !== 2) return raw
+      const body = raw as Record<string, unknown>
+      const ref = body.ledger_blob as { checksum?: unknown; bytes?: unknown } | undefined
+      if (typeof ref !== 'object' || ref === null || typeof ref.checksum !== 'string' || !checksumPattern.test(ref.checksum)
+        || !Number.isSafeInteger(ref.bytes) || (ref.bytes as number) < 0) throw new Error('invalid blob checksum or bytes')
+      const text = files.get(`${dir}/${ref.checksum}.json`)
+      if (text === undefined) throw new Error('missing ledger blob')
+      const actual = await digest(text)
+      if (actual.bytes !== ref.bytes || actual.checksum !== ref.checksum) throw new Error('damaged ledger blob: checksum or bytes differ')
+      const ledger: unknown = JSON.parse(text)
+      return Object.fromEntries(Object.entries(body).map(([name, value]) =>
+        name === 'v' ? [name, 1] : name === 'ledger_blob' ? ['ledger', ledger] : [name, value]))
+    },
+  }
+}

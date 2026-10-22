@@ -1,11 +1,12 @@
 // FIXTURE: an old transcript read cannot remove rows added or compacted while
 // it waited. A confirmed rewind must survive restart.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore, trackPrompt } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackPrompt } from './kit'
 import type { On } from './kit'
 
 const old = { id: 1, head: 'Old question', at: 1, turnId: 'old', status: 'open', trackedBy: 'old-call' }
 const prepare = (on: On) => {
+  const pool = blobPool(on)
   const initial = { ...EMPTY, nextQuestionId: 2, questions: [old] }
   const l = atomStore(on, 'ledger', initial)
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null, eventOrder: 0 })
@@ -20,7 +21,7 @@ const prepare = (on: On) => {
   const held = new Promise<void>(go => { release = go })
   const reads = { count: 0 }
   on('session.messages', async () => { reads.count++; enter(); await held; return { value: [] } })
-  return { l, store, entered, release, reads, proceeded, setSession: (id: string) => { session = id } }
+  return { l, store, pool, entered, release, reads, proceeded, setSession: (id: string) => { session = id } }
 }
 
 test('a stale rewind read keeps a question added while the transcript call waited', async ($, on) => {
@@ -44,17 +45,17 @@ test('compaction during a rewind read prevents dropping the compacted question',
 })
 
 test('a confirmed rewind is saved before the model-bound prompt continues', async ($, on) => {
-  const { l, store, entered, release } = prepare(on)
+  const { l, store, pool, entered, release } = prepare(on)
   const pending = trackPrompt($, 'status')
   await entered
   release()
   await pending
   expect((l.value as any).questions).toHaveLength(0)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
 })
 
 test('a refused rewind save blocks the model prompt and retries the same pending save', async ($, on) => {
-  const { store, entered, release, proceeded } = prepare(on)
+  const { store, pool, entered, release, proceeded } = prepare(on)
   store.faults.write = 'rewind store unavailable'
   const pending = trackPrompt($, 'status')
   await entered
@@ -62,21 +63,21 @@ test('a refused rewind save blocks the model prompt and retries the same pending
   const refused = await pending
   expect(proceeded.count).toBe(0)
   expect(refused.drop).toContain('rewind')
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toEqual([old])
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toEqual([old])
   store.faults.write = ''
   const retried = await trackPrompt($, 'status')
   expect(retried.drop).toBeUndefined()
   expect(proceeded.count).toBe(1)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
 })
 
 test('a durable rewind clears its pending marker before a later unrelated store refusal', async ($, on) => {
-  const { store, entered, release, proceeded } = prepare(on)
+  const { store, pool, entered, release, proceeded } = prepare(on)
   const first = trackPrompt($, 'status')
   await entered
   release()
   await first
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
   store.faults.write = 'unrelated later store refusal'
   const later = await trackPrompt($, 'later status')
   expect(later.drop).toBeUndefined()

@@ -2,9 +2,10 @@
 // newer generation-less body while a new-code durable head already exists.
 import { expect, mock, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 for (const scenario of ['newer legacy', 'corrupt checksum', 'older legacy', 'foreign generation'] as const) test(`mixed-version resume handles ${scenario} without losing rows`, async ($, on) => {
+  const pool = blobPool(on)
   mock.clock(on)
   const memory = atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on)
@@ -13,12 +14,13 @@ for (const scenario of ['newer legacy', 'corrupt checksum', 'older legacy', 'for
   logs(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'new-code row' } as never)
   const original = store.held.get(`s:${SESSION}`) as any
+  const logical = await pool.logical(store, `s:${SESSION}`) as any
   const oldHead = structuredClone(store.held.get(`h:${SESSION}`)) as any
-  const ledger = { ...original.ledger, nextQuestionId: 3, questions: [...original.ledger.questions,
+  const ledger = { ...logical.ledger, nextQuestionId: 3, questions: [...logical.ledger.questions,
     { id: 2, head: 'legacy row', at: 2, turnId: null, status: 'open', session_id: SESSION }] }
   const checkpoint = { ...await describeCheckpoint(ledger, SESSION), revision: oldHead.checkpoint.revision + 2 }
-  const { generation, ...withoutGeneration } = original
-  const legacy = { ...withoutGeneration, ledger, checkpoint,
+  const { generation, ledger_blob, ...withoutGeneration } = original
+  const legacy = { ...withoutGeneration, v: 1, ledger, checkpoint,
     ...(scenario === 'corrupt checksum' && { checkpoint: { ...checkpoint, checksum: '0'.repeat(64) } }),
     ...(scenario === 'older legacy' && { checkpoint: { ...checkpoint, revision: oldHead.checkpoint.revision } }),
     ...(scenario === 'foreign generation' && { generation: '22222222-3333-4444-8555-666666666666' }),
@@ -42,8 +44,9 @@ for (const scenario of ['newer legacy', 'corrupt checksum', 'older legacy', 'for
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(receipt.ok).toBe(true)
   const saved = store.held.get(`s:${SESSION}`) as any
+  const savedLogical = await pool.logical(store, `s:${SESSION}`) as any
   expect(saved.checkpoint.revision).toBe(checkpoint.revision + 1)
-  expect(saved.ledger.questions.map((row: any) => row.head)).toEqual(['new-code row', 'legacy row', 'after rollout'])
+  expect(savedLogical.ledger.questions.map((row: any) => row.head)).toEqual(['new-code row', 'legacy row', 'after rollout'])
   expect(saved.generation).toBe(oldHead.generation)
   expect((store.held.get(`h:${SESSION}`) as any).checkpoint).toEqual(saved.checkpoint)
 })

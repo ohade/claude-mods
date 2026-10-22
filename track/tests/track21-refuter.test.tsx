@@ -2,13 +2,14 @@
 // before implementation changes, then pass without changing these checks.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 const checkpoint = async ($: any) => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
 const question = { id: 1, head: 'acknowledged history', at: 1, status: 'open', turnId: null }
 
 test('TRACK-21 failed resume cannot authorize replacing an existing durable ledger', async ($, on) => {
+  const pool = blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   const options = { leaseFailure: 'another loaded Track instance owns this session' }
   const originalLedger = { ...EMPTY, nextQuestionId: 2, questions: [question] } as any
@@ -28,8 +29,9 @@ test('TRACK-21 failed resume cannot authorize replacing an existing durable ledg
   const receipt = await checkpoint($)
   expect(receipt.ok).toBe(true)
   const applied = store.held.get(`s:${SESSION}`) as any
+  const logical = await pool.logical(store, `s:${SESSION}`) as any
   const head = store.held.get(`h:${SESSION}`) as any
-  expect(applied.ledger.questions.map((row: any) => row.head)).toEqual(['acknowledged history', 'unverified new row'])
+  expect(logical.ledger.questions.map((row: any) => row.head)).toEqual(['acknowledged history', 'unverified new row'])
   expect(applied.checkpoint.revision).toBe(durable.checkpoint.revision + 1)
   expect(applied.generation).toBe(generation)
   expect(head.generation).toBe(applied.generation)
@@ -37,6 +39,7 @@ test('TRACK-21 failed resume cannot authorize replacing an existing durable ledg
 })
 
 test('TRACK-21 foreign cleanup reserve exhaustion does not block the caller checkpoint', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   const foreign = { v: 1, savedAt: 1, ledger: EMPTY, padding: 'p'.repeat(1486000) }
   // Head-only stamping journals the head, so an oversized head plus protected
@@ -53,6 +56,7 @@ test('TRACK-21 foreign cleanup reserve exhaustion does not block the caller chec
 })
 
 test('TRACK-21 malformed foreign cleanup journal does not block the caller checkpoint', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   const malformed = { v: 9, session_id: FOREIGN, entries: [] }
   const store = pluginStore(on, { [`cleanup:${FOREIGN}`]: malformed })
@@ -64,6 +68,7 @@ test('TRACK-21 malformed foreign cleanup journal does not block the caller check
 })
 
 test('TRACK-21 resume recovers its crash-left cleanup journal before reading the missing body', async ($, on) => {
+  blobPool(on)
   const resumed = atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
