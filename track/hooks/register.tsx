@@ -8,7 +8,7 @@ import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
-import type { Guard, RetentionStore } from './retention'
+import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
@@ -1377,12 +1377,97 @@ const probeGuard = ($: EngineInterface) => async (target: string) => {
   const guard = await acquireLock($, 'guard', target)
   return { state: guardStates.get(guard) ?? 'live', release: () => closeLock(guard) }
 }
-// Over budget, evicts the oldest CLOSED sessions other than `id`, any written
-// session and `protect`, and returns their ids. Each eviction also drops its
-// session from the stored saved index; a caller that publishes its own planned
-// index removes the returned ids from it.
-const ensureCapacity = async ($: EngineInterface, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = [], onEvicted?: (session: string) => void, heldGuards?: ReadonlyMap<string, Guard>): Promise<string[]> =>
-  checkCapacity(retentionStore($), replacements, budget, { caller: id, protect, probe: probeGuard($), heldGuards,
+const sha256Hex = async (text: string): Promise<string> =>
+  Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), b => b.toString(16).padStart(2, '0')).join('')
+
+type Publication = { unavailable: string } | { rejected: string } | undefined
+// Publishes `text` through blob-fs.py and reads it back. `unavailable` means the
+// helper or the blob directory is unavailable, so no later candidate can work;
+// `rejected` keeps only this candidate.
+const publishLedgerBlob = async ($: EngineInterface, text: string, ref: { checksum: string; bytes: number }): Promise<Publication> => {
+  let config: string | undefined
+  try { config = await configDir($) }
+  catch (error) { return { unavailable: `blob directory unavailable: ${reason(error)}` } }
+  if (!config?.startsWith('/')) return { unavailable: 'blob directory unavailable' }
+  const dir = `${config}/state/track/blobs`
+  let result: Awaited<ReturnType<EngineInterface['process']['run']>>
+  try {
+    result = await $.process.run(['python3', `${$.plugin.root}/hooks/blob-fs.py`, 'publish', dir, ref.checksum],
+      { stdin: text, timeoutMs: 10000, env: { CLAUDE_CONFIG_DIR: config } })
+  } catch (error) { return { unavailable: `blob helper unavailable: ${reason(error)}` } }
+  if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) {
+    return { rejected: `blob helper exit ${result.exitCode}${result.stderr.trim() === '' ? '' : `: ${result.stderr.trim()}`}` }
+  }
+  let receipt: { ok?: unknown; checksum?: unknown; bytes?: unknown } | null
+  try { receipt = JSON.parse(result.stdout) }
+  catch { return { rejected: 'blob helper receipt is not JSON' } }
+  if (receipt?.ok !== true || receipt.checksum !== ref.checksum || receipt.bytes !== ref.bytes) return { rejected: 'blob helper receipt does not match the ledger' }
+  try {
+    if (await readBlob(blobFs($), dir, ref) !== text) return { rejected: 'published blob does not match the ledger' }
+  } catch (error) { return { rejected: `published blob unreadable: ${reason(error)}` } }
+  return undefined
+}
+
+const uncertainCompaction = (session: string, detail: string, cause: unknown): Error =>
+  new Error(`compaction left ${session} in an uncertain state: ${detail}`, { cause })
+
+// TRACK-35 U2b: converts another CLOSED session's v:1 inline body to a v:2
+// pointer before any eviction. The blob is published (content-addressed,
+// no-clobber) and verified before the CLOSED guard is taken; the pointer keeps
+// every other key in place, so its logical view equals the v:1 body exactly.
+// A failure before the pointer write keeps the v:1 body; an unprovable state
+// after it throws, so the caller's write fails closed with the value kept.
+const compactBody = ($: EngineInterface, onCompacted?: (session: string, bytes: number) => void): Compaction => async (session, confirm) => {
+  const key = `s:${session}`
+  const note = (why: string): void => { $.ui.log(`track: compaction keeps ${session}: ${why}`, { to: 'debug' }) }
+  const keep = (why: string): 'kept' => { note(why); return 'kept' }
+  const stop = (why: string): 'stop' => { note(why); return 'stop' }
+  let original: unknown
+  try { original = await $.store.get(key) }
+  catch (error) { return keep(`body unreadable: ${reason(error)}`) }
+  const body = original as Record<string, unknown> | undefined
+  const ledger = body?.ledger
+  if (body?.v !== 1 || typeof ledger !== 'object' || ledger === null || Array.isArray(ledger)) return 'kept'
+  if (Object.hasOwn(body, 'ledger_blob')) return keep('a v:1 body already names a blob')
+  const text = JSON.stringify(ledger)
+  const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
+  const publication = await publishLedgerBlob($, text, ref)
+  if (publication !== undefined) return 'unavailable' in publication ? stop(publication.unavailable) : keep(publication.rejected)
+  if (!(await confirm())) return keep('session is not CLOSED or its records are ambiguous')
+  try {
+    if (!sameValue(await $.store.get(key), original)) return keep('body changed before compaction')
+  } catch (error) { return keep(`body unreadable under its guard: ${reason(error)}`) }
+  const pointer = Object.fromEntries(Object.entries(body).map(([name, value]) =>
+    name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
+  try { await writeVerified($, key, pointer) }
+  catch (error) {
+    // The size index's pending marker repairs this key's size for the next locked caller.
+    let after: unknown
+    try { after = await $.store.get(key) }
+    catch (readError) { throw uncertainCompaction(session, `${reason(error)}; re-read failed: ${reason(readError)}`, readError) }
+    if (sameValue(after, original)) return keep(`pointer write failed; the v:1 body was kept: ${reason(error)}`)
+    if (!sameValue(after, pointer)) throw uncertainCompaction(session, reason(error), error)
+  }
+  const bytes = utf8Bytes({ [key]: pointer }) + 1
+  onCompacted?.(session, bytes)
+  const stored = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
+  if (stored !== undefined && Object.hasOwn(stored, session)) await writeVerified($, SAVED_INDEX, { ...stored, [session]: { ...stored[session], bytes } })
+  return 'compacted'
+}
+
+// A caller's planned index takes a compacted session's new raw size in place.
+const patchCompacted = (index: SavedIndex) => (session: string, bytes: number): void => {
+  if (Object.hasOwn(index, session)) index[session] = { ...index[session]!, bytes }
+}
+
+// Over budget, first compacts other CLOSED sessions' bodies (see compactBody),
+// then evicts the oldest CLOSED sessions other than `id`, any written session
+// and `protect`, and returns their ids. Each eviction drops its session from
+// the stored saved index and each compaction updates its bytes there; a caller
+// that publishes its own planned index removes the returned ids from it and
+// applies `onCompacted`.
+const ensureCapacity = async ($: EngineInterface, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = [], onEvicted?: (session: string) => void, heldGuards?: ReadonlyMap<string, Guard>, onCompacted?: (session: string, bytes: number) => void): Promise<string[]> =>
+  checkCapacity(retentionStore($), replacements, budget, { caller: id, protect, probe: probeGuard($), heldGuards, compact: compactBody($, onCompacted),
     afterEviction: async session => {
       // The history is already deleted; a later index or save failure must not hide it.
       onEvicted?.(session)
@@ -1566,7 +1651,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       .filter(([other]) => other !== id)
       .sort(([, a], [, b]) => a.at - b.at)
     const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
-    const evicted = await ensureCapacity($, id, { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }, STORE_BUDGET)
+    const evicted = await ensureCapacity($, id, { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }, STORE_BUDGET, [], undefined, undefined,
+      patchCompacted(index))
     for (const session of evicted) delete index[session]
     saveRecoveries.set(id, { previous, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
     await retentionStore($).set(`s:${id}`, bucket)
@@ -1771,7 +1857,8 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     }
     replacements[SAVED_INDEX] = index
     // Unchanged records are verified below, so every bundle session is kept.
-    const completedEvictions = await ensureCapacity($, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)), other => { evicted.push(other) }, heldGuards)
+    const completedEvictions = await ensureCapacity($, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)), other => { evicted.push(other) }, heldGuards,
+      patchCompacted(index))
     for (const other of completedEvictions) delete index[other]
     const verified: string[] = []
     for (const record of normalized) {

@@ -375,7 +375,11 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   if (failures.length) throw new Error(failures.join('; '))
 }
 
-type Eviction = { caller: string; probe: Probe; protect?: string[]; afterEviction?: (session: string) => Promise<void>; heldGuards?: ReadonlyMap<string, Guard> }
+// TRACK-35 U2b: converts one candidate's body losslessly. `confirm` holds the
+// candidate's CLOSED guard (and its switch sources') exactly as eviction does.
+// 'stop' ends compaction; a throw means an uncertain state and fails the write.
+export type Compaction = (session: string, confirm: () => Promise<boolean>) => Promise<'compacted' | 'kept' | 'stop'>
+type Eviction = { caller: string; probe: Probe; protect?: string[]; afterEviction?: (session: string) => Promise<void>; heldGuards?: ReadonlyMap<string, Guard>; compact?: Compaction }
 const CONFLICT_RECORD = /^r:[^:]+:(cleanup-)?conflict-/
 
 // Oldest first by the later valid save or closing clock; no clock sorts last.
@@ -504,6 +508,16 @@ export const ensureCapacity = async (store: RetentionStore, replacements: Record
   const evicted: string[] = []
   let ready: ExpiryIntent[] = []
   try {
+    // TRACK-35 U2b: compaction frees bytes without deleting anything, largest
+    // raw body first; eviction below keeps its oldest-first order and guards.
+    if (eviction.compact !== undefined) {
+      const largestFirst = [...candidates].sort(([left], [right]) => (sizes.get(`s:${right}`) ?? 0) - (sizes.get(`s:${left}`) ?? 0))
+      for (const [session, clock] of largestFirst) {
+        const outcome = await eviction.compact(session, async () => await confirmEviction(store, session, clock, eviction, guards, releaseRetries) !== undefined)
+        if (outcome === 'stop') break
+        if (outcome === 'compacted' && fitsSizes(await readSizes(store), replacements, budget)) return []
+      }
+    }
     for (const [session, clock] of candidates) {
       const intent = await confirmEviction(store, session, clock, eviction, guards, releaseRetries)
       if (intent === undefined) continue

@@ -67,7 +67,7 @@ export const atomStore = <T>(on: On, key: StateKey, initial: T, options: { holdR
 
 // The plugin's $.store, in a Map. A set that would take the JSON text of the whole store past
 // `capBytes` rejects, as the engine's store does past 4 MiB.
-export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; guardStates?: Record<string, 'live' | 'closed'>; guardWait?: Promise<void>; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void; beforeLockSpawn?: (request: { argv: readonly string[]; cwd?: string }) => void } = {}) => {
+export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; guardStates?: Record<string, 'live' | 'closed'>; guardWait?: Promise<void>; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void; beforeLockSpawn?: (request: { argv: readonly string[]; cwd?: string }) => void; refuseSet?: (key: string, value: unknown) => string | undefined } = {}) => {
   // FIXTURE: helper lock receipt. The real flock/exclusion is exercised by helper tests.
   on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
     options.beforeLockSpawn?.(e)
@@ -103,6 +103,9 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
     return { value: held.get(e.key) as never }
   })
   on('store.set', (_, e) => {
+    // Opt-in: refuse one chosen write before it applies, leaving the stored value unchanged.
+    const refusal = options.refuseSet?.(e.key, e.value)
+    if (refusal !== undefined) return { deny: refusal }
     if (faults.write !== '') return { deny: faults.write }
     if (refusesRollback) {
       refusesRollback = false
