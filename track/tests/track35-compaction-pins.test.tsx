@@ -1,5 +1,5 @@
 // FIXTURE: TRACK-35 U2b refuter pins. Compaction's fail-closed rules each get a test: the
-// guarded re-read (item 3c), a re-read that throws after a failed pointer write (item 3e), and
+// guarded re-read and its ordering (item 3c), a re-read that throws after a failed pointer write (item 3e), and
 // the stored saved-index patch for callers that publish no planned index (item 4).
 import { expect, test } from 'claude-code/testing'
 import { atomStore, logs, pluginStore } from './kit'
@@ -24,10 +24,10 @@ const durable = async (session: string, pad: number, savedAt: number) => {
     steps: [{ id: 'plan:1', subject: 'Closed step', source: 'plan', status: 'in_progress', session_id: session }],
     session_id: session,
   }
-  const checkpoint = await describeCheckpoint(ledger as never, session)
+  const checkpointRecord = await describeCheckpoint(ledger as never, session)
   return {
-    body: { v: 1, session_id: session, generation: GENERATION, savedAt, ledger, checkpoint } as Record<string, unknown>,
-    head: { v: 1, session_id: session, generation: GENERATION, checkpoint },
+    body: { v: 1, session_id: session, generation: GENERATION, savedAt, ledger, checkpoint: checkpointRecord } as Record<string, unknown>,
+    head: { v: 1, session_id: session, generation: GENERATION, checkpoint: checkpointRecord },
   }
 }
 const pointerOf = async (body: Record<string, unknown>) => {
@@ -66,13 +66,14 @@ type Options = {
   states: Record<string, 'live' | 'closed'>
   refuseSet?: (key: string, value: unknown) => string | undefined
   beforeGet?: (key: string) => void
+  beforeLockSpawn?: (request: { argv: readonly string[]; cwd?: string }) => void
   afterPublish?: (checksum: string) => void
 }
 // The blob-fs.py stub publishes into `files` the way the real helper does on success.
 const setup = (on: On, caller: string, records: Record<string, unknown>, files: Map<string, string>, options: Options) => {
   atomStore<any>(on, 'ledger', { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
-  const store = pluginStore(on, records, undefined, { guardStates: options.states, refuseSet: options.refuseSet, beforeGet: options.beforeGet })
+  const store = pluginStore(on, records, undefined, { guardStates: options.states, refuseSet: options.refuseSet, beforeGet: options.beforeGet, beforeLockSpawn: options.beforeLockSpawn })
   const lines = logs(on)
   on('session.id', () => ({ value: caller }))
   on('env.get', (_, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? CONFIG : undefined }))
@@ -109,6 +110,35 @@ test('TRACK-35 U2b pin 3c: a body the owner rewrites after publication survives 
     store.held.set(`s:${big}`, newer)
     rewritten = true
   } })
+  const result = await checkpoint($, caller)
+  expect(rewritten).toBe(true)
+  expect(result.reason).toBeUndefined()
+  expect(result.ok).toBe(true)
+  expect(await print(store.held.get(`s:${big}`))).toBe(await print(newer))
+  expect(lines.some(line => line.startsWith(`track: compaction keeps ${big}: body changed`))).toBe(true)
+  expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
+  for (const session of sessions) expect(store.held.has(`s:${session}`)).toBe(true)
+})
+
+test('TRACK-35 U2b pin 3c order: a body the owner rewrites during guard confirmation survives unchanged', async ($, on) => {
+  const caller = callerOf(54)
+  const { sessions, records, bodies, states, big } = await prefill(54)
+  const files = new Map<string, string>()
+  const target = (await pointerOf(bodies[big]!)).blob.checksum
+  // Same byte size as the original, so the capacity index stays exact.
+  const newer = { ...bodies[big]!, savedAt: AGES[0]! + 1 }
+  let armed = false
+  let rewritten = false
+  const { store, lines } = setup(on, caller, records, files, {
+    states,
+    afterPublish: checksum => { if (checksum === target) armed = true },
+    beforeLockSpawn: request => {
+      if (!armed || request.argv[2] !== 'guard' || request.argv[3] !== big) return
+      armed = false
+      store.held.set(`s:${big}`, newer)
+      rewritten = true
+    },
+  })
   const result = await checkpoint($, caller)
   expect(rewritten).toBe(true)
   expect(result.reason).toBeUndefined()
