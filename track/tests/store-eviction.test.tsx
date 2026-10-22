@@ -54,6 +54,62 @@ const without = (records: Record<string, unknown>, ...sessions: string[]) =>
   Object.fromEntries(Object.entries(records).filter(([key]) => !sessions.some(session => key === `s:${session}` || key === `h:${session}` || key.startsWith(`r:${session}:`))))
 const write = { [`s:${CALLER}`]: body(CALLER, 500, 5000) }
 
+// T31-1 (2026-10-22): imported savedAt is historical; cleanup starts a fresh clock.
+test('TRACK-31 a freshly stamped import outlives an older closed native record', async () => {
+  const now = Date.now()
+  const imported = { ...body(id(1), 4000, now - 30 * 86400000), import_provenance: { source_identity: '/legacy', bundle_checksum: 'fixture', source_session: id(1) } }
+  const initial = {
+    [`s:${id(1)}`]: imported,
+    [`h:${id(1)}`]: { v: 1, session_id: id(1) },
+    [`s:${id(2)}`]: body(id(2), 4000, now - 7200000),
+    [`h:${id(2)}`]: { v: 1, session_id: id(2), closedAt: now - 3600000 },
+  }
+  const { held, store } = memory(initial)
+  const { probe } = leases({ [id(1)]: 'closed', [id(2)]: 'closed' })
+  await cleanupRecords(store, CALLER, probe)
+  expect((held.get(`h:${id(1)}`) as { closedAt: number }).closedAt).toBeGreaterThanOrEqual(now)
+  expect(held.get(`s:${id(1)}`)).toEqual(imported)
+  const stamped = Object.fromEntries(held)
+  await expect(evicting(store, write, bytesOf({ ...stamped, ...write }) - 1000, { caller: CALLER, probe })).resolves.toEqual([id(2)])
+  expect(Object.fromEntries(held)).toEqual(without(stamped, id(2)))
+})
+
+for (const closedAt of [undefined, null, -1, '20']) test(`TRACK-31 an import with invalid closedAt ${String(closedAt)} ranks last`, async () => {
+  const initial = {
+    [`s:${id(1)}`]: { ...body(id(1), 4000, 1), import_provenance: { source_identity: '/legacy', bundle_checksum: 'fixture', source_session: id(1) } },
+    [`h:${id(1)}`]: { v: 1, session_id: id(1), closedAt },
+    [`s:${id(2)}`]: body(id(2), 4000, 20),
+    [`h:${id(2)}`]: { v: 1, session_id: id(2), closedAt: 30 },
+  }
+  const { held, store } = memory(initial)
+  const { probe } = leases({ [id(1)]: 'closed', [id(2)]: 'closed' })
+  const before = Object.fromEntries(held)
+  await expect(evicting(store, write, bytesOf({ ...before, ...write }) - 1000, { caller: CALLER, probe })).resolves.toEqual([id(2)])
+  expect(Object.fromEntries(held)).toEqual(without(before, id(2)))
+})
+
+for (const [name, savedAt, closedAt] of [
+  ['later save', 40, 10], ['later close', 10, 40], ['save only', 40, -1],
+  ['close only', -1, 40], ['neither clock', -1, null],
+] as const) test(`TRACK-31 ranking uses ${name}`, async () => {
+  const initial = {
+    [`s:${id(1)}`]: body(id(1), 4000, savedAt), [`h:${id(1)}`]: { v: 1, session_id: id(1), closedAt },
+    [`s:${id(2)}`]: body(id(2), 4000, 20), [`h:${id(2)}`]: { v: 1, session_id: id(2), closedAt: 30 },
+  }
+  const { held, store } = memory(initial)
+  const { probe } = leases({ [id(1)]: 'closed', [id(2)]: 'closed' })
+  await expect(evicting(store, write, bytesOf({ ...initial, ...write }) - 1000, { caller: CALLER, probe })).resolves.toEqual([id(2)])
+  expect(Object.fromEntries(held)).toEqual(without(initial, id(2)))
+})
+
+for (const clock of [0, 20, undefined]) test(`TRACK-31 equal ${String(clock)} clocks use session id despite reversed key order`, async () => {
+  const initial = { [`s:${id(2)}`]: body(id(2), 4000, clock), [`s:${id(1)}`]: body(id(1), 4000, clock) }
+  const { held, store } = memory(initial)
+  const { probe } = leases({ [id(1)]: 'closed', [id(2)]: 'closed' })
+  await expect(evicting(store, write, bytesOf({ ...initial, ...write }) - 1000, { caller: CALLER, probe })).resolves.toEqual([id(1)])
+  expect(Object.fromEntries(held)).toEqual(without(initial, id(1)))
+})
+
 test('TRACK-31 under budget nothing is probed, evicted or written', async () => {
   const initial = { [`s:${id(1)}`]: body(id(1), 1000, 10) }
   const { held, store } = memory(initial)

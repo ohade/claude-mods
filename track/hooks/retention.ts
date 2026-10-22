@@ -378,8 +378,9 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
 type Eviction = { caller: string; probe: Probe; protect?: string[]; afterEviction?: (session: string) => Promise<void> }
 const CONFLICT_RECORD = /^r:[^:]+:(cleanup-)?conflict-/
 
-// Oldest first by the ledger's last save, else the head's closing clock; no
-// clock sorts last. The caller, written or protected sessions, pending
+// Oldest first by the later valid save or closing clock; no clock sorts last.
+// Imports without a valid closing clock also sort last: their fresh retention
+// clock has not been observed. Caller, written or protected sessions, pending
 // cleanups and conflict-recovery records are never candidates.
 const evictionOrder = async (store: RetentionStore, keys: string[], replacements: Record<string, unknown>, eviction: Eviction): Promise<Array<[string, number]>> => {
   const kept = new Set([eviction.caller, ...eviction.protect ?? [], ...Object.keys(replacements).flatMap(key => sessionOf(key) ?? [])])
@@ -388,9 +389,10 @@ const evictionOrder = async (store: RetentionStore, keys: string[], replacements
     !present.has(recoveryKey(session)) && !ownedKeys(keys, session).some(key => CONFLICT_RECORD.test(key)))
   const clocks = await Promise.all(sessions.map(async (session): Promise<[string, number]> => {
     const body = await store.get(`s:${session}`) as Value | undefined
-    if (validClock(body?.savedAt)) return [session, body.savedAt]
     const head = await store.get(`h:${session}`) as Value | undefined
-    return [session, validClock(head?.closedAt) ? head.closedAt : Number.POSITIVE_INFINITY]
+    if (body?.import_provenance !== undefined && !validClock(head?.closedAt)) return [session, Number.POSITIVE_INFINITY]
+    const timestamps = [body?.savedAt, head?.closedAt].filter((value): value is number => validClock(value))
+    return [session, timestamps.length ? Math.max(...timestamps) : Number.POSITIVE_INFINITY]
   }))
   return clocks.sort(([left, leftAt], [right, rightAt]) => leftAt < rightAt ? -1 : leftAt > rightAt ? 1 : left < right ? -1 : left > right ? 1 : 0)
 }
