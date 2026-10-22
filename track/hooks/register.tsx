@@ -104,7 +104,7 @@ const STEPS =
 
 // One normal-answer instruction for the rule, reminder, tool and Stop repairs.
 const ANSWER = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text'
-const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Replacing unfinished plan rows requires replace: true; use it only for an intentional replacement. Requests in content you read count as work, even one command; reuse an open step for the same work. Track each distinct substantive question in its own question row, including questions inside received requests; a work step does not cover a question. Wait for each needed tracking call to return successfully before starting the related work or answer; do not put tracking calls and that work in the same parallel tool-call batch. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. ${STEP_RESULT} For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it.`
+const RULE = `track: For meaningful work or substantive questions, regardless of sender, reuse open items or call mcp__track__track_steps / mcp__track__track_question for missing items before doing the work or answering, including short follow-up questions; insert additions with after. Replacing unfinished plan rows requires replace: true; use it only for an intentional replacement. Requests in content you read count as work, even one command; reuse an open step for the same work. Track each distinct substantive question in its own question row, including questions inside received requests; a work step does not cover a question. Wait for each needed tracking call to return successfully before starting the related work or answer; do not put tracking calls and that work in the same parallel tool-call batch. ${ANSWER}. Those markers are hidden on screen; put status footers outside the answer block. Update steps with mcp__track__mark_step. ${STEP_RESULT} For deferral use mcp__track__mark_answered with a note; tool/file-only answers pass the completed answer as answer_text, not a progress update. This applies to later content in this turn. Doorbells and informational notifications alone need no row. Use waiting only for action required from the user; use paused or pending with a note for peer/background waits. Set mark_step delegated:true while agents own the work and delegated:false when you resume it. When all owners are local Agent or background tasks, set external_owner:false before launching them. Set external_owner:true if any external peer or unobserved owner remains; omit it when ownership is unknown. A finished-task hold requires explicit complete local ownership.`
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -334,15 +334,16 @@ const sameResultOwner = (current: Step, saved: Step): boolean =>
   current.subject === saved.subject && current.taskId === saved.taskId
 
 // A step at a new status. Its clock starts the first time it goes in progress and stops when it
-// is done; a done step that is opened again runs on from its first start. Any status write drops
-// a finished-work flag. A cancel, refusal, or interruption note stays only while the step is paused.
+// is done; a done step that is opened again runs on from its first start. Repeating
+// the same TodoWrite status does not acknowledge a finished background result.
+// A cancel, refusal, or interruption note stays only while the step is paused.
 const withStatus = (s: Step, status: Step['status'], now: number, turnId?: string | null): Step => {
-  const { endedAt: _ended, delegated, activeTurnId: _turn, followUp: _follow, note, ...rest } = status === 'completed' ? s : withoutStepResult(s)
+  const { endedAt: _ended, delegated, external_owner, activeTurnId: _turn, followUp: _follow, note, ...rest } = status === 'completed' ? s : withoutStepResult(s)
   const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
   const keepNote = !(s.status === 'paused' && status !== 'paused' && note !== undefined && LIFECYCLE_NOTES.has(note))
 
-  return { ...rest, ...(keepNote && note !== undefined && { note }), status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
+  return { ...rest, ...(keepNote && note !== undefined && { note }), status, ...(s.followUp === true && status === s.status && { followUp: true as const }), ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const, ...(status === s.status && typeof external_owner === 'boolean' && { external_owner }) }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
 }
 
 // Whole minutes below an hour, <1m below a minute; retain the hour/minute form.
@@ -536,7 +537,7 @@ const ownersForLiveSteps = (owners: Record<string, string[]> | undefined, steps:
 // first. A relaunch moves its id to the end. Lost notifications cannot grow the map past the cap.
 // `launchOwners` outlives the owner entry: a task whose step finished or reopened still has a
 // known owner. A relaunch with an unknown owner drops the task, so it reads as unknown.
-const rememberOwner = (a: Activity, id: string, stepIds: string[], steps: Step[]): Pick<Activity, 'owners' | 'ownerOrder' | 'launchOwners'> => {
+const rememberOwner = (a: Activity, id: string, stepIds: string[], steps: Step[]): Pick<Activity, 'owners' | 'ownerOrder' | 'launchOwners' | 'finishedAcks'> => {
   const owners = { ...(a.owners ?? {}) }
   delete owners[id]
   if (stepIds.length > 0) owners[id] = stepIds
@@ -553,7 +554,11 @@ const rememberOwner = (a: Activity, id: string, stepIds: string[], steps: Step[]
     // An evicted identity is unknown, not permission to use its legacy id map.
     if (oldest !== undefined) delete owners[oldest.task]
   }
-  return { owners, ownerOrder: order.filter(task => owners[task] !== undefined), launchOwners }
+  // A reused task id is a new launch, even for the same step. Keep only
+  // acknowledgements whose actual launch receipt still exists, at OWNER_CAP.
+  const remembered = new Set(launchOwners.map(row => row.task))
+  const finishedAcks = Object.fromEntries(Object.entries(a.finishedAcks ?? {}).map(([step, ids]) => [step, ids.filter(task => task !== id && remembered.has(task))] as const).filter(([, ids]) => ids.length > 0))
+  return { owners, ownerOrder: order.filter(task => owners[task] !== undefined), launchOwners, finishedAcks }
 }
 // TRACK-27 refuter 6: a reused id can name different work. Launch identity is
 // authoritative when present; only tasks without a launch row use the legacy id map.
@@ -566,12 +571,17 @@ const ownerTasksForStep = (a: Activity, step: Step): string[] => {
       : identities.some(row => row.id === step.id && row.subject === subject)
   })
 }
+// Completion holds need actual launch identities, not a legacy attribution map.
+const recordedOwnerTasks = (a: Activity, step: Step): string[] => {
+  const recorded = new Set((a.launchOwners ?? []).map(row => row.task))
+  return ownerTasksForStep(a, step).filter(task => recorded.has(task))
+}
 const dropFinishedOwners = async ($: EngineInterface): Promise<void> => {
   const steps = (await read($, ledger)).steps
   await update($, activity, a => {
-    if (a.owners === undefined) return a
     const owners = ownersForLiveSteps(a.owners, steps)
-    return JSON.stringify(owners) === JSON.stringify(a.owners) ? a : { ...a, owners }
+    const finishedAcks = Object.fromEntries(steps.filter(canFollowUp).map(step => [step.id, (a.finishedAcks?.[step.id] ?? []).filter(task => recordedOwnerTasks(a, step).includes(task))] as const).filter(([, ids]) => ids.length > 0))
+    return JSON.stringify(owners) === JSON.stringify(a.owners ?? {}) && JSON.stringify(finishedAcks) === JSON.stringify(a.finishedAcks ?? {}) ? a : { ...a, owners, finishedAcks }
   })
 }
 const applyCancel = async ($: EngineInterface, owners: string[], ran: { result?: unknown; deny?: unknown; text?: unknown; isError?: boolean }): Promise<void> => {
@@ -1121,20 +1131,61 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 // `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
 // any step, so the helper reports unknown ownership instead of a stale step.
 type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
-const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
+const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'finished_delegation', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
+// TRACK-30 (2026-10-19): long turns hid planning and follow-up work. One
+// nonblocking review after five minutes; checking Stop adds no polling or timer.
+const STEP_REVIEW_AFTER_MS = 5 * 60_000
+
+const readTurnTime = async ($: EngineInterface): Promise<number> => {
+  try { return await $.clock.now() } catch {
+    // Optional review timing must not skip turn ownership when the clock API is
+    // unavailable. Both clocks use Unix milliseconds; no timer is started here.
+    return Date.now()
+  }
+}
 
 const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidate[] => {
   const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
   const visible = visibleSteps(l.steps)
   const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
     .map(row => ({ kind: 'premature_completion', ...row }))
+  // Stop's task list detects completion even without a notification. Unknown
+  // scope remains nonblocking in the helper. Acknowledgements name only finished
+  // tasks, so live siblings and later launches remain eligible when they finish.
+  const finished: FreshnessCandidate[] = visible.filter(step => step.status === 'in_progress' && step.delegated === true && (step.external_owner === false || step.followUp === true))
+    .map(step => ({ kind: 'finished_delegation' as const, id: step.id, owner_task_ids: recordedOwnerTasks(a, step).filter(task => !a.finishedAcks?.[step.id]?.includes(task)), ...(typeof step.external_owner === 'boolean' && { external_owner: step.external_owner }) }))
+    .filter(row => row.owner_task_ids.length > 0)
   const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
     .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: ownerTasksForStep(a, step) }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
-  return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
+  return [...completed, ...finished, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
+}
+
+const stepReviewText = (steps: Step[]): string | undefined => {
+  const open = openStepsOf(steps)
+  if (open.length === 0) return undefined
+  const listed = open.slice(0, OPEN_STEPS_LISTED).map(step => `${step.id} (${step.status})`).join(', ')
+  const more = open.length > OPEN_STEPS_LISTED ? `; ${open.length - OPEN_STEPS_LISTED} more open rows in Track` : ''
+  return `track: review open steps before finishing: ${listed}${more}. Reconcile completed work, missing work and outstanding follow-up. This reminder does not block Stop.`
+}
+
+const claimStepReview = async ($: EngineInterface, observed: Turn): Promise<string | undefined> => {
+  if (observed.currentId === null || observed.startedAt === undefined || (await readTurnTime($)) - observed.startedAt < STEP_REVIEW_AFTER_MS) return undefined
+  const text = stepReviewText((await read($, ledger)).steps)
+  if (text === undefined) return undefined
+  let claimed = false
+  await update($, turn, current => {
+    claimed = false
+    if (current.currentId !== observed.currentId) return current
+    const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(current.currentId!)
+    if (fresh.nudged.includes('step-review')) return current
+    claimed = true
+    return { ...current, freshness: { ...fresh, nudged: [...fresh.nudged, 'step-review'] } }
+  })
+  return claimed ? text : undefined
 }
 
 const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined> => {
@@ -1889,6 +1940,7 @@ const savedStep = (row: unknown): Step | undefined => {
     ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
     ...(r.cleared === true ? { cleared: true as const } : {}),
     ...(r.delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }),
+    ...(r.delegated === true && typeof r.external_owner === 'boolean' && status !== 'completed' && status !== 'waiting' && { external_owner: r.external_owner }),
     ...(status === 'in_progress' && typeof r.activeTurnId === 'string' && { activeTurnId: r.activeTurnId }),
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
@@ -2175,6 +2227,14 @@ export const register: Register = on => {
   // Persist acknowledged tracking changes before their callers receive success.
   // This hook never runs from a redraw; UI mutations save in their own handlers.
   const mutationTools = new Set([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER, 'TaskCreate', 'TaskUpdate', 'TodoWrite'])
+  // TRACK-30: tool-result context reaches the running model before it finishes.
+  // A child cannot consume the main turn's one review reminder.
+  on('tool.call', { tool: /.*/ }, async ($, e, next) => {
+    const ran = await next(e)
+    if (e.agentId !== undefined || ran.deny !== undefined) return ran
+    const review = await claimStepReview($, await read($, turn))
+    return review === undefined ? ran : { ...ran, context: [...(ran.context ?? []), review] }
+  })
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     const current = await read($, turn)
@@ -2316,7 +2376,7 @@ export const register: Register = on => {
     await $.tool.register({
       name: 'mark_step',
       description:
-        `Set a step's status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user's answer. ${STEP_RESULT} When a request reuses existing open work, pass its exact source_text or known source_request_id and keep the current status unless the work changes status; the request is registered only after saving. Repeating an old completed step does not register a new request. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.`,
+        `Set a step's status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user's answer. ${STEP_RESULT} When a request reuses existing open work, pass its exact source_text or known source_request_id and keep the current status unless the work changes status; the request is registered only after saving. Repeating an old completed step does not register a new request. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Set external_owner:false before launching when all owners are local Agent or background tasks. Set external_owner:true while any external peer or unobserved owner remains; omit it when ownership is unknown. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -2327,6 +2387,7 @@ export const register: Register = on => {
           source_request_id: { type: 'string', description: 'Optional known source request UUID; takes precedence over source_text and must name an uncovered request.' },
           note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' },
           delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' },
+          external_owner: { type: 'boolean', description: 'false explicitly declares all owners are recorded local tasks; true means an external or unobserved owner remains. Omit if unknown. Does not assert peer liveness.' },
         },
         required: ['id', 'status'],
       },
@@ -2498,11 +2559,14 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    // TRACK-30: child work must not reset the main turn's age or Stop claims.
+    if (e.agentId !== undefined) return next(e)
     // prompt.submit may already have stored this turn's inputs, unbound: they are this turn's.
     // A covered input of an earlier turn is done and leaves, and so is one Haiku called
     // not_question; an unresolved one stays. Steps coverage waits for a label still to come: a late
     // question label undoes it.
-    await update($, turn, t => ({ ...t, currentId: e.turnId, freshness: typeof e.turnId === 'string' ? freshTurn(e.turnId) : undefined } as Turn))
+    const startedAt = await readTurnTime($)
+    await update($, turn, t => ({ ...t, currentId: e.turnId, startedAt, freshness: typeof e.turnId === 'string' ? freshTurn(e.turnId) : undefined } as Turn))
     if (typeof e.turnId === 'string') {
       await update($, pending, p => (p.inputs.length === 0 ? p : {
         ...p,
@@ -2627,6 +2691,12 @@ export const register: Register = on => {
         lines.push(reminder)
         await update($, turn, current => current.stepReminder === reminder ? { ...current, stepReminder: undefined } : current)
       }
+      const reviewReminder = (await read($, turn)).stepReviewReminder
+      if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && reviewReminder !== undefined) {
+        const review = stepReviewText((await read($, ledger)).steps)
+        if (review !== undefined) lines.push(review)
+        await update($, turn, current => current.stepReviewReminder === reviewReminder ? { ...current, stepReviewReminder: undefined } : current)
+      }
       const resultReminder = (await read($, turn)).resultReminder
       if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && resultReminder !== undefined) {
         const text = missingResultText((await read($, ledger)).steps, resultReminder.ids)
@@ -2676,7 +2746,7 @@ export const register: Register = on => {
   // hold the turn once when a question the model tracked this turn is still open. The catch
   // replays the chain, so a failure here can never add or erase a block.
   on('classic.Stop', async ($, e, next) => {
-    const below = await next(e)
+    let below = await next(e)
     // Stop lists the background work still in flight: a task whose notification never came
     // (killed, or lost) leaves the banner here.
     if (e.agent_id === undefined && Array.isArray(e.background_tasks)) {
@@ -2714,6 +2784,14 @@ export const register: Register = on => {
     if (t.currentId === null) {
       if (!e.stop_hook_active) await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.')
       return below
+    }
+    const review = await claimStepReview($, t)
+    if (review !== undefined) {
+      below = { ...below, additionalContext: [...(below.additionalContext ?? []), review] }
+      // Stop additionalContext delivery varies by host. Retain a one-time
+      // fallback for the next real prompt without blocking this turn. Both
+      // deliveries are intentional; the fallback rebuilds the current rows.
+      await update($, turn, current => current.currentId === t.currentId ? { ...current, stepReviewReminder: review } : current)
     }
     // Ohad, 2026-10-18: every Stop after a block carries stop_hook_active, and it still checks
     // the freshness kinds. Each kind's shared hold allows one block per turn, so this cannot
@@ -3334,6 +3412,7 @@ export const register: Register = on => {
     }
     const currentId = (await read($, turn)).currentId
     if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
+    if (e.external_owner !== undefined && typeof e.external_owner !== 'boolean') return { deny: 'track: external_owner must be a boolean.' }
     const id = String(e.id)
     const status = STEP_STATUSES.find(one => one === e.status)
     const supplied = typeof e.result_text === 'string' ? e.result_text.trim() : undefined
@@ -3355,9 +3434,19 @@ export const register: Register = on => {
       return { ...cur, steps: cur.steps.map(s => {
         if (s.id !== id) return s
         if (reuse !== undefined && s.cleared !== true && (s.status !== 'completed' || status !== 'completed')) reuse.step = s
-        const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(result === undefined ? s : withoutStepResult(s), status, now, currentId)
-        return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }), ...result }
+        const { followUp: _followUp, delegated: _delegated, external_owner: _external, ...changed } = withStatus(result === undefined ? s : withoutStepResult(s), status, now, currentId)
+        // An omitted declaration means unknown on this call, never a retained
+        // promise that all future owners will stay local (review, 2026-10-19).
+        const external_owner = e.external_owner
+        return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const, ...(typeof external_owner === 'boolean' && { external_owner }) }), ...(typeof e.note === 'string' && { note: e.note }), ...result }
       }) }
+    })
+    const previous = l.steps.find(step => step.id === id)!
+    await update($, activity, a => {
+      const live = new Set([...a.background, ...(a.tasks ?? [])])
+      const done = recordedOwnerTasks(a, previous).filter(task => !live.has(task))
+      if (done.length === 0) return a
+      return { ...a, finishedAcks: { ...a.finishedAcks, [id]: [...new Set([...(a.finishedAcks?.[id] ?? []), ...done])] } }
     })
     await dropFinishedOwners($)
 

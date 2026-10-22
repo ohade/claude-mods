@@ -83,6 +83,9 @@ export type Step = {
   note?: string
   // Explicit work ownership, independent of whether agents run through Agent or a shell.
   delegated?: true
+  // false explicitly declares complete local ownership; absent/true cannot
+  // prove that recorded local tasks are all the owners of delegated work.
+  external_owner?: boolean
   // Background work finished while this row was still open. The status stays until the lead updates it.
   followUp?: true
   // The main turn that last started this work. Kept for reload, removed on cross-session restore.
@@ -136,8 +139,8 @@ export type Baseline = { session_id: string; ledger: Ledger; checkpoint?: Checkp
 
 // `lastText`: the main loop's last text row, its text, and the turn it was written in.
 // Only the exact composedRule proves that the current instruction reached the model.
-export type FreshnessKind = 'premature_completion' | 'stale_in_progress' | 'missing_waiting_request' | 'untracked_edit'
-export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[] }
+export type FreshnessKind = 'premature_completion' | 'finished_delegation' | 'stale_in_progress' | 'missing_waiting_request' | 'untracked_edit'
+export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[]; external_owner?: boolean }
 export type StepFreshness = {
   turnId: string
   edits: string[]
@@ -151,6 +154,7 @@ export type StepFreshness = {
 }
 export type Turn = {
   currentId: string | null
+  startedAt?: number
   gatedTurnId: string | null
   eventOrder?: number
   lastText?: { row: string; requestId?: string; turnId: string | null; order?: number; text?: string; textHash?: string }
@@ -159,6 +163,7 @@ export type Turn = {
   // TRACK-27: current-turn facts only, never persisted in ledger rows.
   freshness?: StepFreshness
   stepReminder?: string
+  stepReviewReminder?: string
   resultReminder?: { turnId: string; ids: string[] }
   resultNudgedTurnId?: string
   // Nudge codes already shown while the turn identity was unknown, once per session.
@@ -181,7 +186,7 @@ export type ScrollAt = { questions: number | null; steps: number | null }
 // What the session is doing, for the banner: the main turn running, Agent and AskUserQuestion
 // calls in flight (tool_use ids), background agents still running, and other background work
 // still running, such as shell tasks (their ids). An activity saved before tasks existed has none.
-export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[]; owners?: Record<string, string[]>; ownerOrder?: string[]; launchOwners?: Array<{ task: string; steps: Array<{ id: string; subject: string }> }> }
+export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: string[]; askCalls: string[]; background: string[]; tasks?: string[]; owners?: Record<string, string[]>; ownerOrder?: string[]; launchOwners?: Array<{ task: string; steps: Array<{ id: string; subject: string }> }>; finishedAcks?: Record<string, string[]> }
 
 // `hidden` is this session's `/track` toggle; `closedByPerson` is the persistent off
 // (ctrl+x x), mirrored to `$.store`.
