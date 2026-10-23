@@ -158,8 +158,9 @@ export const logs = (on: On) => {
 }
 
 // FIXTURE: opt-in blob storage and publication in memory, not host filesystem atomicity.
-export const blobPool = (on: On, options: { configDir?: string } = {}) => {
-  const files = new Map<string, string>()
+export const blobPool = (on: On, options: { configDir?: string; files?: Map<string, string>; readProviders?: 'pool' | 'external' } = {}) => {
+  // 2026-10-23: caller fixtures can own a seeded Map and its read observers.
+  const files = options.files ?? new Map<string, string>()
   const configDir = options.configDir ?? '/fixture/config'
   const dir = `${configDir}/state/track/blobs`
   const checksumPattern = /^[0-9a-f]{64}$/
@@ -175,13 +176,15 @@ export const blobPool = (on: On, options: { configDir?: string } = {}) => {
   const answer = (exitCode: number, stdout: string, stderr = '') => ({
     value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
   })
-  on('env.get', { name: /^CLAUDE_CONFIG_DIR$/ }, () => ({ value: configDir }))
-  on('env.get', { name: /^HOME$/ }, () => ({ value: undefined }))
-  on('fs.read', { path: new RegExp(`^${escapedDir}/[0-9a-f]{64}\\.json$`) }, (_, e) => {
-    const text = files.get(e.path)
-    if (text === undefined) throw new Error(`ENOENT: missing blob ${e.path}`)
-    return { value: text }
-  })
+  if (options.readProviders !== 'external') {
+    on('env.get', { name: /^CLAUDE_CONFIG_DIR$/ }, () => ({ value: configDir }))
+    on('env.get', { name: /^HOME$/ }, () => ({ value: undefined }))
+    on('fs.read', { path: new RegExp(`^${escapedDir}/[0-9a-f]{64}\\.json$`) }, (_, e) => {
+      const text = files.get(e.path)
+      if (text === undefined) throw new Error(`ENOENT: missing blob ${e.path}`)
+      return { value: text }
+    })
+  }
   on('process.run', { argv: helperPattern }, async (_, e) => {
     publishCalls++
     const [interpreter, helper, operation, poolDir, checksum] = e.argv

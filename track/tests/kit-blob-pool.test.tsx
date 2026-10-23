@@ -435,3 +435,53 @@ for (const [index, damage] of ['same-length', 'empty'].entries()) {
     await expectClosedKept(store, seeded, seeded.second)
   })
 }
+
+test('FIXTURE blobPool shares a supplied file map without copying or losing seeded data', async () => {
+  const recorded = recordRegistrations()
+  const sentinel = 'kept café 🧭 שלום'
+  const files = new Map<string, string>([['/backup.json', '{"backup":true}'], ['/sentinel.txt', sentinel]])
+  const options = { configDir: CONFIG, files }
+  const pool = blobPool(recorded.on, options)
+  expect(pool.files).toBe(files)
+  expect([...files]).toEqual([['/backup.json', '{"backup":true}'], ['/sentinel.txt', sentinel]])
+  const ledger = { ...LEDGER, steps: [{ id: 'plan:2', subject: 'naïve 🌍 שלום', status: 'pending' }] }
+  const text = JSON.stringify(ledger)
+  const ref = { checksum: await sha256(text), bytes: utf8Bytes(text) }
+  const fixture = await blobFixture(text)
+  const receipt = await invokePublication(recorded, ref.checksum, text)
+  expect(receipt).toEqual({
+    exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...ref })}\n`, stderr: '',
+    isStdoutTruncated: false, isStderrTruncated: false,
+  })
+  expect(files.get(`${BLOBS}/${ref.checksum}.json`)).toBe(text)
+  expect(files.get('/backup.json')).toBe('{"backup":true}')
+  expect(files.get('/sentinel.txt')).toBe(sentinel)
+  expect(files.size).toBe(3)
+  expect(pool.publishes).toBe(1)
+  const store = { held: new Map<string, unknown>([[KEY, fixture.pointer]]) }
+  const before = JSON.stringify(fixture.pointer)
+  expect(await pool.logical(store, KEY)).toEqual({ ...fixture.logical, ledger })
+  expect(store.held.get(KEY)).toBe(fixture.pointer)
+  expect(JSON.stringify(store.held.get(KEY))).toBe(before)
+})
+
+test('FIXTURE blobPool external read providers register only its real publisher', async () => {
+  const recorded = recordRegistrations()
+  const files = new Map<string, string>([['/backup.json', 'kept café 🚀']])
+  const options = { configDir: CONFIG, files, readProviders: 'external' as const }
+  const pool = blobPool(recorded.on, options)
+  const fixture = await blobFixture()
+  expect(recorded.matching('env.get', { name: 'CLAUDE_CONFIG_DIR' }).length).toBe(0)
+  expect(recorded.matching('env.get', { name: 'HOME' }).length).toBe(0)
+  expect(recorded.matching('fs.read', { path: fixture.path }).length).toBe(0)
+  expect(recorded.matching('process.run', { argv: ['python3', HELPER, 'publish', BLOBS, fixture.ref.checksum] }).length).toBe(1)
+  const receipt = await invokePublication(recorded, fixture.ref.checksum, fixture.text)
+  expect(receipt).toEqual({
+    exitCode: 0, stdout: `${JSON.stringify({ ok: true, ...fixture.ref })}\n`, stderr: '',
+    isStdoutTruncated: false, isStderrTruncated: false,
+  })
+  expect(files.get(fixture.path)).toBe(fixture.text)
+  expect(files.get('/backup.json')).toBe('kept café 🚀')
+  expect(files.size).toBe(2)
+  expect(pool.publishes).toBe(1)
+})
