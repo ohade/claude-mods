@@ -232,7 +232,8 @@ for (const [kind, reason] of freshnessMessages) {
     on('env.get', (_, e) => ({ value: env.get(e.name) }))
     on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
     on('classic.Stop', () => ({}))
-    on('process.run', (_, e) => {
+    // Observed 2026-10-23: own-save publication also calls process.run; model only Stop claims, leaving blob publication unavailable.
+    on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
       calls += 1
       expect(e.argv).toEqual(['python3', '/fixture/track/hooks/stop-gate.py', '--claim'])
       expect(e.init?.env?.CLAUDE_CONFIG_DIR).toBe('/fixture/config')

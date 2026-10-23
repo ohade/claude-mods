@@ -48,7 +48,8 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()], options: Opt
   on('tool.call', { tool: 'Bash' }, () => ({ result: 'fixture success' }))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
   on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
-  on('process.run', (_, e) => {
+  // Observed 2026-10-23: own-save publication also calls process.run; model only Stop claims, leaving blob publication unavailable.
+  on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
     helper.configs.push(e.init?.env?.CLAUDE_CONFIG_DIR)
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as { candidates?: Array<{ kind: string }> }
     const block = !helper.taken && sent.candidates?.some(row => row.kind === 'stale_in_progress') === true

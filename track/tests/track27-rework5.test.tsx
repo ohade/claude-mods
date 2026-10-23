@@ -43,7 +43,8 @@ const prepare = async ($: Engine, on: On, launcher: 'Bash' | 'Agent', steps: Ste
   on('tool.call', { tool: 'TodoWrite' }, () => ({ result: { newTodos: [{ content: 'Start the dev server!', status: 'in_progress' }] } }))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
   on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
-  on('process.run', (_, e) => {
+  // Observed 2026-10-23: own-save publication also calls process.run; model only Stop claims, leaving blob publication unavailable.
+  on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as Sent
     const running = ((JSON.parse(e.init?.stdin ?? '{}') as { background_tasks?: Array<{ id: string }> }).background_tasks ?? []).map(task => task.id)
     const completion = sent.candidates?.find(row => row.kind === 'premature_completion' && row.owner_task_ids?.some(id => running.includes(id)))

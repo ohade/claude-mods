@@ -36,7 +36,8 @@ const prepare = async ($: Engine, on: On, steps: Step[]) => {
   on('classic.Stop', () => ({}))
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
   on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
-  on('process.run', (_, e) => {
+  // Observed 2026-10-23: own-save publication also calls process.run; model only Stop claims, leaving blob publication unavailable.
+  on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
     const sent = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}') as { candidates?: Array<{ kind: string }> }
     const kind = sent.candidates?.[0]?.kind
     const reason = kind === 'stale_in_progress' ? STALE : kind === 'missing_waiting_request' ? WAITING : undefined

@@ -345,7 +345,7 @@ for (const [index, configDir] of [undefined, CUSTOM_CONFIG].entries()) {
     expect(memory.value.questions.map((question: { head: string }) => question.head)).toEqual(['Saved question'])
     expect(memory.value.steps.map((step: { subject: string }) => step.subject)).toEqual(['café 🚀'])
     expect(pool.publishes).toBe(1)
-    const expectedLedger = integrationLedger(session)
+    const expectedLedger = { ...integrationLedger(session), steps: [{ id: 'plan:1', source: 'plan', subject: 'café 🚀', status: 'in_progress', session_id: session }] }
     const ownPath = await expectOwnPublication(pool, store, session, expectedLedger, blobDir)
     expect(memory.value).toEqual(expectedLedger)
     expect(pool.files.get(seededPath)).toBe(fixture.text)

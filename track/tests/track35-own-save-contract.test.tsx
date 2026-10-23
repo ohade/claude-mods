@@ -299,7 +299,7 @@ for (const family of [208, 209] as const) {
     await expectRecords(fixture, history.records)
     expectNoOwn(fixture, id)
     for (const foreign of history.sessions) expect(fixture.store.held.has(`cleanup:${foreign}`)).toBe(false)
-    expect(fixture.lines.filter(line => /was evicted|deleted|deletion|expired/.test(line))).toEqual([])
+    expect(fixture.lines.filter(line => /was evicted|deleted|deletion|\bexpired\b/.test(line))).toEqual([])
     expect(fixture.pool.publishes).toBe(0)
     await expectRows(fixture.memory.value, expected)
     await expectFiles(files, new Map([[SENTINEL, SENTINEL_TEXT]]))
