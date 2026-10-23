@@ -1279,11 +1279,14 @@ const blobFs = ($: EngineInterface): BlobFs => ({
   remove: refuseBlobMutation,
 })
 
-// Returns undefined for no body, a non-v:2 body unchanged, or a v:2 body as its
-// v:1 inline equivalent (`v: 1`, `ledger` from the verified blob in place of
+// Refuses unsupported declared versions. Returns undefined for no body, a v:1
+// or unversioned body unchanged, or a v:2 body as its v:1 inline equivalent
+// (`v: 1`, `ledger` from the verified blob in place of
 // `ledger_blob`). An invalid pointer or blob throws; it is never absent.
 const logicalBody = async ($: EngineInterface, raw: unknown, onBlobText?: (text: string) => void): Promise<unknown> => {
-  if ((raw as { v?: unknown } | undefined)?.v !== 2) return raw
+  const version: unknown = (raw as { v?: unknown } | undefined)?.v
+  if (version !== undefined && version !== 1 && version !== 2) throw new Error('saved history version is unsupported; history was kept')
+  if (version !== 2) return raw
   const body = raw as Record<string, unknown>
   if (Object.hasOwn(body, 'ledger')) throw blobFailure('a v:2 body also holds an inline ledger')
   const config = await configDir($)
