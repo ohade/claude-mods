@@ -390,6 +390,30 @@ Import receipts include `evicted`, the IDs of sessions removed to make room. If 
 write fails, the failure receipt still lists completed evictions; the source bundle is kept.
 Do not retire a legacy store until its original values and the added metadata have been verified.
 
+### Writer-lock protocol 2 (helper only, not active)
+
+`hooks/writer-lock.py` also offers an opt-in protocol for later crash-safe blob cleanup. Track
+does not use it yet: saves still call the helper without `TRACK_LOCK_PROTOCOL`, and that legacy
+path keeps its receipts. Malformed calls now exit 2, `-h`/`--help` prints usage, and an
+unexpected error reports `lock operation failed`, with its error type and errno on stderr.
+
+With `TRACK_LOCK_PROTOCOL=2`, the helper takes the same `lease|write|guard <session>
+<module-token>` arguments and adds `protocol: 2` to each successful receipt; any other value is
+refused. The config directory is `CLAUDE_CONFIG_DIR`, or `$HOME/.claude` when that is unset or
+empty, and it must be absolute. `TRACK_LOCK_DIR` is refused. Below the resolved config directory,
+each component of `state/track/locks/tx` must be owned by the user and must not be a symlink;
+`locks` and `tx` must be mode 0700. Lock and record files must be owned, single-link regular
+files. A protocol 2 write needs the same token's live protocol 2 lease.
+
+Before granting a write, the helper writes a durable transaction record, `locks/tx/<id>.json`,
+with the session, the token and the owning process's identity. The grant names its `id` and a
+random `nonce`. To finish, the caller writes the exact nonce, without a newline, to
+`locks/tx/<id>.<nonce>.complete`. The helper, still holding the store lock, checks the request
+and the unchanged record. It removes the record, then the request, and reports `completed`.
+If the helper or its owner ends before verified completion, the record stays as evidence;
+there is no automatic retirement. A crash between the removals can leave only the request.
+If the acknowledgement is lost after durable removal, the record may already be absent.
+
 ### Local checkpoint/restore contract v1
 
 `mcp__track__checkpoint({ expected_session })` saves and reads back the current ledger. It returns
