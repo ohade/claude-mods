@@ -2,7 +2,7 @@
 // the rewind baseline, the import index size and head check for a kept pointer, the legacy
 // archive in repairHead, and a blob read that fails for a reason other than a missing file.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 import { describeCheckpoint } from '../hooks/checkpoint'
 import type { Checkpoint } from '../hooks/checkpoint'
@@ -63,7 +63,8 @@ const setup = (on: On, id: string, records: Record<string, unknown>, files: Map<
     return text === undefined ? { deny: `ENOENT: no such file or directory, open '${e.path}'` } : { value: text }
   })
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
-  return { l, store }
+  const pool = blobPool(on, { configDir: CONFIG, files, readProviders: 'external' })
+  return { l, store, pool }
 }
 
 const checkpoint = async ($: Engine, id: string) =>
@@ -74,7 +75,7 @@ const snapshot = (store: { held: Map<string, unknown> }, files: Map<string, stri
   files: [...files.entries()].sort(([a], [b]) => a < b ? -1 : 1),
 })
 
-test('a rewind baseline is verified against the v:2 blob and the save writes v:1 inline with the new row', async ($, on) => {
+test('a rewind baseline is verified against the v:2 blob and the save writes v:2 with the new row', async ($, on) => {
   const { id } = ids(31)
   const files = new Map<string, string>()
   const saved = { v: 1, nextQuestionId: 1, prompts: [], questions: [],
@@ -84,17 +85,18 @@ test('a rewind baseline is verified against the v:2 blob and the save writes v:1
   const normalized = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [step('plan:1', 'Saved step', 'in_progress'), step('plan:2', 'Rewound step', 'pending')] }
   // After the rewind: plan:2 left the transcript and a new row was added.
   const memory = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [step('plan:1', 'Saved step', 'in_progress'), step('plan:3', 'New step', 'pending')], session_id: id }
-  const { store } = setup(on, id, { [`s:${id}`]: await compact(files, body), [`h:${id}`]: head }, files, {
+  const { store, pool } = setup(on, id, { [`s:${id}`]: await compact(files, body), [`h:${id}`]: head }, files, {
     memory,
     durability: { isUnsaved: true, reason: 'rewind', memorySession: id, rewindBaseline: { session_id: id, ledger: normalized } },
   })
   const receipt = await checkpoint($, id)
   expect(receipt.reason).toBeUndefined()
   expect(receipt).toMatchObject({ ok: true, revision: 2 })
-  const written = store.held.get(`s:${id}`) as Record<string, unknown> & { ledger: { steps: Array<{ subject: string }> } }
-  expect(written.v).toBe(1)
-  expect(Object.hasOwn(written, 'ledger_blob')).toBe(false)
-  expect(written.ledger.steps.map(s => s.subject)).toEqual(['Saved step', 'New step'])
+  const written = store.held.get(`s:${id}`) as Record<string, unknown>
+  expect(written.v).toBe(2)
+  expect(Object.hasOwn(written, 'ledger')).toBe(false)
+  const logical = await pool.logical(store, `s:${id}`) as { ledger: { steps: Array<{ subject: string }> } }
+  expect(logical.ledger.steps.map(s => s.subject)).toEqual(['Saved step', 'New step'])
 })
 
 test('importing over a kept v:2 destination sizes its index entry by the raw pointer', async ($, on) => {

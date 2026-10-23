@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-35 U2a. Every session-body reader resolves a v:2 pointer whose ledger lives in
 // a verified blob file, and keeps the raw stored body for rollback, compare-and-set and hashing.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 import { describeCheckpoint } from '../hooks/checkpoint'
 import type { Checkpoint } from '../hooks/checkpoint'
@@ -57,7 +57,8 @@ const setup = (on: On, id: string, records: Record<string, unknown>, files: Map<
     return text === undefined ? { deny: `no such file: ${e.path}` } : { value: text }
   })
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
-  return { l, store, reads }
+  const pool = blobPool(on, { configDir: CONFIG, files, readProviders: 'external' })
+  return { l, store, reads, pool }
 }
 
 const checkpoint = async ($: Engine, id: string) =>
@@ -125,7 +126,7 @@ test('a stale writer reconciles against a v:2 durable body', async ($, on) => {
   const { id } = ids(5)
   const files = new Map<string, string>()
   const first = await durable(id, ledgerFor(id))
-  const { l, store } = setup(on, id, { [`s:${id}`]: await compact(files, first.body), [`h:${id}`]: first.head }, files)
+  const { l, store, pool } = setup(on, id, { [`s:${id}`]: await compact(files, first.body), [`h:${id}`]: first.head }, files)
   expect((await checkpoint($, id)).revision).toBe(1)
   // Another writer published revision 2 as a pointer.
   const theirs = ledgerFor(id, { questions: [{ id: 2, head: 'Other writer question', at: 2, turnId: 'peer', status: 'deferred', session_id: id }] })
@@ -136,28 +137,40 @@ test('a stale writer reconciles against a v:2 durable body', async ($, on) => {
   const receipt = await checkpoint($, id)
   expect(receipt.reason).toBeUndefined()
   expect(receipt.revision).toBe(3)
-  const saved = store.held.get(`s:${id}`) as { v: number; ledger: { questions: Array<{ head: string }>; steps: Array<{ subject: string }> } }
-  expect(saved.v).toBe(1)
-  expect(saved.ledger.questions.map(q => q.head)).toEqual(['Saved question', 'Other writer question'])
-  expect(saved.ledger.steps.map(s => s.subject)).toEqual(['Saved step', 'Local step'])
+  const saved = store.held.get(`s:${id}`) as Record<string, unknown>
+  expect(saved.v).toBe(2)
+  expect(Object.hasOwn(saved, 'ledger')).toBe(false)
+  const logical = await pool.logical(store, `s:${id}`) as { ledger: { questions: Array<{ head: string }>; steps: Array<{ subject: string }> } }
+  expect(logical.ledger.questions.map(q => q.head)).toEqual(['Saved question', 'Other writer question'])
+  expect(logical.ledger.steps.map(s => s.subject)).toEqual(['Saved step', 'Local step'])
 })
 
-test('an own save over a v:2 body writes a v:1 inline body and leaves the blob', async ($, on) => {
+test('an own save over a v:2 body writes a v:2 body and retains every old blob', async ($, on) => {
   const { id } = ids(6)
   const files = new Map<string, string>()
   const { body, head } = await durable(id, ledgerFor(id))
   const pointer = await compact(files, body)
-  const blobs = JSON.stringify([...files.entries()])
-  const { store } = setup(on, id, { [`s:${id}`]: pointer, [`h:${id}`]: head }, files)
+  const blobs = new Map(files)
+  const { l, store, pool } = setup(on, id, { [`s:${id}`]: pointer, [`h:${id}`]: head }, files)
   const receipt = await checkpoint($, id)
   expect(receipt.reason).toBeUndefined()
-  const saved = store.held.get(`s:${id}`) as Record<string, unknown> & { ledger: { steps: Array<{ subject: string }> } }
-  expect(saved.v).toBe(1)
-  expect(Object.hasOwn(saved, 'ledger_blob')).toBe(false)
-  expect(saved.ledger.steps.map(s => s.subject)).toEqual(['Saved step'])
+  const saved = store.held.get(`s:${id}`) as Record<string, unknown>
+  expect(saved.v).toBe(2)
+  expect(Object.hasOwn(saved, 'ledger')).toBe(false)
+  const logical = await pool.logical(store, `s:${id}`) as { ledger: { steps: Array<{ subject: string }> } }
+  expect(logical.ledger.steps.map(s => s.subject)).toEqual(['Saved step'])
   expect(saved.generation).toBe(GENERATION)
   expect(store.held.get(`h:${id}`)).toEqual(head)
-  expect(JSON.stringify([...files.entries()])).toBe(blobs)
+  const expectedText = JSON.stringify(l.value)
+  const checksum = await sha256(expectedText)
+  const candidatePath = `${BLOBS}/${checksum}.json`
+  expect(saved.ledger_blob).toEqual({ checksum, bytes: new TextEncoder().encode(expectedText).length })
+  expect(files.get(candidatePath)).toBe(expectedText)
+  expect(logical.ledger).toEqual(l.value)
+  for (const [path, text] of blobs) expect(files.get(path)).toBe(text)
+  const expectedFiles = new Map(blobs)
+  expectedFiles.set(candidatePath, expectedText)
+  expect([...files.entries()]).toEqual([...expectedFiles.entries()])
 })
 
 test('a failed body, head or index write over a v:2 body rolls back to the raw pointer and its blob', async ($, on) => {
@@ -165,8 +178,8 @@ test('a failed body, head or index write over a v:2 body rolls back to the raw p
   const files = new Map<string, string>()
   const { body, head } = await durable(id, ledgerFor(id))
   const pointer = await compact(files, body)
-  const blobs = JSON.stringify([...files.entries()])
-  const { store } = setup(on, id, { [`s:${id}`]: pointer, [`h:${id}`]: head }, files)
+  const blobs = new Map(files)
+  const { l, store, pool } = setup(on, id, { [`s:${id}`]: pointer, [`h:${id}`]: head }, files)
   for (const key of [`s:${id}`, `h:${id}`, 'saved']) {
     store.faults.mismatchAfterSet = key
     const failed = await checkpoint($, id)
@@ -174,12 +187,24 @@ test('a failed body, head or index write over a v:2 body rolls back to the raw p
     expect(failed.reason).toContain('read-back')
     expect(JSON.stringify(store.held.get(`s:${id}`))).toBe(JSON.stringify(pointer))
     expect(JSON.stringify(store.held.get(`h:${id}`))).toBe(JSON.stringify(head))
-    expect(JSON.stringify([...files.entries()])).toBe(blobs)
+    const candidateText = JSON.stringify(l.value)
+    const candidatePath = `${BLOBS}/${await sha256(candidateText)}.json`
+    for (const [path, text] of blobs) expect(files.get(path)).toBe(text)
+    const expectedFiles = new Map(blobs)
+    if (files.has(candidatePath)) {
+      expect(files.get(candidatePath)).toBe(candidateText)
+      expectedFiles.set(candidatePath, candidateText)
+    }
+    expect([...files.entries()]).toEqual([...expectedFiles.entries()])
   }
   store.faults.mismatchAfterSet = ''
   const receipt = await checkpoint($, id)
   expect(receipt.reason).toBeUndefined()
-  expect((store.held.get(`s:${id}`) as { v: number }).v).toBe(1)
+  const saved = store.held.get(`s:${id}`) as Record<string, unknown>
+  expect(saved.v).toBe(2)
+  expect(Object.hasOwn(saved, 'ledger')).toBe(false)
+  const logical = await pool.logical(store, `s:${id}`) as { ledger: unknown }
+  expect(logical.ledger).toEqual(l.value)
 })
 
 const breakages: Array<[string, (files: Map<string, string>, pointer: Record<string, any>) => Record<string, unknown>]> = [
@@ -258,10 +283,17 @@ test('savedIndex sizes an uncached v:2 entry by its raw value and never reads it
   const files = new Map<string, string>()
   const { body, head } = await durable(other, ledgerFor(other))
   const pointer = await compact(files, body)
-  const { store, reads } = setup(on, id, { [`s:${other}`]: pointer, [`h:${other}`]: head }, files)
+  const { store, reads, pool } = setup(on, id, { [`s:${other}`]: pointer, [`h:${other}`]: head }, files)
   const receipt = await checkpoint($, id)
   expect(receipt.reason).toBeUndefined()
   const index = store.held.get('saved') as Record<string, unknown>
   expect(index[other]).toEqual({ at: 1000, bytes: new TextEncoder().encode(JSON.stringify({ [`s:${other}`]: pointer })).length + 1, unfinished: true })
-  expect(reads.filter(path => path.startsWith(BLOBS))).toEqual([])
+  expect(reads.filter(path => path === `${BLOBS}/${pointer.ledger_blob.checksum}.json`)).toEqual([])
+  expect(JSON.stringify(store.held.get(`s:${other}`))).toBe(JSON.stringify(pointer))
+  expect(JSON.stringify(store.held.get(`h:${other}`))).toBe(JSON.stringify(head))
+  const saved = store.held.get(`s:${id}`) as Record<string, unknown>
+  expect(saved.v).toBe(2)
+  expect(Object.hasOwn(saved, 'ledger')).toBe(false)
+  const logical = await pool.logical(store, `s:${id}`) as { ledger: unknown }
+  expect(logical.ledger).toEqual({ ...EMPTY, session_id: id })
 })
