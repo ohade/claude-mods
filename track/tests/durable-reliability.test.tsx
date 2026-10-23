@@ -1,6 +1,6 @@
 // FIXTURE: persistence, source identity and repeat-safe restoration release gates.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const step = (id: string, status = 'pending') => ({ id, subject: id, source: 'plan', status })
@@ -12,13 +12,17 @@ const prepare = (on: any, initial: any = EMPTY, records: Record<string, unknown>
   const store = pluginStore(on, records, capBytes)
   on('session.id', () => ({ value: SESSION }))
   on('session.messages', () => ({ value: [] }))
-  return { l, store }
+  const pool = blobPool(on)
+  return { l, store, pool }
 }
 
 test('an acknowledged question is durable before turn.complete', async ($, on) => {
-  const { store } = prepare(on)
+  const { store, pool } = prepare(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Durable now', tool_use_id: 'q-new' } as never)
-  expect((store.held.get(`s:${SESSION}`) as any)?.ledger.questions[0]?.head).toBe('Durable now')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as any)?.ledger.questions[0]?.head).toBe('Durable now')
 })
 
 test('unknown question source uses the tracking call, never a previous composer prompt', async ($, on) => {

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 const WEEK = 7 * 24 * 60 * 60 * 1000
@@ -38,6 +38,7 @@ test('TRACK-21 capacity refusal names capacity and a later expired cleanup permi
   atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on, initial, undefined, { guardStates: states })
   on('session.id', () => ({ value: SESSION }))
+  const pool = blobPool(on)
   const checkpoint = async () => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   const first = await checkpoint()
   expect(first.ok).toBe(false)
@@ -52,4 +53,8 @@ test('TRACK-21 capacity refusal names capacity and a later expired cleanup permi
   const second = await checkpoint()
   expect(second.ok).toBe(true)
   expect(store.held.has(`s:${SESSION}`)).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as { ledger: unknown }).ledger).toEqual({ ...EMPTY, session_id: SESSION })
 })

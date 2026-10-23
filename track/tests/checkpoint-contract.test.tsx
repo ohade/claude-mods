@@ -1,6 +1,6 @@
 // FIXTURE: v1 text receipts fence the exact session, revision and restored values.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const prepare = (on: any) => {
@@ -9,12 +9,13 @@ const prepare = (on: any) => {
   const store = pluginStore(on)
   let session = OLD
   on('session.id', () => ({ value: session }))
-  return { l, store, setSession: (id: string) => { session = id } }
+  const pool = blobPool(on)
+  return { l, store, pool, setSession: (id: string) => { session = id } }
 }
 const receipt = (r: any) => JSON.parse(typeof r.result === 'string' ? r.result : '{}')
 
 test('checkpoint returns versioned JSON as text only after verified durable save', async ($, on) => {
-  const { store } = prepare(on)
+  const { l, store, pool } = prepare(on)
   const r = await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OLD } as never)
   expect(typeof r.result).toBe('string')
   const c = receipt(r)
@@ -22,6 +23,10 @@ test('checkpoint returns versioned JSON as text only after verified durable save
   expect(c.revision).toBeGreaterThan(0)
   expect(c.checksum).toMatch(/^[a-f0-9]{64}$/)
   expect((store.held.get(`s:${OLD}`) as any)?.checkpoint).toMatchObject({ revision: c.revision, checksum: c.checksum })
+  const rawOwnSave = store.held.get(`s:${OLD}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${OLD}`) as { ledger: typeof l.value }).ledger).toEqual(l.value)
 })
 
 test('checkpoint wrong-session and failed saves return explicit unsuccessful receipts', async ($, on) => {

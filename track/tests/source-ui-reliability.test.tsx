@@ -1,13 +1,14 @@
 // FIXTURE release gates: verified sources, reachable fallback, durable explicit UI actions.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore, trackCommand } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pane, pluginStore, trackCommand } from './kit'
 
 const prepare = (on: any, prompts: any[] = [], options: Parameters<typeof pluginStore>[3] = {}) => {
   const l = atomStore(on, 'ledger', { ...EMPTY, prompts })
   atomStore(on, 'turn', { currentId: 'current', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on, {}, undefined, options)
   on('session.id', () => ({ value: SESSION }))
-  return { l, store }
+  const pool = blobPool(on)
+  return { l, store, pool }
 }
 const prompt = (id: string, turnId = 'current', head = 'Please explain this') => ({ rowKey: id, requestId: id, turnId, head, at: 1 })
 
@@ -38,15 +39,18 @@ test('unknown-source tracking call renders a visible jump destination', async ($
 })
 
 test('explicit clearing saves immediately and refreshes the Stop snapshot without rendering writes', async ($, on) => {
-  const { l, store } = prepare(on)
+  const { l, store, pool } = prepare(on)
   const snapshots: string[] = []
   on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') snapshots.push(String(e.value)); return { value: {} } })
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Clear me', tool_use_id: 'q1' } as never)
   const ui = await $.ui.mount(pane('dock'))
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(1)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toHaveLength(1)
   await ui.press({ key: 'clear-questions' })
   expect(l.value.questions).toHaveLength(0)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
   expect(JSON.parse(snapshots.at(-1) ?? '{}').open).toEqual([])
 })
 

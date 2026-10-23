@@ -1,9 +1,10 @@
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 // TRACK-21 (2026-10-11): another session's count pruning deleted a live bucket.
 // These checks stay unchanged across the implementation's red/green runs.
 test('TRACK-21 preserves other records rather than evicting by count', async ($, on) => {
+  blobPool(on)
   const initial: Record<string, unknown> = {}
   for (let i = 1; i <= 24; i++) {
     const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
@@ -19,6 +20,7 @@ test('TRACK-21 preserves other records rather than evicting by count', async ($,
 })
 
 test('TRACK-21 checkpoints current rows after an acknowledged record disappears', async ($, on) => {
+  const pool = blobPool(on)
   const ledger = atomStore(on, 'ledger', { ...EMPTY, questions: [{ id: 1, head: 'keep this row', status: 'open', at: 1, turnId: 't1' }], nextQuestionId: 2 })
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const store = pluginStore(on)
@@ -31,12 +33,16 @@ test('TRACK-21 checkpoints current rows after an acknowledged record disappears'
   store.held.delete(`s:${SESSION}`)
   await finish()
   expect(store.held.has(`s:${SESSION}`)).toBe(true)
-  const saved = store.held.get(`s:${SESSION}`) as { ledger: typeof ledger.value }
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  const saved = await pool.logical(store, `s:${SESSION}`) as { ledger: typeof ledger.value }
   expect(saved.ledger.questions).toEqual(ledger.value.questions)
   expect(lines.some(line => line.includes('stale writer revision'))).toBe(false)
 })
 
 test('TRACK-21 startup owns its lease and store lock before reading the bucket', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const modes: string[] = []
