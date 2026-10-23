@@ -41,6 +41,9 @@ test('TRACK-26 completed result is saved and drawn once at its acknowledged Tool
   expect(row.resultRequestId).toBe('result-call')
   expect(row.resultTurnId).toBe('turn-1')
   expect(typeof row.resultAt).toBe('number')
+  const rawOwnSave = f.store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]).toEqual(row)
   const source = await $.ui.mount(toolRow())
   expect((await source.findAll({ type: 'Text' })).filter(text => text.text === RESULT)).toHaveLength(1)

@@ -46,6 +46,9 @@ test('TRACK-29 a second reorder during the first save acknowledges its own durab
   const result = receipt(await second!)
   expect(result.ok).toBe(true)
   expect(result.order).toEqual(['plan:2', 'plan:3'])
+  const rawOwnSave = f.store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect(order((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger)).toEqual(['plan:2', 'plan:3'])
   expect(order(f.ledger.value)).toEqual(['plan:2', 'plan:3'])
 })

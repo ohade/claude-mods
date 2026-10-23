@@ -40,6 +40,9 @@ test('TRACK-8 reusing a step acknowledges its exact request without replacing wo
   expect(f.pending.value.inputs[0]?.covered).toBe('steps')
   expect(f.ledger.value.steps).toHaveLength(1)
   expect(f.ledger.value.steps[0]).toMatchObject(ACTIVE)
+  const rawOwnSave = f.store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]).toMatchObject(ACTIVE)
 })
 

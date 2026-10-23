@@ -33,6 +33,9 @@ const complete = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call
 test('a source-linked completion saves its result and covers only the request owned by open work', async ($, on) => {
   const f = prepare(on)
   await complete($)
+  const rawOwnSave = f.store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const saved = (await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0] as any
   expect(saved.resultText).toBe(RESULT)
   expect(saved.resultTextHash).toBe(await checksumOf(RESULT))

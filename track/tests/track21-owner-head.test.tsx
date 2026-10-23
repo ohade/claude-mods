@@ -26,12 +26,16 @@ test('TRACK-21 import refuses a conflicting embedded ledger owner and keeps the 
 })
 
 test('TRACK-21 equal head revision with a conflicting checksum preserves both records', async ($, on) => {
-  atomStore(on, 'ledger', EMPTY)
+  const memory = atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
-  blobPool(on)
+  const pool = blobPool(on)
   const checkpoint = async () => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect((await checkpoint()).ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as { ledger: typeof memory.value }).ledger).toEqual(memory.value)
   const body = structuredClone(store.held.get(`s:${SESSION}`))
   const head = store.held.get(`h:${SESSION}`) as any
   const conflicting = { ...head, checkpoint: { ...head.checkpoint, checksum: '0'.repeat(64) } }

@@ -42,6 +42,9 @@ test('TRACK-21 stale save keeps a newer body with a conflicting nested owner byt
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'acknowledged local row' } as never)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const saved = store.held.get(`s:${SESSION}`) as any
   const logical = await pool.logical(store, `s:${SESSION}`) as any
   const newerLedger = { ...logical.ledger, nextQuestionId: 3, questions: [...logical.ledger.questions, { ...question, id: 2, session_id: FOREIGN }] }

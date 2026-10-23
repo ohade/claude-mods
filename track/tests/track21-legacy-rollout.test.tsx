@@ -13,6 +13,9 @@ for (const scenario of ['newer legacy', 'corrupt checksum', 'older legacy', 'for
   on('classic.SessionStart', () => ({}))
   logs(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'new-code row' } as never)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const original = store.held.get(`s:${SESSION}`) as any
   const logical = await pool.logical(store, `s:${SESSION}`) as any
   const oldHead = structuredClone(store.held.get(`h:${SESSION}`)) as any

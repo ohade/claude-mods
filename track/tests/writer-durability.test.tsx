@@ -41,6 +41,9 @@ test('a failed read-back keeps prior durable values and permits the same writer 
   expect(JSON.stringify(store.held.get(`s:${SESSION}`))).toBe(previous)
   const retried = JSON.parse((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result as string)
   expect(retried.ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await store.pool.logical(store, `s:${SESSION}`) as any).ledger.questions.map((q: any) => q.head)).toEqual(['Acknowledged first question', 'Unsaved second question'])
 })
 

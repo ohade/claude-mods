@@ -28,6 +28,9 @@ test('TRACK-21 failed resume cannot authorize replacing an existing durable ledg
   delete (options as { leaseFailure?: string }).leaseFailure
   const receipt = await checkpoint($)
   expect(receipt.ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const applied = store.held.get(`s:${SESSION}`) as any
   const logical = await pool.logical(store, `s:${SESSION}`) as any
   const head = store.held.get(`h:${SESSION}`) as any

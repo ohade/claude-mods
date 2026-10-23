@@ -21,6 +21,9 @@ test('the returning owner archives a mismatched stamp journal and can save again
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(receipt.ok).toBe(true)
   expect(store.held.has(`cleanup:${SESSION}`)).toBe(false)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions.map((row: any) => row.head)).toEqual(['kept history'])
   const archives = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${SESSION}:cleanup-conflict-`)).map(([, value]) => value as any)
   expect(archives).toHaveLength(1)

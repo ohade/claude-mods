@@ -36,6 +36,9 @@ test('later same-id A block replaces stale saved answer; unrelated response does
   expect(answer.answerText).toBe('The corrected **full** answer.')
   expect(answer.answerRequestId).toBe(SECOND_ID)
   expect(answer.answerKey).toBe('66666666-7777-4888-8999:A1')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger }).ledger.questions[0]).toEqual(answer)
   await response($, 'A later unrelated status note.', 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff')
   expect(ledger.value.questions[0]).toEqual(answer)

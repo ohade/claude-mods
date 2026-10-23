@@ -51,6 +51,9 @@ test('a confirmed rewind is saved before the model-bound prompt continues', asyn
   release()
   await pending
   expect((l.value as any).questions).toHaveLength(0)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toHaveLength(0)
 })
 

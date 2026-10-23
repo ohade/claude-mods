@@ -75,6 +75,9 @@ test('TRACK-21 reload cannot authorize replacing newer saved rows with nonempty 
   on('turn.complete', (_, e) => ({ text: e.answer }))
   await $.classic.SessionStart({ source: 'resume', session_id: SESSION } as never)
   await save($)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const stored = await pool.logical(store, `s:${SESSION}`) as { ledger: typeof local }
   expect(stored.ledger.questions.some(q => q.head === 'newer row')).toBe(true)
   expect(stored.ledger.questions.some(q => q.head === 'local row')).toBe(true)
