@@ -2,7 +2,7 @@
 // subsequent import fails. These tests use registered commands and save tools.
 import { expect, test } from 'claude-code/testing'
 import { checksumOf, describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 
 const VICTIM = '00000000-0000-4000-8000-000000000001'
@@ -16,7 +16,7 @@ const body = (session: string, padding = 0, savedAt = 1) => ({
   ledger: { ...EMPTY, session_id: session }, padding: 'p'.repeat(padding),
 })
 
-const fixture = async (on: On, options: { full?: boolean; victimLive?: boolean } = {}) => {
+const fixture = async (on: On, options: { full?: boolean; victimLive?: boolean; checkpointPool?: true } = {}) => {
   const target = {
     ...body(TARGET, options.full ? 800000 : 0, 2),
     generation: '11111111-2222-4333-8444-555555555555',
@@ -47,10 +47,15 @@ const fixture = async (on: On, options: { full?: boolean; victimLive?: boolean }
   const files = new Map([[BUNDLE, source]])
   const toasts: string[] = []
   on('session.id', () => ({ value: SESSION }))
-  on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
+  if (options.checkpointPool) {
+    on('fs.read', { path: /^(?!\/fixture\/config\/state\/track\/blobs\/[0-9a-f]{64}\.json$)/ }, (_, e) => ({ value: files.get(e.path) ?? '' }))
+  } else {
+    on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
+  }
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
   on('ui.toast', (_, e) => { toasts.push(String(e.text)); return { value: undefined } })
-  return { store, history, files, source, toasts }
+  const pool = options.checkpointPool ? blobPool(on, { files }) : undefined
+  return { store, history, files, source, toasts, pool }
 }
 
 const importReceipt = async ($: Engine) => JSON.parse((await trackCommand($, `import ${BUNDLE}`)).text!)
@@ -123,15 +128,43 @@ test('TRACK-31 failed victim deletion emits no completed eviction receipt or toa
 })
 
 test('TRACK-31 checkpoint visibly names its completed eviction exactly once', async ($, on) => {
-  const { store, history, toasts } = await fixture(on, { full: true })
+  const { store, history, toasts, pool, files, source } = await fixture(on, { full: true, checkpointPool: true })
+  expect(pool).toBeDefined()
+  const original = JSON.parse(history.find(([key]) => key === `s:${TARGET}`)![1])
+  const originalSaved = { ...(store.held.get('saved') as Record<string, Record<string, unknown>>)[TARGET] }
+  const expectedText = JSON.stringify(original.ledger)
+  const expectedRef = { checksum: await checksumOf(original.ledger), bytes: new TextEncoder().encode(expectedText).byteLength }
+  const expectedPointer = Object.fromEntries(Object.entries(original).map(([key, value]) =>
+    key === 'v' ? [key, 2] : key === 'ledger' ? ['ledger_blob', expectedRef] : [key, value]))
+  const inlineBytes = new TextEncoder().encode(JSON.stringify({ [`s:${TARGET}`]: original })).byteLength
+  const pointerBytes = new TextEncoder().encode(JSON.stringify({ [`s:${TARGET}`]: expectedPointer })).byteLength
+  expect(pointerBytes - inlineBytes).toBe(-21)
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(receipt.ok).toBe(true)
   expect(store.held.has(`s:${VICTIM}`)).toBe(false)
-  for (const [key, bytes] of history.filter(([key]) => key !== `s:${VICTIM}` && key !== `s:${SESSION}`)) expect(JSON.stringify(store.held.get(key))).toBe(bytes)
+  for (const [key, bytes] of history.filter(([key]) => key !== `s:${VICTIM}` && key !== `s:${SESSION}` && key !== `s:${TARGET}`)) expect(JSON.stringify(store.held.get(key)) === bytes).toBe(true)
+  expect(JSON.stringify(store.held.get(`s:${TARGET}`)) === JSON.stringify(expectedPointer)).toBe(true)
+  expect(Object.hasOwn(store.held.get(`s:${TARGET}`) as object, 'ledger')).toBe(false)
+  const storedText = files.get(`/fixture/config/state/track/blobs/${expectedRef.checksum}.json`)
+  expect(storedText).toBe(expectedText)
+  expect(await checksumOf(JSON.parse(storedText!))).toBe(expectedRef.checksum)
+  expect(new TextEncoder().encode(storedText).byteLength).toBe(expectedRef.bytes)
+  expect(JSON.stringify(await pool!.logical(store, `s:${TARGET}`)) === JSON.stringify(original)).toBe(true)
+  const saved = store.held.get('saved') as Record<string, unknown>
+  expect(saved[TARGET]).toEqual({ ...originalSaved, bytes: pointerBytes + 1 })
+  expect(Object.keys(saved).sort()).toEqual([SESSION, TARGET, LIVE, OTHER_LIVE].sort())
+  const sizes = (store.held.get('capacitySizes') as { sizes: Record<string, number> }).sizes
+  expect(Object.hasOwn(sizes, `s:${VICTIM}`)).toBe(false)
+  expect(sizes[`s:${TARGET}`]).toBe(pointerBytes - 2)
+  expect(files.get(BUNDLE) === source).toBe(true)
   expect(evictionToasts(toasts)).toHaveLength(1)
   expect(evictionToasts(toasts)[0]).toContain(VICTIM)
   expect(evictionToasts(toasts)[0]).toContain('closed history')
   expect(evictionToasts(toasts)[0]).toContain('make room')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool!.logical(store, `s:${SESSION}`) as { ledger: unknown }).ledger).toEqual({ ...EMPTY, session_id: SESSION })
 })
 
 test('TRACK-31 a protected and live-only full store reports no eviction and preserves every history byte', async ($, on) => {

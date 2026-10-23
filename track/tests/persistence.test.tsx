@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 
 // Saving and restoring the register: the per-session buckets in the plugin's store.
@@ -28,6 +28,7 @@ const prompt = ($: Engine, text: string) => $.prompt.submit({ text, origin: { ki
 // Compaction removes old tool calls from the transcript. The rewind check judges only work after
 // the last compaction, so the compaction time must survive a resume.
 test('a compaction is saved with the register', async ($, on) => {
+  const pool = blobPool(on)
   atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [question(1, 1000, 'toolu_old')] })
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const store = pluginStore(on)
@@ -38,11 +39,15 @@ test('a compaction is saved with the register', async ($, on) => {
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'an old prompt', toolUses: [] }] } as never)
   await $.turn.complete({ answer: 'done', reason: 'answer', turnId: 't1', durationMs: 1, isAborted: false } as never)
 
-  const bucket = store.held.get(`s:${SESSION}`) as Saved | undefined
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  const bucket = await pool.logical(store, `s:${SESSION}`) as Saved | undefined
   expect(bucket?.ledger.compactedAt).toBeGreaterThan(0)
 })
 
 test('a resumed session keeps the questions asked before its last compaction', async ($, on) => {
+  blobPool(on)
   const saved = { v: 1, savedAt: 5000, ledger: { ...EMPTY, nextQuestionId: 2, questions: [question(1, 1000, 'toolu_old')], compactedAt: 2000 } }
   const ledger = atomStore(on, 'ledger', EMPTY as { questions: Row[] })
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
@@ -58,6 +63,7 @@ test('a resumed session keeps the questions asked before its last compaction', a
 })
 
 test('a resumed register keeps only well-formed rows, and the next question id stays ahead', async ($, on) => {
+  blobPool(on)
   const ledger = {
     v: 1,
     nextQuestionId: 1,
@@ -78,6 +84,7 @@ test('a resumed register keeps only well-formed rows, and the next question id s
 })
 
 test('a saved register of another version is not restored', async ($, on) => {
+  blobPool(on)
   const held = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   pluginStore(on, { [`s:${SESSION}`]: { v: 2, savedAt: 1, ledger: { ...EMPTY, questions: [question(1, 1, 'toolu_a')] } } })
@@ -88,6 +95,7 @@ test('a saved register of another version is not restored', async ($, on) => {
 })
 
 test('a resume that fails says so in the debug log, and the session starts', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const lines = logs(on)
@@ -116,7 +124,8 @@ const capacityHistory = () => {
 }
 const storeBytes = (records: Record<string, unknown>) => new TextEncoder().encode(JSON.stringify(records)).byteLength
 
-test('a save over the Track budget evicts oldest CLOSED history and persists the caller', async ($, on) => {
+test('a save over the Track budget compacts CLOSED history without deletion and persists the caller', async ($, on) => {
+  const pool = blobPool(on)
   const { initial, ids, callerLedger } = capacityHistory()
   expect(storeBytes(initial)).toBeGreaterThan(3 * 1024 * 1024)
   expect(storeBytes(initial)).toBeLessThan(4 * 1024 * 1024)
@@ -130,14 +139,26 @@ test('a save over the Track budget evicts oldest CLOSED history and persists the
 
   expect({ callerPersisted: store.held.has(`s:${SESSION}`), saveFailures: lines.filter(line => line.includes('save failed:')) })
     .toEqual({ callerPersisted: true, saveFailures: [] })
-  expect((store.held.get(`s:${SESSION}`) as Saved).ledger.prompts).toEqual(callerLedger.prompts)
-  expect(store.held.has(`s:${ids[0]}`)).toBe(false)
-  expect(store.held.has(`h:${ids[0]}`)).toBe(false)
-  expect(store.held.get(`s:${ids[ids.length - 1]}`)).toEqual(initial[`s:${ids[ids.length - 1]}`])
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as Saved).ledger.prompts).toEqual(callerLedger.prompts)
+  for (const id of ids) {
+    const raw = store.held.get(`s:${id}`) as { v?: number } | undefined
+    expect(raw).toBeDefined()
+    expect(store.held.get(`h:${id}`)).toEqual(initial[`h:${id}`])
+    expect([1, 2]).toContain(raw?.v)
+    expect(await pool.logical(store, `s:${id}`)).toEqual(initial[`s:${id}`])
+    if (raw?.v === 1) expect(raw).toEqual(initial[`s:${id}`])
+    else expect(Object.hasOwn(raw!, 'ledger')).toBe(false)
+  }
+  expect(ids.some(id => (store.held.get(`s:${id}`) as { v?: number } | undefined)?.v === 2)).toBe(true)
+  expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
   expect(storeBytes(Object.fromEntries(store.held))).toBeLessThan(3 * 1024 * 1024)
 })
 
 test('a save over the Track budget refuses and preserves all LIVE history bodies', async ($, on) => {
+  blobPool(on)
   const { initial, ids, callerLedger } = capacityHistory()
   const before = ids.map(id => JSON.stringify(initial[`s:${id}`]))
   expect(storeBytes(initial)).toBeGreaterThan(3 * 1024 * 1024)
@@ -157,6 +178,7 @@ test('a save over the Track budget refuses and preserves all LIVE history bodies
 
 // An incomplete index does not give a caller authority to delete an unexpired bucket.
 test('a bucket the index lost is retained along with every other unexpired session', async ($, on) => {
+  blobPool(on)
   const initial: Record<string, unknown> = { 's:lost': { v: 1, savedAt: 0, ledger: EMPTY } }
   const ids = Array.from({ length: 20 }, (_, i) => `old-${String(i + 1).padStart(2, '0')}`)
   ids.forEach((id, i) => {
@@ -179,6 +201,7 @@ test('a bucket the index lost is retained along with every other unexpired sessi
 })
 
 test('a save that fails says so in the debug log', async ($, on) => {
+  blobPool(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   pluginStore(on, {}, 0)
@@ -191,6 +214,7 @@ test('a save that fails says so in the debug log', async ($, on) => {
 })
 
 test('/clear empties the pane even when the save fails', async ($, on) => {
+  blobPool(on)
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [question(1, 1, 'toolu_a')] })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
   pluginStore(on, {}, 0)

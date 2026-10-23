@@ -5,7 +5,7 @@ import { cleanupRecords, ensureCapacity, recoverCleanup } from '../hooks/retenti
 import { checksumOf } from '../hooks/checkpoint'
 import type { RetentionStore } from '../hooks/retention'
 import { entryBytes } from '../hooks/size-index'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 const CAPACITY = 'capacity: protected or unexpired history fills the UTF-8 store budget; nothing was pruned'
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -223,16 +223,21 @@ test('TRACK-31 a save past the budget evicts the oldest closed session and keeps
   atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on, initial, undefined, { guardStates: states })
   on('session.id', () => ({ value: SESSION }))
+  const pool = blobPool(on)
   const result = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(result.ok).toBe(true)
   expect(store.held.has(`s:${id(4)}`)).toBe(false)
   expect(store.held.has(`cleanup:${id(4)}`)).toBe(false)
-  for (const session of [id(1), id(2), id(3)]) expect(store.held.get(`s:${session}`)).toEqual(initial[`s:${session}`])
+  for (const session of [id(1), id(2), id(3)]) expect(JSON.stringify(store.held.get(`s:${session}`)) === JSON.stringify(initial[`s:${session}`])).toEqual(true)
   const index = store.held.get('saved') as Record<string, unknown>
   expect(Object.keys(index).sort()).toEqual([id(1), id(2), id(3), SESSION].sort())
   const sizes = (store.held.get('capacitySizes') as { sizes: Record<string, number> }).sizes
   expect(Object.hasOwn(sizes, `s:${id(4)}`)).toBe(false)
   expect(Object.hasOwn(sizes, `s:${SESSION}`)).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as { ledger: unknown }).ledger).toEqual({ ...EMPTY, session_id: SESSION })
 })
 
 // Round 1 (2026-10-20), refuter finding 1: one failing candidate must not stop eviction.
