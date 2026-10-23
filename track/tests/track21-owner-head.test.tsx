@@ -1,7 +1,7 @@
 // FIXTURE, TRACK-21 (2026-10-11): revision equality alone cannot authorize
 // overwriting a conflicting head, or reassign ambiguous imported ownership.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 
@@ -12,7 +12,8 @@ test('TRACK-21 import refuses a conflicting embedded ledger owner and keeps the 
   const files = new Map<string, string>()
   on('session.id', () => ({ value: SESSION }))
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
-  on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
+  on('fs.read', { path: /^(?!\/fixture\/config\/state\/track\/blobs\/[0-9a-f]{64}\.json$)/ }, (_, e) => ({ value: files.get(e.path) ?? '' }))
+  blobPool(on)
   await trackCommand($, 'export /backup.json')
   const source = files.get('/backup.json')
   store.held.delete(`s:${FOREIGN}`)
@@ -28,6 +29,7 @@ test('TRACK-21 equal head revision with a conflicting checksum preserves both re
   atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
+  blobPool(on)
   const checkpoint = async () => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect((await checkpoint()).ok).toBe(true)
   const body = structuredClone(store.held.get(`s:${SESSION}`))

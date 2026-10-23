@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-8 request acknowledgement and TRACK-26 result persistence must
 // share one durable mark_step operation without covering unrelated new work.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Pending, PendingInput, Step } from '../types'
 import { checksumOf } from '../hooks/checkpoint'
@@ -20,9 +20,10 @@ const prepare = (on: On) => {
   atomStore(on, 'scroll', { questions: null, steps: null })
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
-  on('env.get', () => ({ value: undefined }))
+  on('env.get', { name: /^(?!(?:CLAUDE_CONFIG_DIR|HOME)$)/ }, () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
-  return { ledger, pending, store }
+  const pool = blobPool(on)
+  return { ledger, pending, store, pool }
 }
 const complete = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call({
   tool: 'mcp__track__mark_step', tool_use_id: 'completion-call', id: 'plan:1',
@@ -32,7 +33,7 @@ const complete = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call
 test('a source-linked completion saves its result and covers only the request owned by open work', async ($, on) => {
   const f = prepare(on)
   await complete($)
-  const saved = (f.store.held.get(`s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0] as any
+  const saved = (await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0] as any
   expect(saved.resultText).toBe(RESULT)
   expect(saved.resultTextHash).toBe(await checksumOf(RESULT))
   expect(saved.resultRequestId).toBe('completion-call')
@@ -41,7 +42,7 @@ test('a source-linked completion saves its result and covers only the request ow
 
   const replacement = 'Verified additional result detail.'
   await complete($, { source_text: OTHER, result_text: replacement, tool_use_id: 'replacement-call' })
-  const savedReplacement = (f.store.held.get(`s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0] as { resultText?: string }
+  const savedReplacement = (await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0] as { resultText?: string }
   expect(savedReplacement.resultText).toBe(replacement)
   expect(f.pending.value.inputs.map(row => row.covered)).toEqual(['steps', undefined])
   expect(f.ledger.value.steps).toHaveLength(1)

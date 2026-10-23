@@ -1,7 +1,7 @@
 // FIXTURE: approved TRACK-26 plan. Saved result text must follow its permanent
 // step and acknowledged native source, never its current S display position.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pane, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Step, Turn } from '../types'
 import { checksumOf } from '../hooks/checkpoint'
@@ -24,11 +24,12 @@ const prepare = (on: On, steps = [step(), step('plan:2')], seed: Record<string, 
   const lines = logs(on)
   const contexts: string[] = []
   on('session.id', () => ({ value: SESSION }))
-  on('env.get', () => ({ value: undefined }))
+  on('env.get', { name: /^(?!(?:CLAUDE_CONFIG_DIR|HOME)$)/ }, () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('classic.Stop', () => ({}))
   on('prompt.submit', (_, e) => { contexts.push(...(e.context ?? [])); return { text: e.text } })
-  return { clock, ledger, turn, store, lines, contexts }
+  const pool = blobPool(on)
+  return { clock, ledger, turn, store, lines, contexts, pool }
 }
 
 test('TRACK-26 completed result is saved and drawn once at its acknowledged ToolUse', async ($, on) => {
@@ -40,7 +41,7 @@ test('TRACK-26 completed result is saved and drawn once at its acknowledged Tool
   expect(row.resultRequestId).toBe('result-call')
   expect(row.resultTurnId).toBe('turn-1')
   expect(typeof row.resultAt).toBe('number')
-  expect((f.store.held.get(`s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]).toEqual(row)
+  expect((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]).toEqual(row)
   const source = await $.ui.mount(toolRow())
   expect((await source.findAll({ type: 'Text' })).filter(text => text.text === RESULT)).toHaveLength(1)
 })
@@ -92,7 +93,7 @@ test('TRACK-26 a turnless replacement cannot inherit the previous result turn', 
   f.turn.value = { ...f.turn.value, currentId: null }
   f.turn.version += 1
   await complete($, 'plan:1', 'A later verified result.', 'later-result')
-  const saved = (f.store.held.get(`s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]
+  const saved = (await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]
   expect(saved?.resultText).toBe('A later verified result.')
   expect(saved?.resultRequestId).toBe('later-result')
   expect(saved?.resultTurnId).toBeUndefined()

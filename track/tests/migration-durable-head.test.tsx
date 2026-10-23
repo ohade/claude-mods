@@ -1,6 +1,6 @@
 // FIXTURE: retention-marker handling must keep genuine durable history protected.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const OTHER_GENERATION = '99999999-2222-4333-8444-555555555555'
@@ -13,7 +13,8 @@ for (const state of ['different-generation', 'missing-body', 'retention-marker']
     const files = new Map<string, string>()
     on('session.id', () => ({ value: SESSION }))
     on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
-    on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
+    on('fs.read', { path: /^(?!\/fixture\/config\/state\/track\/blobs\/[0-9a-f]{64}\.json$)/ }, (_, e) => ({ value: files.get(e.path) ?? '' }))
+    blobPool(on)
     const exported = JSON.parse((await trackCommand($, 'export /backup.json')).text ?? '{}')
     expect(exported.ok).toBe(true)
     const source = files.get('/backup.json')

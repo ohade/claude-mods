@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-19 native Stop repair replaced an in-progress plan because
 // an existing step had no way to acknowledge the request it already covered.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Pending, PendingInput, Step } from '../types'
 
@@ -24,10 +24,11 @@ const prepare = (on: On, row = ACTIVE, inputs = [input()]) => {
   const store = pluginStore(on)
   logs(on)
   on('session.id', () => ({ value: SESSION }))
-  on('env.get', () => ({ value: undefined }))
+  on('env.get', { name: /^(?!(?:CLAUDE_CONFIG_DIR|HOME)$)/ }, () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
   on('classic.Stop', () => ({}))
-  return { ledger, pending, store }
+  const pool = blobPool(on)
+  return { ledger, pending, store, pool }
 }
 const mark = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call({
   tool: MARK, tool_use_id: 'mark-call', id: 'plan:1', status: 'in_progress', source_text: REQUEST, ...extra,
@@ -39,7 +40,7 @@ test('TRACK-8 reusing a step acknowledges its exact request without replacing wo
   expect(f.pending.value.inputs[0]?.covered).toBe('steps')
   expect(f.ledger.value.steps).toHaveLength(1)
   expect(f.ledger.value.steps[0]).toMatchObject(ACTIVE)
-  expect((f.store.held.get(`s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]).toMatchObject(ACTIVE)
+  expect((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps[0]).toMatchObject(ACTIVE)
 })
 
 test('TRACK-8 a reuse request id takes precedence over another request text', async ($, on) => {

@@ -1,6 +1,6 @@
 // FIXTURE: supported store export/import preserves and verifies raw legacy records.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
@@ -11,8 +11,9 @@ const prepare = (on: On, records: Record<string, unknown> = {}, options: Paramet
   const files = new Map<string, string>()
   on('session.id', () => ({ value: SESSION }))
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
-  on('fs.read', (_, e) => ({ value: files.get(e.path) ?? '' }))
-  return { store, files }
+  on('fs.read', { path: /^(?!\/fixture\/config\/state\/track\/blobs\/[0-9a-f]{64}\.json$)/ }, (_, e) => ({ value: files.get(e.path) ?? '' }))
+  const pool = blobPool(on)
+  return { store, files, pool }
 }
 const exported = async ($: Engine) => JSON.parse((await trackCommand($, 'export /backup.json')).text ?? '{}')
 
@@ -88,7 +89,7 @@ test('corrupt or conflicting migration data changes no destination record', asyn
 
 for (const present of [false, true]) {
   test(`a closed retention-only marker permits import with the legacy body ${present ? 'present' : 'missing'}`, async ($, on) => {
-    const { files, store } = prepare(on, { [`s:${OLD}`]: legacy }, { guardStates: { [OLD]: 'closed' } })
+    const { files, store, pool } = prepare(on, { [`s:${OLD}`]: legacy }, { guardStates: { [OLD]: 'closed' } })
     await exported($)
     const source = files.get('/backup.json')
     if (!present) store.held.delete(`s:${OLD}`)
@@ -97,7 +98,8 @@ for (const present of [false, true]) {
     const first = JSON.parse((await trackCommand($, 'import /backup.json')).text ?? '{}')
     expect(first).toMatchObject({ ok: true, imported: present ? [] : [OLD], verified: [OLD] })
     const saved = store.held.get(`s:${OLD}`) as { generation: string; checkpoint: unknown; ledger: unknown }
-    expect(saved.ledger).toEqual({ ...legacy.ledger, session_id: OLD, questions: legacy.ledger.questions.map(q => ({ ...q, session_id: OLD })) })
+    const logical = await pool.logical(store, `s:${OLD}`) as { ledger: unknown }
+    expect(logical.ledger).toEqual({ ...legacy.ledger, session_id: OLD, questions: legacy.ledger.questions.map(q => ({ ...q, session_id: OLD })) })
     expect(saved.generation).toMatch(/^[0-9a-f-]{36}$/)
     expect(store.held.get(`h:${OLD}`)).toEqual({ v: 1, session_id: OLD, generation: saved.generation, checkpoint: saved.checkpoint })
     const second = JSON.parse((await trackCommand($, 'import /backup.json')).text ?? '{}')
