@@ -1748,6 +1748,22 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
   return saved
 }
 
+const saveClassifierSetting = async ($: EngineInterface, isOn: boolean): Promise<void> => {
+  const run = persistence.queue.then(async () => {
+    let lock: LockStream | undefined
+    try {
+      const session = await $.session.id()
+      await ensureWriter($, session)
+      lock = await acquireLock($, 'write', session)
+      await writeVerified($, CLASSIFIER_KEY, { isOn })
+    } finally {
+      if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log('track: classifier lock cleanup failed: ' + reason(error), { to: 'debug' }))
+    }
+  })
+  persistence.queue = run.catch(() => undefined)
+  await run
+}
+
 // Migration goes through the engine's store for each loading identity. It preserves
 // raw buckets and refuses ambiguous same-session data before writing any record.
 const savePanePreference = async ($: EngineInterface, closedByPerson: boolean): Promise<void> => {
@@ -3603,7 +3619,7 @@ export const register: Register = on => {
     if (classifier !== null) {
       if (classifier[1] !== undefined) {
         try {
-          await $.store.set(CLASSIFIER_KEY, { isOn: classifier[1] === 'on' })
+          await saveClassifierSetting($, classifier[1] === 'on')
         } catch (error) {
           return { text: `track: the classifier setting was not saved — ${reason(error)}` }
         }

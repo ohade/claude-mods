@@ -275,6 +275,11 @@ at once while a turn runs and adds nothing to the session; `/track status` print
 questions. To keep the diff
 panel out of the slot, type `/diff` once.
 
+`/track classifier` reports the optional question classifier's setting. `/track classifier on`
+and `/track classifier off` change it. Changes share the ledger write queue, session lease and store lock.
+If ownership, locking or the verified write fails, the command reports that the setting was
+not saved; later attempts can retry. Reading the setting does not acquire a writer lock.
+
 Requirements: Claude Code with function-hook plugins, macOS/POSIX file locks, and Python 3.
 The first compatibility target is the generated 2.1.292 API. Engine and fresh-process checks use
 2.1.293. A 2.1.292 runtime run and a seated managed-policy Stop run are not available on this Mac.
