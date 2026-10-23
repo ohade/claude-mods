@@ -81,5 +81,64 @@ class WriterLockTests(unittest.TestCase):
         self.assertNotEqual(writer.wait(timeout=5), 0)
 
 
+class LockNamespaceTests(unittest.TestCase):
+    """The helper must lock where register.tsx configDir() points, never under its cwd."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.cwd = self.root / "cwd"
+        self.home.mkdir()
+        self.cwd.mkdir()
+        inherited = ("TRACK_LOCK_DIR", "CLAUDE_CONFIG_DIR")
+        self.env = {name: value for name, value in os.environ.items() if name not in inherited}
+        self.env["HOME"] = str(self.home)
+        self.children = []
+
+    def tearDown(self):
+        for child in self.children:
+            if child.poll() is None:
+                child.terminate()
+            child.communicate(timeout=5)
+        self.tmp.cleanup()
+
+    def start(self, mode):
+        child = subprocess.Popen(["python3", str(HELPER), mode, SID, "owner"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env, cwd=self.cwd)
+        self.children.append(child)
+        return json.loads(child.stdout.readline())
+
+    def assert_locks_in(self, directory):
+        self.assertTrue(self.start("lease")["ok"])
+        self.assertTrue(self.start("write")["ok"])
+        self.assertTrue((directory / f"{SID}.lock").is_file(), f"the lease lock must be in {directory}")
+        self.assertTrue((directory / "store.lock").is_file(), f"the store lock must be in {directory}")
+        self.assertFalse((self.cwd / "state").exists(), "the helper must not create a lock namespace under its cwd")
+        with open(directory / "store.lock", "r+") as probe:
+            with self.assertRaises(BlockingIOError, msg="the live write helper must hold the expected store lock"):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_empty_config_dir_falls_back_to_home_claude(self):
+        self.env["CLAUDE_CONFIG_DIR"] = ""
+        self.assert_locks_in(self.home / ".claude" / "state" / "track" / "locks")
+
+    def test_unset_config_dir_falls_back_to_home_claude(self):
+        self.assert_locks_in(self.home / ".claude" / "state" / "track" / "locks")
+
+    def test_explicit_config_dir_is_used(self):
+        config = self.root / "config"
+        self.env["CLAUDE_CONFIG_DIR"] = str(config)
+        self.assert_locks_in(config / "state" / "track" / "locks")
+        self.assertFalse((self.home / ".claude").exists(), "an explicit config dir must not fall back to HOME")
+
+    def test_track_lock_dir_overrides_config_dir(self):
+        config = self.root / "config"
+        locks = self.root / "locks"
+        self.env["CLAUDE_CONFIG_DIR"] = str(config)
+        self.env["TRACK_LOCK_DIR"] = str(locks)
+        self.assert_locks_in(locks)
+        self.assertFalse((config / "state").exists(), "TRACK_LOCK_DIR must replace the config namespace")
+
+
 if __name__ == "__main__":
     unittest.main()

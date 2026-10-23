@@ -47,7 +47,7 @@ def main():
     if mode not in ("lease", "write", "guard") or not re.fullmatch(r"[0-9a-fA-F-]{36}", session) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", token):
         return fail("invalid lock identity")
     os.umask(0o077)
-    config = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"))
     directory = Path(os.environ.get("TRACK_LOCK_DIR", str(config / "state" / "track" / "locks")))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
