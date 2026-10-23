@@ -1431,14 +1431,15 @@ const compactBody = ($: EngineInterface, onCompacted?: (session: string, bytes: 
   if (Object.hasOwn(body, 'ledger_blob')) return keep('a v:1 body already names a blob')
   const text = JSON.stringify(ledger)
   const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
+  const pointer = Object.fromEntries(Object.entries(body).map(([name, value]) =>
+    name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
+  if (utf8Bytes({ [key]: pointer }) >= utf8Bytes({ [key]: original })) return keep('the pointer does not shrink the full stored entry')
   const publication = await publishLedgerBlob($, text, ref)
   if (publication !== undefined) return 'unavailable' in publication ? stop(publication.unavailable) : keep(publication.rejected)
   if (!(await confirm())) return keep('session is not CLOSED or its records are ambiguous')
   try {
     if (!sameValue(await $.store.get(key), original)) return keep('body changed before compaction')
   } catch (error) { return keep(`body unreadable under its guard: ${reason(error)}`) }
-  const pointer = Object.fromEntries(Object.entries(body).map(([name, value]) =>
-    name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
   try { await writeVerified($, key, pointer) }
   catch (error) {
     // The size index's pending marker repairs this key's size for the next locked caller.
@@ -1592,8 +1593,6 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
          !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await logicalBody($, await $.store.get(`s:${id}`)), id) ?? EMPTY_LEDGER, id)))) {
       await resumeLedger($, id)
     }
-    try { await cleanupOwned($, id) }
-    catch (error) { $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
     const pending = { ...await read($, durability), closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }
     const preference = pending.closedByPerson
     if (preference !== undefined) {
@@ -1643,17 +1642,34 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     if (missing && priorCheckpoint !== undefined) priorCheckpoint = { ...priorCheckpoint, checksum: '' }
     const generation = missing ? crypto.randomUUID() : head?.generation ?? baseline?.generation ?? crypto.randomUUID()
     const checkpoint = await describeCheckpoint(current, id, priorCheckpoint)
-    const bucket = { v: 1, session_id: id, generation, savedAt: Date.now(), ledger: current, checkpoint,
+    const inlineBucket = { v: 1, session_id: id, generation, savedAt: Date.now(), ledger: current, checkpoint,
       ...(missing && { recovered: true, expected_revision: expected ?? head?.checkpoint.revision ?? null }) }
+    const text = JSON.stringify(current)
+    const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
+    const pointer = Object.fromEntries(Object.entries(inlineBucket).map(([name, value]) =>
+      name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
+    const publication = await publishLedgerBlob($, text, ref)
+    if (publication !== undefined && 'rejected' in publication) throw new Error(publication.rejected)
+    const fallbackCause = publication?.unavailable
+    const bucket = publication === undefined ? pointer : inlineBucket
+    if (publication === undefined) {
+      try { await cleanupOwned($, id) }
+      catch (error) { $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
+    }
     const nextHead: SessionHead = { v: 1, session_id: id, generation, checkpoint }
     const bytes = utf8Bytes({ [`s:${id}`]: bucket }) + 1
     const others = Object.entries(await savedIndex($))
       .filter(([other]) => other !== id)
       .sort(([, a], [, b]) => a.at - b.at)
     const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
-    const evicted = await ensureCapacity($, id, { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }, STORE_BUDGET, [], undefined, undefined,
-      patchCompacted(index))
-    for (const session of evicted) delete index[session]
+    const replacements = { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }
+    if (fallbackCause === undefined) {
+      const evicted = await ensureCapacity($, id, replacements, STORE_BUDGET, [], undefined, undefined, patchCompacted(index))
+      for (const session of evicted) delete index[session]
+    } else {
+      try { await checkCapacity(retentionStore($), replacements, STORE_BUDGET) }
+      catch (error) { throw new Error(`blob storage is unavailable: ${fallbackCause}; inline fallback does not fit: ${reason(error)}`, { cause: error }) }
+    }
     saveRecoveries.set(id, { previous, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
     await retentionStore($).set(`s:${id}`, bucket)
     const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
@@ -1675,6 +1691,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     await update($, durability, cur => memoryChanged || cur.closedByPerson !== preference || cur.rewindSession !== pending.rewindSession
       ? { ...cur, baseline: { session_id: id!, ledger: current, checkpoint, generation }, isUnsaved: true, reason: memoryChanged ? 'ledger save pending' : cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
       : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
+    if (fallbackCause !== undefined) $.ui.toast(`track: saved inline because blob storage is unavailable: ${fallbackCause}`)
   } catch (error) {
     persistence.failure = reason(error)
     if (lock !== undefined && id !== undefined) {
