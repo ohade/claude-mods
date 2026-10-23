@@ -2,7 +2,7 @@
 // sessions' v:1 inline bodies to v:2 pointers (ledger text in a verified blob), largest first,
 // deleting nothing. Eviction runs unchanged only when compaction cannot make room.
 import { expect, test } from 'claude-code/testing'
-import { atomStore, logs, pluginStore, trackCommand } from './kit'
+import { EMPTY, atomStore, logs, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 import { describeCheckpoint, checksumOf } from '../hooks/checkpoint'
 import { ensureCapacity } from '../hooks/retention'
@@ -121,6 +121,16 @@ test('TRACK-35 U2b an over-budget save compacts the largest CLOSED body and evic
   const result = await checkpoint($, caller)
   expect(result.reason).toBeUndefined()
   expect(result.ok).toBe(true)
+  const expectedLedger = { ...EMPTY, session_id: caller }
+  const ownText = JSON.stringify(expectedLedger)
+  const ownRef = { checksum: await sha256(ownText), bytes: utf8(ownText) }
+  const own = store.held.get(`s:${caller}`) as { v: number; ledger_blob?: unknown }
+  expect(own.v).toBe(2)
+  expect(Object.hasOwn(own, 'ledger')).toBe(false)
+  expect(own.ledger_blob).toEqual(ownRef)
+  const publishedOwnText = files.get(`${BLOBS}/${ownRef.checksum}.json`)!
+  expect(publishedOwnText).toBe(ownText)
+  expect({ checksum: await sha256(publishedOwnText), bytes: utf8(publishedOwnText) }).toEqual(ownRef)
   expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
   const { text, blob, pointer } = await pointerOf(bodies[big]!)
   expect(await print(store.held.get(`s:${big}`))).toBe(await print(pointer))
@@ -214,7 +224,7 @@ test('TRACK-35 U2b a refused pointer write keeps the v:1 body and eviction runs 
   const caller = callerOf(5)
   const { sessions, records, bodies, states, oldest } = await prefill(5)
   const files = new Map<string, string>()
-  const refuseSet = (key: string, value: unknown) => key.startsWith('s:') && (value as { v?: unknown }).v === 2 ? 'pointer write refused' : undefined
+  const refuseSet = (key: string, value: unknown) => key.startsWith('s:') && key !== `s:${caller}` && (value as { v?: unknown }).v === 2 ? 'pointer write refused' : undefined
   const { store, lines, published } = setup(on, caller, records, files, { states, refuseSet })
   const result = await checkpoint($, caller)
   expect(result.reason).toBeUndefined()
@@ -284,20 +294,30 @@ for (const fault of ['exit', 'truncated', 'receipt', 'mismatch'] as const) test(
   for (const session of sessions) expect(store.held.has(`s:${session}`)).toBe(true)
 })
 
-for (const missing of ['helper', 'config'] as const) test(`TRACK-35 U2b with no ${missing} compaction stops and eviction runs exactly as today`, async ($, on) => {
+for (const missing of ['helper', 'config'] as const) test(`TRACK-35 U2b unavailable own blob storage (${missing}) refuses a non-fitting inline save without compaction or eviction`, async ($, on) => {
   const family = 20 + (missing === 'helper' ? 0 : 1)
   const caller = callerOf(family)
-  const { sessions, records, bodies, states, big, oldest } = await prefill(family)
+  const { sessions, records, bodies, states } = await prefill(family)
   const files = new Map<string, string>()
   const { store, lines, published } = setup(on, caller, records, files, { states, ...(missing === 'helper' ? { helper: false } : { config: false }) })
   const result = await checkpoint($, caller)
-  expect(result.reason).toBeUndefined()
-  expect(result.ok).toBe(true)
-  expect(lines.filter(line => line.startsWith('track: compaction keeps '))).toEqual([expect.stringMatching(new RegExp(`^track: compaction keeps ${big}: `))])
+  expect(result.ok).toBe(false)
+  expect(String(result.reason)).toContain(missing === 'helper' ? 'blob helper unavailable' : 'blob directory unavailable')
+  expect(String(result.reason)).toContain('capacity:')
+  expect(store.held.has(`s:${caller}`)).toBe(false)
+  expect(store.held.has(`h:${caller}`)).toBe(false)
+  const saved = store.held.get('saved') as Record<string, unknown>
+  for (const session of sessions) {
+    expect(await print(store.held.get(`s:${session}`))).toBe(await print(bodies[session]))
+    expect(await print(store.held.get(`h:${session}`))).toBe(await print(records[`h:${session}`]))
+    expect(saved[session]).toEqual((records.saved as Record<string, unknown>)[session])
+    expect(store.held.has(`cleanup:${session}`)).toBe(false)
+  }
+  expect(store.held.get('cleanup')).toEqual(records.cleanup)
+  expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
+  expect(lines.filter(line => line.startsWith('track: compaction keeps '))).toEqual([])
   expect(published).toEqual([])
-  expect(store.held.has(`s:${oldest}`)).toBe(false)
-  for (const session of sessions.filter(session => session !== oldest)) expect(await print(store.held.get(`s:${session}`))).toBe(await print(bodies[session]))
-  expect([...files.keys()]).toEqual([])
+  expect([...files]).toEqual([])
 })
 
 test('TRACK-35 U2b a pre-compaction export imports after its session was compacted', async ($, on) => {

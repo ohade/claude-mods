@@ -312,13 +312,31 @@ const setupTrack = (on: On, session: string, records: Record<string, unknown>, o
 const checkpoint = async ($: Engine, session: string) =>
   JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: session } as never)).result ?? '{}'))
 
+// Expected rows and directory come from the case, never from the saved body or blob.
+const expectOwnPublication = async (pool: ReturnType<typeof blobPool>, store: ReturnType<typeof pluginStore>, session: string, expectedLedger: unknown, blobDir: string) => {
+  const text = JSON.stringify(expectedLedger)
+  const ref = { checksum: await sha256(text), bytes: utf8Bytes(text) }
+  const path = `${blobDir}/${ref.checksum}.json`
+  const raw = store.held.get(`s:${session}`) as { v: number; ledger_blob?: unknown }
+  expect(raw.v).toBe(2)
+  expect(Object.hasOwn(raw, 'ledger')).toBe(false)
+  expect(raw.ledger_blob).toEqual(ref)
+  expect(pool.files.get(path)).toBe(text)
+  expect(await textFingerprint(pool.files.get(path)!)).toEqual(ref)
+  const logical = await pool.logical(store, `s:${session}`) as { ledger: unknown }
+  expect(logical.ledger).toEqual(expectedLedger)
+  return path
+}
+
 for (const [index, configDir] of [undefined, CUSTOM_CONFIG].entries()) {
   test(`FIXTURE real Track checkpoint reads unicode v:2 rows through blobPool with ${configDir === undefined ? 'default' : 'custom'} config`, async ($, on) => {
     const session = callerOf(80 + index)
     const { body, head } = await durableSession(session)
     const fixture = await pointerFor(body)
-    const { pool, memory } = setupTrack(on, session, { [`s:${session}`]: fixture.pointer, [`h:${session}`]: head }, { configDir })
-    pool.files.set(`${configDir ?? CONFIG}/state/track/blobs/${fixture.ref.checksum}.json`, fixture.text)
+    const { pool, memory, store } = setupTrack(on, session, { [`s:${session}`]: fixture.pointer, [`h:${session}`]: head }, { configDir })
+    const blobDir = `${configDir ?? CONFIG}/state/track/blobs`
+    const seededPath = `${blobDir}/${fixture.ref.checksum}.json`
+    pool.files.set(seededPath, fixture.text)
     const receipt = await checkpoint($, session)
     expect(receipt.reason).toBeUndefined()
     expect(receipt.ok).toBe(true)
@@ -326,7 +344,13 @@ for (const [index, configDir] of [undefined, CUSTOM_CONFIG].entries()) {
     expect(receipt.open_steps).toEqual([{ id: 'plan:1', status: 'in_progress', subject: 'café 🚀' }])
     expect(memory.value.questions.map((question: { head: string }) => question.head)).toEqual(['Saved question'])
     expect(memory.value.steps.map((step: { subject: string }) => step.subject)).toEqual(['café 🚀'])
-    expect(pool.publishes).toBe(0)
+    expect(pool.publishes).toBe(1)
+    const expectedLedger = integrationLedger(session)
+    const ownPath = await expectOwnPublication(pool, store, session, expectedLedger, blobDir)
+    expect(memory.value).toEqual(expectedLedger)
+    expect(pool.files.get(seededPath)).toBe(fixture.text)
+    expect(store.held.get(`h:${session}`)).toEqual(head)
+    expect([...pool.files]).toEqual([...new Map([[seededPath, fixture.text], [ownPath, JSON.stringify(expectedLedger)]])])
   })
 }
 
@@ -382,7 +406,7 @@ const expectClosedKept = async (store: ReturnType<typeof pluginStore>, seeded: A
 }
 
 for (const [index, configDir] of [undefined, CUSTOM_CONFIG].entries()) {
-  test(`FIXTURE real Track CLOSED compaction publishes once through blobPool with ${configDir === undefined ? 'default' : 'custom'} config and evicts nothing`, async ($, on) => {
+  test(`FIXTURE real Track own-save plus one CLOSED publication through blobPool with ${configDir === undefined ? 'default' : 'custom'} config evicts nothing`, async ($, on) => {
     const family = 84 + index
     const caller = callerOf(family)
     const seeded = await prefillClosed(family)
@@ -390,14 +414,16 @@ for (const [index, configDir] of [undefined, CUSTOM_CONFIG].entries()) {
     const receipt = await checkpoint($, caller)
     expect(receipt.reason).toBeUndefined()
     expect(receipt.ok).toBe(true)
-    expect(pool.publishes).toBe(1)
+    expect(pool.publishes).toBe(2)
+    const expectedLedger = { ...EMPTY, session_id: caller }
+    const ownPath = await expectOwnPublication(pool, store, caller, expectedLedger, `${configDir ?? CONFIG}/state/track/blobs`)
     expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
     const raw = store.held.get(`s:${seeded.big}`) as { v: number; ledger?: unknown }
     expect(raw.v).toBe(2)
     expect(Object.hasOwn(raw, 'ledger')).toBe(false)
     const fixture = await pointerFor(seeded.bodies[seeded.big]!)
     const path = `${configDir ?? CONFIG}/state/track/blobs/${fixture.ref.checksum}.json`
-    expect([...pool.files.keys()]).toEqual([path])
+    expect([...pool.files.keys()].sort()).toEqual([path, ownPath].sort())
     expect(await recordFingerprint(raw)).toEqual(await recordFingerprint(fixture.pointer))
     expect(await textFingerprint(pool.files.get(path)!)).toEqual(fixture.ref)
     expect(await recordFingerprint(await pool.logical(store, `s:${seeded.big}`))).toEqual(await recordFingerprint(seeded.bodies[seeded.big]))
@@ -420,14 +446,16 @@ for (const [index, damage] of ['same-length', 'empty'].entries()) {
     const receipt = await checkpoint($, caller)
     expect(receipt.reason).toBeUndefined()
     expect(receipt.ok).toBe(true)
-    expect(pool.publishes).toBe(2)
+    expect(pool.publishes).toBe(3)
+    const expectedLedger = { ...EMPTY, session_id: caller }
+    const ownPath = await expectOwnPublication(pool, store, caller, expectedLedger, BLOBS)
     expect(lines.some(line => line.startsWith(`track: compaction keeps ${seeded.big}:`))).toBe(true)
     expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
     expect((store.held.get(`s:${seeded.big}`) as { v: number }).v).toBe(1)
     expect((store.held.get(`s:${seeded.second}`) as { v: number }).v).toBe(2)
     const second = await pointerFor(seeded.bodies[seeded.second]!)
     const secondPath = `${BLOBS}/${second.ref.checksum}.json`
-    expect([...pool.files.keys()].sort()).toEqual([damagedPath, secondPath].sort())
+    expect([...pool.files.keys()].sort()).toEqual([damagedPath, secondPath, ownPath].sort())
     expect(await textFingerprint(pool.files.get(damagedPath)!)).toEqual(await textFingerprint(damaged))
     expect(await textFingerprint(pool.files.get(secondPath)!)).toEqual(second.ref)
     expect(await recordFingerprint(store.held.get(`s:${seeded.second}`))).toEqual(await recordFingerprint(second.pointer))
