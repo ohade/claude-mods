@@ -52,9 +52,11 @@ const localStep = (id: string): Ledger['steps'][number] => ({
 })
 
 const setup = (on: On, id: string, expected: Ledger, records: Record<string, unknown> = {}, files = new Map<string, string>(), guardStates: Record<string, 'live' | 'closed'> = {}) => {
-  const controls = { mode: 'ok' as 'ok' | 'unavailable' | 'exit' | 'truncated' | 'receipt' | 'readback', config: true, failKey: '', applied: 0, lastPath: '' }
+  const controls = { mode: 'ok' as 'ok' | 'unavailable' | 'exit' | 'truncated' | 'receipt' | 'readback', config: true, failKey: '', refuseRollbackKey: '', applied: 0, lastPath: '',
+    beforeSet: undefined as ((key: string, value: unknown) => Promise<void>) | undefined }
   const observed: Array<{ checksum: string; text: string }> = []
   const storeWrites: string[] = []
+  const storeAttempts: string[] = []
   // Different matchers are required: registrations nest in order, first outermost.
   on('process.run', { argv: /blob-fs\.py$/ }, async (_, e, next) => {
     const text = String(e.init?.stdin ?? '')
@@ -77,7 +79,17 @@ const setup = (on: On, id: string, expected: Ledger, records: Record<string, unk
   })
   on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
   const pool = blobPool(on, { configDir: CONFIG, files, readProviders: 'external' })
+  on('store.delete', { key: /^(?:s:|h:|saved$)/ }, async (_, e, next) => {
+    storeAttempts.push(`delete:${e.key}`)
+    return next(e)
+  })
   on('store.set', { key: /^(?:s:|h:|saved$)/ }, async (_, e, next) => {
+    storeAttempts.push(e.key)
+    await controls.beforeSet?.(e.key, e.value)
+    if (e.key === controls.refuseRollbackKey && controls.failKey === '') {
+      controls.refuseRollbackKey = ''
+      return { deny: `fixture refused rollback ${e.key}` }
+    }
     const result = await next(e)
     if (result.deny !== undefined) return result
     storeWrites.push(e.key)
@@ -99,7 +111,7 @@ const setup = (on: On, id: string, expected: Ledger, records: Record<string, unk
   on('classic.SessionStart', () => ({}))
   const store = pluginStore(on, records, undefined, { guardStates })
   const lines = logs(on)
-  return { store, memory, pool, controls, lines, files, observed, storeWrites }
+  return { store, memory, pool, controls, lines, files, observed, storeWrites, storeAttempts }
 }
 
 const checkpoint = async ($: Engine, id: string) =>
@@ -422,6 +434,99 @@ test('FIXTURE own-save 215: applied-then-threw body, head and saved writes resto
   expect(fixture.pool.publishes).toBe(4)
   await expectFiles(files, new Map([...originalFiles, [candidate.path, candidate.text]]))
 })
+
+// FIXTURE: hold an applied save in recovery without letting its rollback reach the store.
+const pendingBlobRecovery = async ($: Engine, on: On, family: number) => {
+  const id = idOf(family)
+  const old = ledgerFor(id)
+  const files = new Map([[SENTINEL, SENTINEL_TEXT]])
+  const seeded = await seedPointer(id, old, files)
+  const fixture = setup(on, id, { ...EMPTY, session_id: id }, seeded.records, files)
+  const durability = atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: id })
+  await $.classic.SessionStart({ source: 'resume', session_id: id })
+  const changed = { ...old, steps: [...old.steps, localStep(id)] }
+  fixture.memory.value = changed
+  const candidate = await candidateFor(changed, changed)
+  fixture.controls.failKey = `s:${id}`
+  fixture.controls.refuseRollbackKey = `s:${id}`
+  const failed = await checkpoint($, id)
+  expect(failed.ok).toBe(false)
+  expect(failed.reason).toContain(`fixture applied-then-threw s:${id}`)
+  expect(failed.reason).toContain(`recovery pending: track: $.store.set: fixture refused rollback s:${id}`)
+  expect(fixture.controls.applied).toBe(1)
+  expect(fixture.controls.refuseRollbackKey).toBe('')
+  const newPointer = JSON.stringify(fixture.store.held.get(`s:${id}`))
+  expect((fixture.store.held.get(`s:${id}`) as typeof seeded.pointer).ledger_blob).toEqual(candidate.ref)
+  expect(newPointer).not.toBe(JSON.stringify(seeded.pointer))
+  expect(JSON.stringify(fixture.store.held.get(`h:${id}`))).toBe(JSON.stringify(seeded.head))
+  expect(JSON.stringify(fixture.store.held.get('saved'))).toBe(JSON.stringify(seeded.records.saved))
+  expect([...fixture.store.held.values()].some(value => JSON.stringify(value).includes(seeded.pointer.ledger_blob.checksum))).toBe(false)
+  const oldText = JSON.stringify(old)
+  const oldPath = `${BLOBS}/${seeded.pointer.ledger_blob.checksum}.json`
+  expect(files.get(oldPath)).toBe(oldText)
+  expect(await sha256(oldText)).toBe(seeded.pointer.ledger_blob.checksum)
+  expect(utf8(oldText)).toBe(seeded.pointer.ledger_blob.bytes)
+  files.delete(oldPath)
+  return { ...fixture, durability, id, old, seeded, oldText, oldPath, newPointer }
+}
+
+test('FIXTURE own-save 235: lost previous blob is restored and verified before the old raw pointer', async ($, on) => {
+  const fixture = await pendingBlobRecovery($, on, 235)
+  const { id, old, seeded, oldText, oldPath } = fixture
+  const restores: Array<{ text: string | undefined; checksum: string | undefined; bytes: number | undefined }> = []
+  fixture.controls.beforeSet = async (key, value) => {
+    if (key !== `s:${id}` || JSON.stringify(value) !== JSON.stringify(seeded.pointer)) return
+    const text = fixture.files.get(oldPath)
+    restores.push({ text, checksum: text === undefined ? undefined : await sha256(text), bytes: text === undefined ? undefined : utf8(text) })
+  }
+  await $.classic.SessionStart({ source: 'resume', session_id: id })
+  // Named red: the prior bytes must exist at the instant the pointer is restored.
+  expect(restores).toEqual([{ text: oldText, checksum: seeded.pointer.ledger_blob.checksum, bytes: seeded.pointer.ledger_blob.bytes }])
+  expect(fixture.files.get(oldPath)).toBe(oldText)
+  expect(await sha256(fixture.files.get(oldPath)!)).toBe(seeded.pointer.ledger_blob.checksum)
+  expect(JSON.stringify(fixture.store.held.get(`s:${id}`))).toBe(JSON.stringify(seeded.pointer))
+  expect(JSON.stringify(fixture.store.held.get(`h:${id}`))).toBe(JSON.stringify(seeded.head))
+  expect(JSON.stringify(fixture.store.held.get('saved'))).toBe(JSON.stringify(seeded.records.saved))
+  const logical = await fixture.pool.logical(fixture.store, `s:${id}`) as { ledger: Ledger }
+  expect(JSON.stringify(logical.ledger)).toBe(oldText)
+  await expectRows(logical.ledger, old)
+})
+
+for (const [family, mode, cause] of [[236, 'unavailable', 'blob helper unavailable'], [237, 'exit', 'blob helper exit 1']] as const) {
+  test(`FIXTURE own-save ${family}: lost previous blob with ${mode} publisher keeps recovery pending with zero store writes`, async ($, on) => {
+    const fixture = await pendingBlobRecovery($, on, family)
+    const { id, seeded, oldPath, newPointer } = fixture
+    const before = JSON.stringify([...fixture.store.held])
+    const attempts = fixture.storeAttempts.length
+    const publications = fixture.observed.length
+    const restores: unknown[] = []
+    fixture.controls.beforeSet = async (key, value) => {
+      if (key === `s:${id}` && JSON.stringify(value) === JSON.stringify(seeded.pointer)) restores.push(value)
+    }
+    fixture.controls.mode = mode
+    await $.classic.SessionStart({ source: 'resume', session_id: id })
+    // Named red: failed previous-blob publication must attempt no durable store writes.
+    expect(fixture.storeAttempts.slice(attempts)).toEqual([])
+    expect(JSON.stringify([...fixture.store.held])).toBe(before)
+    expect(JSON.stringify(fixture.store.held.get(`s:${id}`))).toBe(newPointer)
+    expect(restores).toEqual([])
+    expect(fixture.durability.value.isUnsaved).toBe(true)
+    expect(fixture.durability.value.reason).toContain('resume:')
+    expect(fixture.durability.value.reason).toContain(cause)
+    expect(fixture.observed.length).toBe(publications + 1)
+    // Re-enter recovery to prove the failed attempt retained its in-memory record.
+    // The exit fixture may have published bytes before its rejected acknowledgement.
+    fixture.files.delete(oldPath)
+    fixture.controls.mode = 'unavailable'
+    await $.classic.SessionStart({ source: 'resume', session_id: id })
+    expect(fixture.observed.length).toBe(publications + 2)
+    expect(fixture.storeAttempts.slice(attempts)).toEqual([])
+    expect(JSON.stringify([...fixture.store.held])).toBe(before)
+    expect(restores).toEqual([])
+    expect(fixture.durability.value.isUnsaved).toBe(true)
+    expect(fixture.durability.value.reason).toContain('blob helper unavailable')
+  })
+}
 
 const storeMiddlewarePin = { plugins: [{ name: 'fixture-store-pin', register(on: On) {
   on('tool.call', { tool: /^fixture__track35_store_pin$/ }, async (capability, e) => {

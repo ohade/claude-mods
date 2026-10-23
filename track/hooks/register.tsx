@@ -955,7 +955,7 @@ type SavedIndex = Record<string, { at: number; bytes: number; unfinished?: boole
 const utf8Bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length
 const persistence = { queue: Promise.resolve(), failure: '' }
 const savedRevisions = new Map<string, number>()
-type SaveRecovery = { previous: unknown; bucket: unknown; previousHead: unknown; head: SessionHead; previousIndex: unknown; index: unknown }
+type SaveRecovery = { previous: unknown; previousBlobText?: string; bucket: unknown; previousHead: unknown; head: SessionHead; previousIndex: unknown; index: unknown }
 const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
@@ -1326,6 +1326,25 @@ const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
 const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
   const recovery = saveRecoveries.get(id)
   if (recovery === undefined) return
+  const previous = recovery.previous as { v?: unknown; ledger_blob?: { checksum?: unknown; bytes?: unknown } } | undefined
+  if (previous?.v === 2) {
+    const text = recovery.previousBlobText
+    if (text === undefined) throw blobFailure('previous blob text unavailable for recovery')
+    const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
+    if (ref.checksum !== previous.ledger_blob?.checksum || ref.bytes !== previous.ledger_blob?.bytes) {
+      throw blobFailure('previous blob text does not match its pointer')
+    }
+    const config = await configDir($)
+    if (!config?.startsWith('/')) throw blobFailure('blob directory unavailable')
+    const dir = `${config}/state/track/blobs`
+    const fs = blobFs($)
+    if (await fs.read(`${dir}/${ref.checksum}.json`) !== undefined) {
+      if (await readBlob(fs, dir, ref) !== text) throw blobFailure('previous blob changed or invalid; existing file was kept')
+    } else {
+      const publication = await publishLedgerBlob($, text, ref)
+      if (publication !== undefined) throw new Error('unavailable' in publication ? publication.unavailable : publication.rejected)
+    }
+  }
   const failures: string[] = []
   const key = `s:${id}`
   try {
@@ -1673,7 +1692,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       try { await checkCapacity(retentionStore($), replacements, STORE_BUDGET) }
       catch (error) { throw new Error(`blob storage is unavailable: ${fallbackCause}; inline fallback does not fit: ${reason(error)}`, { cause: error }) }
     }
-    saveRecoveries.set(id, { previous, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
+    saveRecoveries.set(id, { previous, previousBlobText, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
     await retentionStore($).set(`s:${id}`, bucket)
     const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
     if (JSON.stringify(verified) !== JSON.stringify(bucket)) throw new Error('save read-back did not match the acknowledged ledger')
