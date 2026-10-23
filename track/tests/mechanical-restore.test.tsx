@@ -47,6 +47,9 @@ test('mechanical restoration creates one visible acknowledged Q/A target and reu
   expect(notices[1].content[0].text).toContain('A saved note')
   expect(noticeIds[0]).toMatch(/^[0-9a-f-]{36}$/)
   expect((l.value as any).questions[0].restoredBy).toBe(noticeIds[0])
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0].restoredBy).toBe(noticeIds[0])
   for (let n = 0; n < 4; n++) {
     const repeated = receipt(await $.tool.call({ tool: 'fixture__restore', from_session: OLD, expected_checkpoint: expected, tool_use_id: `toolu_plugin_repeat_${n}` } as never))

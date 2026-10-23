@@ -45,6 +45,9 @@ test('explicit completed text is durable and uses its call when progress is the 
   expect(q.answerText).toBe(completed)
   expect(q.answerKey).toBe('answer-call')
   expect(q.answerRequestId).toBe('answer-call')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })
 

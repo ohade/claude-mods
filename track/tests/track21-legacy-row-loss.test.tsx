@@ -14,6 +14,9 @@ for (const trigger of ['resume', 'save'] as const) test(`legacy ${trigger} prese
   on('classic.SessionStart', () => ({}))
   logs(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'saved new-code row' } as never)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const logical = await pool.logical(store, `s:${SESSION}`) as any
   const oldHead = structuredClone(store.held.get(`h:${SESSION}`)) as any
   const legacyLedger = { ...logical.ledger, nextQuestionId: 3, questions: [

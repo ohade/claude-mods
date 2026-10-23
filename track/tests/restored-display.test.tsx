@@ -38,6 +38,9 @@ test('mechanical restore appends one acknowledged plugin user note with passive 
   expect(notes[0].origin).toMatchObject({ kind: 'plugin', name: 'track' })
   expect(notes[0].message.content[0].text).toBe(TEXT)
   expect((l.value as any).restores.find((r: any) => r.by === notes[0].uuid)?.display).toBe('user')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.restores.find((r: any) => r.by === notes[0].uuid)?.display).toBe('user')
   for (let n = 0; n < 3; n++) {
     const repeated = receipt(await $.tool.call({ tool: 'fixture__restore', tool_use_id: `toolu_repeat_${n}`, from_session: FROM, expected_checkpoint: expected } as never))

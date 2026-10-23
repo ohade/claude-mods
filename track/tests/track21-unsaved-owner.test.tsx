@@ -29,6 +29,9 @@ for (const kind of ['question', 'step'] as const) test(`TRACK-21 unsaved ${kind}
   await $.classic.SessionStart({ source: 'resume', session_id: OTHER } as never)
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OTHER } as never)).result))
   expect(receipt.ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${OTHER}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${OTHER}`) as any).ledger.questions.map((row: any) => row.head)).toEqual(['other history'])
   expect((await pool.logical(store, `s:${OTHER}`) as any).ledger.steps).toEqual([])
   const archived = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${OTHER}:session-switch-`)).map(([, value]) => value as any)

@@ -28,6 +28,9 @@ test('a later matching response reanchors an explicit answer and is durable befo
   expect(answered.answerText).toBe('תשובה נשמרת 😀')
   expect(answered.answerRequestId).toBe('11111111-2222-4333-8444-555555555555')
   expect(answered.answeredBy).toBe('mark-call')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0].answerText).toBe('תשובה נשמרת 😀')
 })
 

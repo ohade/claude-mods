@@ -23,6 +23,9 @@ test('failed startup and missing body recover once and allow later checkpoints',
     await $.tool.call({ tool: 'mcp__track__track_question', summary: `recovered row ${round}` } as never)
     const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
     expect(receipt.ok).toBe(true)
+    const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+    expect(rawOwnSave?.v).toBe(2)
+    expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
     const saved = store.held.get(`s:${SESSION}`) as any
     const logical = await pool.logical(store, `s:${SESSION}`) as any
     expect(saved.checkpoint.revision).toBe(7 + round)

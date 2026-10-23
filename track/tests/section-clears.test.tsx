@@ -35,6 +35,9 @@ for (const width of [17, 80]) {
       await ui.press({ key })
       expect(l.value.questions).toEqual(QUESTIONS.map(row => ({ ...row, session_id: SESSION })))
       expect(l.value.steps).toEqual(STEPS.map(s => ({ ...(s.status === 'completed' ? { ...s, cleared: true } : s), session_id: SESSION })))
+      const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+      expect(rawOwnSave?.v).toBe(2)
+      expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
       expect((await pool.logical(store, `s:${SESSION}`) as any).ledger).toEqual(l.value)
     })
   }

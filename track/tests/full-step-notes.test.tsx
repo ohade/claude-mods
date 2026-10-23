@@ -31,6 +31,9 @@ test('mark_step keeps a long blocker note in memory, durable storage and the pub
   const saved = await call($, { tool: 'mcp__track__checkpoint', expected_session: SOURCE })
   expect(fixture.ledger.value.steps[0]?.note).toBe(NOTE)
   expect(saved.open_steps).toEqual([{ id: 'plan:1', subject: 'Deferred review', status: 'paused', note: NOTE }])
+  const rawOwnSave = fixture.store.held.get(`s:${SOURCE}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await fixture.pool.logical(fixture.store, `s:${SOURCE}`) as { ledger: Ledger }).ledger.steps[0]?.note).toBe(NOTE)
 })
 

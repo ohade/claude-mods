@@ -20,6 +20,9 @@ test('checkpoint lease and write helpers use the plugin root as their cwd', asyn
   const result = await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)
 
   expect(JSON.parse(String(result.result)).ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as { ledger: unknown }).ledger).toEqual({ ...EMPTY, session_id: SESSION })
   expect(modes).toEqual(['lease', 'write'])
 })

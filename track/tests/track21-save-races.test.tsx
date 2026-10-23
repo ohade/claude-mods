@@ -67,6 +67,9 @@ test('a row added during a reconciled save keeps both peer and local rows on the
   expect(injected).toBe(true)
   expect(memory.value.questions.map(row => row.head).sort()).toEqual(['arrived during save', 'base', 'local row', 'peer row'])
   expect((await checkpoint($)).ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions.map((row: any) => row.head).sort()).toEqual(['arrived during save', 'base', 'local row', 'peer row'])
 })
 

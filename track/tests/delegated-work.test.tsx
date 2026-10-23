@@ -95,6 +95,9 @@ test('mark_step saves delegation and clears it when the main session resumes', a
   on('session.id', () => ({ value: SESSION }))
   await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: true, note: 'Peer work is running' } as never)
   expect(ledger.value.steps[0].delegated).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.steps[0].delegated).toBe(true)
   await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: false } as never)
   expect(ledger.value.steps[0].delegated).not.toBe(true)

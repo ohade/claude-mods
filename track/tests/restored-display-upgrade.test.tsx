@@ -15,7 +15,7 @@ test('repeat restore upgrades an old system target once and keeps local progress
   const durable = atomStore(on, 'durability', { isUnsaved: false, reason: '' } as any)
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null })
   const store = pluginStore(on)
-  blobPool(on)
+  const pool = blobPool(on)
   let session = FROM
   on('session.id', () => ({ value: session }))
   const notes: any[] = []
@@ -25,6 +25,10 @@ test('repeat restore upgrades an old system target once and keeps local progress
   on('ui.panes', () => ({ value: [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   const expected = JSON.parse((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: FROM } as never)).result as string)
+  const rawOwnSave = store.held.get(`s:${FROM}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${FROM}`) as any).ledger).toEqual(l.value)
   session = SESSION
   const locals = source.map(q => ({ ...q, turnId: 'restored', restoredFrom: FROM, restoredBy: LEGACY, sourceId: `${FROM}:Q${q.id}`, ...(q.id === 1 ? { status: 'deferred', note: 'Local progress' } : { cleared: true }) }))
   l.value = { ...EMPTY, nextQuestionId: 3, questions: locals, restores: [{ by: LEGACY, from: FROM, steps: 0, questions: locals }] }

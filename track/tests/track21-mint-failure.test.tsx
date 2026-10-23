@@ -31,6 +31,9 @@ for (const kind of ['question', 'step', 'task', 'todo'] as const) test(`${kind} 
   identityAvailable = true
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OTHER } as never)).result))
   expect(receipt.ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${OTHER}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const destination = await pool.logical(store, `s:${OTHER}`) as any
   expect(destination.ledger.questions).toEqual([])
   expect(destination.ledger.steps).toEqual([])

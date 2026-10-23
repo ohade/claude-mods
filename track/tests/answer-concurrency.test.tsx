@@ -36,5 +36,8 @@ test('an overlapping response keeps its own text and acknowledged message identi
   const q = (l.value as any).questions[0]
   expect(q.answerText).toBe('First actual answer')
   expect(q.answerRequestId).toBe('11111111-2222-4333-8444-555555555555')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })

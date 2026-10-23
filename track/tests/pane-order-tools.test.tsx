@@ -61,6 +61,9 @@ test('TRACK-29 reorder preserves row identity, status, notes and cleared history
   const data = receipt(await invoke($, REORDER, { ids: ['plan:3', 'plan:2'] }))
   expect(data.ok).toBe(true)
   expect(f.ledger.value.steps).toEqual([original[0], original[2], original[1]])
+  const rawOwnSave = f.store.held.get(`s:${OLD}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const saved = await f.pool.logical(f.store, `s:${OLD}`) as { ledger?: Ledger } | undefined
   expect(saved?.ledger?.steps).toEqual(f.ledger.value.steps)
 })

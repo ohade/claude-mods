@@ -13,7 +13,7 @@ test('TRACK-21 a stalled foreign guard does not consume the store lock wait', as
   const foreign = { v: 1, ledger: EMPTY }
   const store = pluginStore(on, { [`s:${FOREIGN}`]: foreign }, undefined, { guardWait,
     beforeLockSpawn: request => { if (request.argv[2] === 'guard') entered() } })
-  blobPool(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   let finished = false
@@ -27,5 +27,9 @@ test('TRACK-21 a stalled foreign guard does not consume the store lock wait', as
   const result = await saving
   expect(finishedBeforeWriterTimeout).toBe(true)
   expect(JSON.parse(String(result.result)).ok).toBe(true)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger).toEqual({ ...EMPTY, session_id: SESSION })
   expect(store.held.get(`s:${FOREIGN}`)).toEqual(foreign)
 })

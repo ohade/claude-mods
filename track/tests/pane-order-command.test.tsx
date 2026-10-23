@@ -44,6 +44,9 @@ test('TRACK-29 /track reorder saves exactly the requested visible permutation', 
   const data = await command($, 'reorder ["plan:3","plan:2"]')
   expect(data.ok).toBe(true)
   expect(f.ledger.value.steps).toEqual([before[0], before[2], before[1]])
+  const rawOwnSave = f.store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps).toEqual(f.ledger.value.steps)
   expect(f.pane.writes).toEqual([])
 })

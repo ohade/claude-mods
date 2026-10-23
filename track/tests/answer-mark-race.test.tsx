@@ -37,5 +37,8 @@ test('a delayed answer mark cannot replace a concurrently acknowledged answer', 
   expect(JSON.stringify(held.value.questions[0])).toBe(acknowledged)
   expect(held.value.questions[0].answerText).toBe('Acknowledged answer')
   expect(held.value.questions[0].answeredBy).toBe('accepted-call')
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(held.value.questions[0])
 })

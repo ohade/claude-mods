@@ -13,11 +13,11 @@ test('TRACK-21 repeated conflict resumes without growing recovery copies', async
   const durableLedger = ledgerOf('c')
   const cp2 = await describeCheckpoint(durableLedger, SESSION, cp1)
   const body = { v: 1, session_id: SESSION, generation: GEN, savedAt: 1, ledger: durableLedger, checkpoint: cp2 }
-  atomStore(on, 'ledger', ledgerOf('b'))
+  const memory = atomStore(on, 'ledger', ledgerOf('b'))
   atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION, baseline: { session_id: SESSION, ledger: base, checkpoint: cp1, generation: GEN } })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on, { [`s:${SESSION}`]: body, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation: GEN, checkpoint: cp2 } })
-  blobPool(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   const counts: number[] = []
@@ -32,6 +32,10 @@ test('TRACK-21 repeated conflict resumes without growing recovery copies', async
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
   expect(receipt.ok).toBe(true)
   expect((store.held.get(`s:${SESSION}`) as any).checkpoint.revision).toBeGreaterThan(2)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger).toEqual(memory.value)
 })
 
 test('TRACK-21 an unverified rewind can resume and acknowledge a later save', async ($, on) => {

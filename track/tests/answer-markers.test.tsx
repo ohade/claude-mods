@@ -36,6 +36,9 @@ test('one marked formatted response closes the question without answer_text or a
   expect(q.answerRequestId).toBe(UUID)
   expect(q.answerKey).toBe(`${ROW}:A1`)
   expect(q.answeredBy).toBeUndefined()
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })
 

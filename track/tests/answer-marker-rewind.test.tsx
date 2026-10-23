@@ -32,6 +32,9 @@ test('a marker answer survives a normal prompt when its full block remains', asy
   transcript.rows.push({ role: 'assistant', text: marked(), toolUses: [] })
   await $.prompt.submit({ text: 'Continue.', origin: { kind: 'composer' } } as never)
   expect((ledger.value as any).questions[0]).toEqual(answered)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(answered)
 })
 

@@ -39,6 +39,9 @@ test('an interrupted main turn pauses its own marked work and durably keeps ever
   expect(ledger.value.steps[0]?.activeTurnId).toBeUndefined()
   expect(ledger.value.steps.slice(1)).toEqual(others.map(row => ({ ...row, session_id: SESSION })))
   expect(activity.value.isWorking).toBe(false)
+  const rawOwnSave = store.held.get(`s:${SESSION}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   const saved = await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger } | undefined
   expect(saved?.ledger.steps).toEqual(ledger.value.steps)
 })

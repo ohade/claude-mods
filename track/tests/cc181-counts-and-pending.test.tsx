@@ -37,6 +37,9 @@ test('75 retained rows count as 25 current steps in both reminder and public che
   expect(saved).toMatchObject({ checksum: expected.checksum, counts: { steps: 25 } })
   expect(saved.open_steps).toEqual([{ id: 'plan:75', status: 'paused', subject: 'Work 75' }])
   expect(fixture.ledger.value.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
+  const rawOwnSave = fixture.store.held.get(`s:${OLD}`) as { v?: number } | undefined
+  expect(rawOwnSave?.v).toBe(2)
+  expect(Object.hasOwn(rawOwnSave!, 'ledger')).toBe(false)
   expect((await fixture.pool.logical(fixture.store, `s:${OLD}`) as { ledger: Ledger }).ledger.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
 })
 
