@@ -1299,6 +1299,19 @@ const logicalBody = async ($: EngineInterface, raw: unknown, onBlobText?: (text:
     key === 'v' ? [key, 1] : key === 'ledger_blob' ? ['ledger', ledger] : [key, value]))
 }
 
+const readBodySnapshot = async ($: EngineInterface, key: string, initialRaw: unknown): Promise<unknown> => {
+  let raw = initialRaw
+  for (let attempt = 0; ; attempt++) {
+    try { return await logicalBody($, raw) }
+    catch (error) {
+      if (attempt === 2) throw error
+      const nextRaw = await $.store.get(key)
+      if (sameValue(nextRaw, raw)) throw error
+      raw = nextRaw
+    }
+  }
+}
+
 // Existing entries are verified save metadata. Read only newly discovered
 // bodies; capacity uses the separate byte-size index for all stored keys.
 // A v:2 body is metadata here: its blob is not read, it counts as unfinished,
@@ -2583,7 +2596,7 @@ export const register: Register = on => {
     if (!(await saveLedger($))) return failure(persistence.failure)
     const stored = await $.store.get(`s:${session}`)
     let bucket: { checkpoint?: Checkpoint; ledger?: Ledger } | undefined
-    try { bucket = await logicalBody($, stored) as typeof bucket }
+    try { bucket = await readBodySnapshot($, `s:${session}`, stored) as typeof bucket }
     catch (error) { return failure(reason(error)) }
     if (bucket?.checkpoint === undefined || bucket.ledger === undefined) return failure('saved checkpoint is missing')
     // Inventory and checksum come from the same acknowledged saved snapshot,
@@ -3389,7 +3402,7 @@ export const register: Register = on => {
     if (!SESSION_ID.test(from)) {
       return failed(`track: "${truncate(from, 60)}" is not a session id; nothing changed.`)
     }
-    const saved = (await logicalBody($, await $.store.get(`s:${from}`))) as { checkpoint?: Checkpoint; ledger?: { steps?: unknown; questions?: unknown } } | undefined
+    const saved = (await readBodySnapshot($, `s:${from}`, await $.store.get(`s:${from}`))) as { checkpoint?: Checkpoint; ledger?: { steps?: unknown; questions?: unknown } } | undefined
     const source = savedLedger(saved, from)
     let checkpoint: Checkpoint | undefined
     if (expected !== undefined) {
