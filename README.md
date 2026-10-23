@@ -300,8 +300,13 @@ settings. The sandbox uses the API types that loading writes into
 types. The development packages are not loaded by the plugin.
 
 What it saves: acknowledged tracking mutations, captured answers, explicit UI actions, completed
-turns, and session end write through the existing `$.store` API and verify the result. Save failures
-remain visibly **Unsaved**. Rendering performs no persistence. For each session the store holds:
+turns, and session end save the current ledger. Normal saves publish its exact JSON text in a
+write-once file named by its SHA-256 checksum under `<config>/state/track/blobs/`, where `<config>`
+is `CLAUDE_CONFIG_DIR` or the normal Claude config directory. Track verifies the file's checksum,
+UTF-8 byte count and read-back before storing a v2 pointer through `$.store` under its existing
+writer lock. Even an empty or small ledger uses a pointer when publication succeeds. The public
+checkpoint and restored ledger remain v1. Existing inline bodies remain readable. Save failures
+remain visibly **Unsaved**. Rendering performs no persistence. For each session the ledger keeps:
 
 - the first line of each prompt you type, without image tags, cut to 200 characters, with its
   time; prompts that start with `/` are left out; the last 200 prompts;
@@ -310,11 +315,30 @@ remain visibly **Unsaved**. Rendering performs no persistence. For each session 
 - each step's title (up to 200 characters), status and complete optional note; up to 300 steps.
 
 The store budgets serialized UTF-8 conservatively below its 4 MiB limit. Ordinary saves and
-imports must fit below 3 MiB, including bodies, heads, indexes and recovery records. If a write
-would reach that budget, Track evicts eligible CLOSED sessions until the write fits. It selects
+imports must fit below 3 MiB, including session bodies, heads, indexes and recovery records.
+Before capacity eviction, Track can move an eligible CLOSED session's inline ledger into a
+verified blob, but only when the complete stored pointer entry is smaller. Equal or larger
+entries stay inline without publishing a blob. If the write still cannot fit, Track evicts
+eligible CLOSED sessions until it fits. It selects
 the oldest by the later valid save or closing time; sessions without a usable clock sort last.
 Imported history without a valid closing time also sorts last. Capacity eviction can remove
 history before its seven-day expiry, including previously imported history.
+
+If the blob helper or its directory is unavailable, an own-session save may fall back to an
+inline v1 body only when the complete replacement fits the same 3 MiB budget. After a successful
+save, a toast says `saved inline because blob storage is unavailable` and gives the cause. This
+fallback skips foreign expiry cleanup, compaction and eviction. It can therefore refuse a save
+that normal verified publication could complete by maintaining CLOSED history. A non-fitting
+fallback stays **Unsaved** and reports both the unavailable cause and capacity failure; it does
+not prune history to hide the failed helper. A rejected publication, invalid receipt, damaged
+blob or failed read-back refuses the save even if an inline body would fit. When publication
+works again, the next normal save writes a v2 pointer and resumes the existing maintenance policy.
+
+One-time migration of every old body, a disk retention policy and an orphan sweep remain
+pending. Blob files are retained, including candidates left after a later store
+write fails. Backups need both the plugin store and the blob directory; a pointer alone does
+not contain the saved ledger. Normal verified publication and direct retention keep the rules
+below; the unavailable own-save fallback skips foreign maintenance.
 
 Track keeps the caller, sessions being written or imported, explicitly protected sessions,
 pending cleanup and conflict records. It also keeps LIVE or unknown owners and ambiguous
