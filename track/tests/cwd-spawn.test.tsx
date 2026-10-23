@@ -1,7 +1,7 @@
 // FIXTURE contract pin only: the native kit cannot delete cwd or run a child.
 // helpers/check_cwd_spawn.ts separately exercises actual OS child processes.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 test('checkpoint lease and write helpers use the plugin root as their cwd', async ($, on) => {
   mock.clock(on)
@@ -14,11 +14,12 @@ test('checkpoint lease and write helpers use the plugin root as their cwd', asyn
     expect(request.cwd).toBe(root)
     modes.push(request.argv[2]!)
   } })
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
 
   const result = await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)
 
   expect(JSON.parse(String(result.result)).ok).toBe(true)
-  expect((store.held.get(`s:${SESSION}`) as { ledger: unknown }).ledger).toEqual({ ...EMPTY, session_id: SESSION })
+  expect((await pool.logical(store, `s:${SESSION}`) as { ledger: unknown }).ledger).toEqual({ ...EMPTY, session_id: SESSION })
   expect(modes).toEqual(['lease', 'write'])
 })

@@ -1,7 +1,7 @@
 // FIXTURE, TRACK-21 (2026-10-11): failed saves must not erase memory ownership.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 const OTHER = '11111111-2222-4333-8444-555555555555'
 for (const kind of ['question', 'step'] as const) test(`TRACK-21 unsaved ${kind} stays with its original session after a switch`, async ($, on) => {
@@ -13,6 +13,7 @@ for (const kind of ['question', 'step'] as const) test(`TRACK-21 unsaved ${kind}
   const checkpoint = await describeCheckpoint(destination, OTHER)
   const body = { v: 1, session_id: OTHER, generation, savedAt: 1, ledger: destination, checkpoint }
   const store = pluginStore(on, { [`s:${OTHER}`]: body, [`h:${OTHER}`]: { v: 1, session_id: OTHER, generation, checkpoint } }, undefined, options)
+  const pool = blobPool(on)
   let session: string = SESSION
   on('session.id', () => ({ value: session }))
   on('session.end', () => ({ sessionId: session }))
@@ -28,8 +29,8 @@ for (const kind of ['question', 'step'] as const) test(`TRACK-21 unsaved ${kind}
   await $.classic.SessionStart({ source: 'resume', session_id: OTHER } as never)
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OTHER } as never)).result))
   expect(receipt.ok).toBe(true)
-  expect((store.held.get(`s:${OTHER}`) as any).ledger.questions.map((row: any) => row.head)).toEqual(['other history'])
-  expect((store.held.get(`s:${OTHER}`) as any).ledger.steps).toEqual([])
+  expect((await pool.logical(store, `s:${OTHER}`) as any).ledger.questions.map((row: any) => row.head)).toEqual(['other history'])
+  expect((await pool.logical(store, `s:${OTHER}`) as any).ledger.steps).toEqual([])
   const archived = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${OTHER}:session-switch-`)).map(([, value]) => value as any)
   expect(archived).toHaveLength(1)
   expect(archived[0].value.source_session).toBe(SESSION)

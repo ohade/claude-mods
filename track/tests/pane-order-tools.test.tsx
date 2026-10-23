@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-29 (2026-10-19). Stored row identities and values must survive
 // reordering, reload and handoff; a display label alone cannot identify a row.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger } from '../types'
 
@@ -22,12 +22,13 @@ const prepare = (on: On) => {
   atomStore(on, 'pending', { inputs: [], nextId: 1 })
   atomStore(on, 'scroll', { questions: null, steps: null })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   logs(on)
   let session = OLD
   on('session.id', () => ({ value: session }))
   on('tool.call', { tool: /mcp__track__(lookup_rows|reorder_steps)$/ }, () => ({ result: '{}' }))
   on('classic.SessionStart', () => ({}))
-  return { ledger, store, setSession: (id: string) => { session = id } }
+  return { ledger, store, pool, setSession: (id: string) => { session = id } }
 }
 const invoke = ($: Engine, tool: string, input: object = {}) => $.tool.call({ tool, tool_use_id: `${tool}-call`, ...input } as never)
 const receipt = (result: { result?: unknown }) => JSON.parse(typeof result.result === 'string' ? result.result : '{}')
@@ -60,7 +61,7 @@ test('TRACK-29 reorder preserves row identity, status, notes and cleared history
   const data = receipt(await invoke($, REORDER, { ids: ['plan:3', 'plan:2'] }))
   expect(data.ok).toBe(true)
   expect(f.ledger.value.steps).toEqual([original[0], original[2], original[1]])
-  const saved = f.store.held.get(`s:${OLD}`) as { ledger?: Ledger } | undefined
+  const saved = await f.pool.logical(f.store, `s:${OLD}`) as { ledger?: Ledger } | undefined
   expect(saved?.ledger?.steps).toEqual(f.ledger.value.steps)
 })
 

@@ -1,23 +1,24 @@
 // FIXTURE: explicit completed text can precede its matching native response.
 // Unidentified thinking/narration cannot supply unknown answer words.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { On } from './kit'
 
 const prepare = (on: On) => {
   const l = atomStore(on, 'ledger', EMPTY)
   const t = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))
-  return { l, t, store }
+  return { l, t, store, pool }
 }
 const response = ($: any, text: string, uuid = '11111111-2222-4333-8444-555555555555') => $.session.append({ door: 'response', uuid, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, origin: { kind: 'model', model: 'fixture' } })
 const ask = ($: any) => $.tool.call({ tool: 'mcp__track__track_question', summary: 'What is saved?', tool_use_id: 'question-call' })
 const mark = ($: any, input: object = {}) => $.tool.call({ tool: 'mcp__track__mark_answered', id: 1, status: 'answered', tool_use_id: 'mark-call', ...input })
 
 test('a later matching response reanchors an explicit answer and is durable before turn end', async ($, on) => {
-  const { l, store } = prepare(on)
+  const { l, store, pool } = prepare(on)
   await ask($)
   await mark($, { answer_text: 'תשובה נשמרת 😀' })
   expect((l.value as any).questions[0].answerText).toBe('תשובה נשמרת 😀')
@@ -27,7 +28,7 @@ test('a later matching response reanchors an explicit answer and is durable befo
   expect(answered.answerText).toBe('תשובה נשמרת 😀')
   expect(answered.answerRequestId).toBe('11111111-2222-4333-8444-555555555555')
   expect(answered.answeredBy).toBe('mark-call')
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0].answerText).toBe('תשובה נשמרת 😀')
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0].answerText).toBe('תשובה נשמרת 😀')
 })
 
 test('pre-question text remains ineligible when the answer is marked before later text', async ($, on) => {

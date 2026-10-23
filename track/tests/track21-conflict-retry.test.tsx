@@ -1,7 +1,7 @@
 // FIXTURE, TRACK-21 refuter 4 (2026-10-11): owner refusals must not be permanent.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 const GEN = '22222222-3333-4444-8555-666666666666'
 const q = (head: string) => ({ id: 1, head, at: 1, turnId: null, status: 'open' as const, session_id: SESSION })
@@ -17,6 +17,7 @@ test('TRACK-21 repeated conflict resumes without growing recovery copies', async
   atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION, baseline: { session_id: SESSION, ledger: base, checkpoint: cp1, generation: GEN } })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on, { [`s:${SESSION}`]: body, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation: GEN, checkpoint: cp2 } })
+  blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   const counts: number[] = []
@@ -42,6 +43,7 @@ test('TRACK-21 an unverified rewind can resume and acknowledge a later save', as
   atomStore(on, 'durability', { isUnsaved: true, reason: 'resume: x', memorySession: SESSION, rewindBaseline: { session_id: SESSION, ledger: memory } })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on, { [`s:${SESSION}`]: body, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation: GEN, checkpoint: cp } })
+  blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   const debug = logs(on)
   const receipts: unknown[] = []

@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-08 Q4/Q6/Q7 saved visible progress as their answer.
 // The model must identify completed answer content; event order cannot identify its meaning.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pane, pluginStore } from './kit'
 import type { On } from './kit'
 
 const UUID = '11111111-2222-4333-8444-555555555555'
@@ -12,9 +12,10 @@ const prepare = (on: On) => {
   const l = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))
-  return { l, store, clock, lines }
+  return { l, store, pool, clock, lines }
 }
 const response = ($: any, text: string) => $.session.append({ door: 'response', uuid: UUID, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, origin: { kind: 'model', model: 'fixture' } })
 const ask = ($: any, summary = 'How does this work?') => $.tool.call({ tool: 'mcp__track__track_question', summary, tool_use_id: `question-${summary}` })
@@ -33,7 +34,7 @@ test('unidentified progress cannot close a question or become its saved answer',
 })
 
 test('explicit completed text is durable and uses its call when progress is the latest response', async ($, on) => {
-  const { l, store } = prepare(on)
+  const { l, store, pool } = prepare(on)
   await ask($)
   await response($, 'I am preparing the answer.')
   const completed = 'The writer lease excludes another live instance. תשובה 😀'
@@ -44,7 +45,7 @@ test('explicit completed text is durable and uses its call when progress is the 
   expect(q.answerText).toBe(completed)
   expect(q.answerKey).toBe('answer-call')
   expect(q.answerRequestId).toBe('answer-call')
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })
 
 test('an exact completed text match keeps the verified native answer target', async ($, on) => {
@@ -86,7 +87,7 @@ test('blank explicit text cannot fall back to progress', async ($, on) => {
 })
 
 test('two questions retain separate completed answers despite the same latest progress', async ($, on) => {
-  const { l, store } = prepare(on)
+  const { l, store, pool } = prepare(on)
   await ask($, 'Who owns the writer?')
   await ask($, 'Which rows are pruned?')
   await response($, 'I am sending two separate answers.')
@@ -96,7 +97,7 @@ test('two questions retain separate completed answers despite the same latest pr
   const q = (l.value as any).questions
   expect(q.map((one: any) => one.answerText)).toEqual(['A live lease owns the writer.', 'Cleared and completed rows are pruned first.'])
   expect(q.map((one: any) => one.answerKey)).toEqual(['answer-call', 'second-answer'])
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions).toEqual(q)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions).toEqual(q)
 })
 
 test('a call-sourced A jump highlights its completed answer separately from the acknowledgement', async ($, on) => {

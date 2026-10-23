@@ -2,7 +2,7 @@
 // recover a missing body from its retained head without a prior baseline.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 test('failed startup and missing body recover once and allow later checkpoints', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
@@ -12,6 +12,7 @@ test('failed startup and missing body recover once and allow later checkpoints',
   const body = { ...head, savedAt: 1, ledger: { ...EMPTY, session_id: SESSION } }
   const options: { leaseFailure?: string } = { leaseFailure: 'startup lease temporarily unavailable' }
   const store = pluginStore(on, { [`s:${SESSION}`]: body, [`h:${SESSION}`]: head }, undefined, options)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('classic.SessionStart', () => ({}))
   logs(on)
@@ -23,8 +24,9 @@ test('failed startup and missing body recover once and allow later checkpoints',
     const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))
     expect(receipt.ok).toBe(true)
     const saved = store.held.get(`s:${SESSION}`) as any
+    const logical = await pool.logical(store, `s:${SESSION}`) as any
     expect(saved.checkpoint.revision).toBe(7 + round)
-    expect(saved.ledger.questions.map((row: any) => row.head)).toEqual(Array.from({ length: round }, (_, index) => `recovered row ${index + 1}`))
+    expect(logical.ledger.questions.map((row: any) => row.head)).toEqual(Array.from({ length: round }, (_, index) => `recovered row ${index + 1}`))
     expect((store.held.get(`h:${SESSION}`) as any).checkpoint).toEqual(saved.checkpoint)
     expect([...store.held.keys()].filter(key => key.startsWith(`r:${SESSION}:conflict-`))).toEqual([])
   }

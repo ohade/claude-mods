@@ -1,7 +1,7 @@
 // FIXTURE: CC-181, 2026-10-10. Cleared history counted as current work, and
 // the public checkpoint lacked the inventory needed to check declared pending items.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Step } from '../types'
 import { describeCheckpoint } from '../hooks/checkpoint'
@@ -17,11 +17,12 @@ const prepare = (on: On, steps: Step[]) => {
   atomStore(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, eventOrder: 0 })
   atomStore(on, 'scroll', { questions: null, steps: null })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   let session = OLD
   on('session.id', () => ({ value: session }))
   let context = ''
   on('prompt.submit', (_, e) => { context = (e.context ?? []).join('\n'); return { text: e.text } })
-  return { ledger, store, context: () => context, destination: () => { session = SESSION; ledger.value = { ...EMPTY, v: 1 } } }
+  return { ledger, store, pool, context: () => context, destination: () => { session = SESSION; ledger.value = { ...EMPTY, v: 1 } } }
 }
 const call = async ($: Engine, input: Record<string, unknown>) => JSON.parse(String((await $.tool.call(input as never) as { result: unknown }).result))
 
@@ -36,7 +37,7 @@ test('75 retained rows count as 25 current steps in both reminder and public che
   expect(saved).toMatchObject({ checksum: expected.checksum, counts: { steps: 25 } })
   expect(saved.open_steps).toEqual([{ id: 'plan:75', status: 'paused', subject: 'Work 75' }])
   expect(fixture.ledger.value.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
-  expect((fixture.store.held.get(`s:${OLD}`) as { ledger: Ledger }).ledger.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
+  expect((await fixture.pool.logical(fixture.store, `s:${OLD}`) as { ledger: Ledger }).ledger.steps).toEqual(steps.map(row => ({ ...row, session_id: OLD })))
 })
 
 const mechanicalCaller = { plugins: [{ name: 'fixture-caller', register(on: On) {

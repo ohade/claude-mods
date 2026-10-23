@@ -1,7 +1,7 @@
 // FIXTURE, TRACK-21 (2026-10-11): unavailable session identity must not stop
 // tracking or let unidentified rows enter a later session's durable ledger.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 const OTHER = '11111111-2222-4333-8444-555555555555'
 
@@ -10,6 +10,7 @@ for (const kind of ['question', 'step', 'task', 'todo'] as const) test(`${kind} 
   const memory = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   logs(on)
   let identityAvailable = false
   on('session.id', () => {
@@ -30,7 +31,7 @@ for (const kind of ['question', 'step', 'task', 'todo'] as const) test(`${kind} 
   identityAvailable = true
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OTHER } as never)).result))
   expect(receipt.ok).toBe(true)
-  const destination = store.held.get(`s:${OTHER}`) as any
+  const destination = await pool.logical(store, `s:${OTHER}`) as any
   expect(destination.ledger.questions).toEqual([])
   expect(destination.ledger.steps).toEqual([])
   const archives = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${OTHER}:session-switch-`)).map(([, value]) => value as any)
@@ -43,6 +44,7 @@ for (const kind of ['question', 'step', 'task', 'todo'] as const) test(`${kind} 
 test('a known ledger owner survives an identity outage before the next save', async ($, on) => {
   const memory = atomStore(on, 'ledger', { ...EMPTY, session_id: SESSION })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   logs(on)
   let identityAvailable = false
   on('session.id', () => {
@@ -54,7 +56,7 @@ test('a known ledger owner survives an identity outage before the next save', as
   identityAvailable = true
   const receipt = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: OTHER } as never)).result))
   expect(receipt.ok).toBe(true)
-  expect((store.held.get(`s:${OTHER}`) as any).ledger.steps).toEqual([])
+  expect((await pool.logical(store, `s:${OTHER}`) as any).ledger.steps).toEqual([])
   const archive = [...store.held.entries()].find(([key]) => key.startsWith(`r:${OTHER}:session-switch-`))?.[1] as any
   expect(archive.value.source_session).toBe(SESSION)
   expect(archive.value.ledger.steps[0].subject).toBe('belongs to A')

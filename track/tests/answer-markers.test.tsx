@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-12 Q15 displayed answer_text as a paragraph and then the
 // formatted response again. A completed A block must be the only answer source.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pane, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 
 const UUID = '15151515-2222-4333-8444-555555555555'
@@ -15,18 +15,19 @@ const prepare = (on: On) => {
   const ledger = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   const lines = logs(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))
   on('ui.render', { component: 'AssistantMessage' }, (_, e) => ({ type: 'Text', props: {}, children: [e.props.text] }))
-  return { clock, ledger, store, lines }
+  return { clock, ledger, store, pool, lines }
 }
 const ask = ($: any, head: string) => $.tool.call({ tool: 'mcp__track__track_question', summary: head, tool_use_id: `ask-${head}` })
 const response = ($: any, text: string, extra: object = {}) => $.session.append({ door: 'response', uuid: UUID, message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, origin: { kind: 'model', model: 'fixture' }, ...extra })
 const mountAnswer = ($: Engine, text: string) => $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'AssistantMessage', requestId: DRAWN, props: { text, isFirstOfReply: true } })
 
 test('one marked formatted response closes the question without answer_text or another answer', async ($, on) => {
-  const { ledger, store } = prepare(on)
+  const { ledger, store, pool } = prepare(on)
   await ask($, 'Who sees these deals?')
   await response($, `Introduction.\n\n${marked(1, FIRST)}\n\nLeft: review.`)
   const q = (ledger.value as any).questions[0]
@@ -35,7 +36,7 @@ test('one marked formatted response closes the question without answer_text or a
   expect(q.answerRequestId).toBe(UUID)
   expect(q.answerKey).toBe(`${ROW}:A1`)
   expect(q.answeredBy).toBeUndefined()
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })
 
 test('A jumps to the native message and fades only its chosen Markdown block', async ($, on) => {

@@ -1,7 +1,7 @@
 // FIXTURE: the supported aborted-turn event parks only work owned by that main turn.
 import { expect, mock, test } from 'claude-code/testing'
 import type { Ledger, Step } from '../types'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 
 type OwnedStep = Step & { activeTurnId?: string }
@@ -13,9 +13,10 @@ const setup = (on: On, steps: OwnedStep[], currentId = 't1') => {
   const turn = atomStore(on, 'turn', { currentId, gatedTurnId: null })
   const activity = atomStore(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [] })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
-  return { ledger, turn, activity, store }
+  return { ledger, turn, activity, store, pool }
 }
 const call = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never)
 const finish = ($: Engine, turnId = 't1', isAborted = true, agentId?: string) => $.turn.complete({
@@ -30,7 +31,7 @@ test('an interrupted main turn pauses its own marked work and durably keeps ever
     step('done', { status: 'completed' }), step('later'), step('needs-you', { status: 'waiting' }),
     step('cleared', { status: 'in_progress', activeTurnId: 't1', cleared: true }),
   ]
-  const { ledger, store, activity } = setup(on, [step('plan:1'), ...others])
+  const { ledger, store, pool, activity } = setup(on, [step('plan:1'), ...others])
   await call($, { tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress' })
   await finish($)
   expect(ledger.value.steps[0]?.status).toBe('paused')
@@ -38,7 +39,7 @@ test('an interrupted main turn pauses its own marked work and durably keeps ever
   expect(ledger.value.steps[0]?.activeTurnId).toBeUndefined()
   expect(ledger.value.steps.slice(1)).toEqual(others.map(row => ({ ...row, session_id: SESSION })))
   expect(activity.value.isWorking).toBe(false)
-  const saved = store.held.get(`s:${SESSION}`) as { ledger: Ledger } | undefined
+  const saved = await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger } | undefined
   expect(saved?.ledger.steps).toEqual(ledger.value.steps)
 })
 

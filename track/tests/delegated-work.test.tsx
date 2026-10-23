@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-08 two external-agent shell launches showed Working and
 // a grey spinner. Explicit delegated work must be brown without an AMQ parser.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pane, pluginStore } from './kit'
 
 const MAIN = { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: ['external-1', 'external-2'] }
 const STEP = { id: 'plan:1', source: 'plan', subject: 'Consult peers', status: 'in_progress' }
@@ -26,6 +26,7 @@ test('an explicitly delegated step is brown with an hourglass and an agents bann
 test('delegated state participates in checkpoint validation and survives restoration', async ($, on) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [{ ...STEP, delegated: true }] } as any)
   pluginStore(on)
+  blobPool(on)
   let session = SESSION
   on('session.id', () => ({ value: session }))
   const checkpoint = async () => JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: session } as never)).result))
@@ -90,11 +91,12 @@ test('mark_step saves delegation and clears it when the main session resumes', a
   mock.clock(on)
   const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: [STEP] } as any)
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: true, note: 'Peer work is running' } as never)
   expect(ledger.value.steps[0].delegated).toBe(true)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.steps[0].delegated).toBe(true)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.steps[0].delegated).toBe(true)
   await $.tool.call({ tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress', delegated: false } as never)
   expect(ledger.value.steps[0].delegated).not.toBe(true)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.steps[0].delegated).not.toBe(true)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.steps[0].delegated).not.toBe(true)
 })

@@ -2,7 +2,7 @@
 // store I/O must survive conflict adoption, reconciliation and session changes.
 import { expect, test } from 'claude-code/testing'
 import { describeCheckpoint } from '../hooks/checkpoint'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 
 const GEN = '22222222-3333-4444-8555-666666666666'
 const OTHER = '11111111-2222-4333-8444-555555555555'
@@ -28,6 +28,7 @@ test('conflict archives preserve a row added during the first archive write and 
       }
     },
   })
+  blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   expect((await checkpoint($)).reason).toContain('ledger changed during conflict recovery')
@@ -59,19 +60,21 @@ test('a row added during a reconciled save keeps both peer and local rows on the
       }
     },
   })
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   expect((await checkpoint($)).ok).toBe(true)
   expect(injected).toBe(true)
   expect(memory.value.questions.map(row => row.head).sort()).toEqual(['arrived during save', 'base', 'local row', 'peer row'])
   expect((await checkpoint($)).ok).toBe(true)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions.map((row: any) => row.head).sort()).toEqual(['arrived during save', 'base', 'local row', 'peer row'])
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions.map((row: any) => row.head).sort()).toEqual(['arrived during save', 'base', 'local row', 'peer row'])
 })
 
 for (const kind of ['question', 'step'] as const) test(`a ${kind} minted before a delayed save keeps its source session`, async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   let session: string = SESSION
   on('session.id', () => ({ value: session }))
   // publishGate yields after the row was minted and before its queued save.
@@ -84,7 +87,7 @@ for (const kind of ['question', 'step'] as const) test(`a ${kind} minted before 
     ? { tool: 'mcp__track__track_question', summary: 'minted in A' } as never
     : { tool: 'mcp__track__track_steps', steps: ['minted in A'] } as never)
   expect((await checkpoint($, OTHER)).ok).toBe(true)
-  const destination = store.held.get(`s:${OTHER}`) as any
+  const destination = await pool.logical(store, `s:${OTHER}`) as any
   expect(destination.ledger.questions).toEqual([])
   expect(destination.ledger.steps).toEqual([])
   const archives = [...store.held.entries()].filter(([key]) => key.startsWith(`r:${OTHER}:session-switch-`)).map(([, value]) => value as any)

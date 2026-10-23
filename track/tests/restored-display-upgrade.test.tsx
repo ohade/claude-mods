@@ -1,7 +1,7 @@
 // FIXTURE: replacing the notice route must also repair older persisted system
 // targets once, without reviving user-cleared rows or overwriting local progress.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 const FROM = '11111111-2222-4333-8444-555555555555'
 const LEGACY = '66666666-7777-4888-8999-aaaaaaaaaaaa'
@@ -15,6 +15,7 @@ test('repeat restore upgrades an old system target once and keeps local progress
   const durable = atomStore(on, 'durability', { isUnsaved: false, reason: '' } as any)
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null })
   const store = pluginStore(on)
+  blobPool(on)
   let session = FROM
   on('session.id', () => ({ value: session }))
   const notes: any[] = []

@@ -1,13 +1,14 @@
 // FIXTURE: a delayed mark's compare-and-set retry must keep an answer
 // acknowledged by another call while that mark was in flight.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 test('a delayed answer mark cannot replace a concurrently acknowledged answer', async ($, on) => {
   const initial = { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'Who owns the writer?', at: 1, turnId: 't1', trackedOrder: 1, status: 'open' }] }
   const held = { value: initial as any, version: 1 }
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 1 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   let enter!: () => void
   let release!: () => void
@@ -36,5 +37,5 @@ test('a delayed answer mark cannot replace a concurrently acknowledged answer', 
   expect(JSON.stringify(held.value.questions[0])).toBe(acknowledged)
   expect(held.value.questions[0].answerText).toBe('Acknowledged answer')
   expect(held.value.questions[0].answeredBy).toBe('accepted-call')
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0]).toEqual(held.value.questions[0])
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(held.value.questions[0])
 })

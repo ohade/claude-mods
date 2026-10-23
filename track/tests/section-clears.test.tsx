@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-08, Steps' clear-completed action also cleared answered
 // questions, while Questions had no separate completed-clear control.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pane, pluginStore } from './kit'
 import type { On } from './kit'
 
 const QUESTIONS = [
@@ -20,26 +20,27 @@ const setup = (on: On) => {
   const l = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 5, questions: QUESTIONS, steps: STEPS })
   atomStore(on, 'turn', { currentId: 't', gatedTurnId: null })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('env.set', () => ({ value: {} }))
-  return { l, store }
+  return { l, store, pool }
 }
 
 for (const width of [17, 80]) {
   for (const key of ['clear-completed', 'clear-completed-bottom']) {
     test(`Steps ${key} at ${width} columns saves only completed-step clears`, async ($, on) => {
-      const { l, store } = setup(on)
+      const { l, store, pool } = setup(on)
       const ui = await $.ui.mount(pane('dock', width, 30))
       expect(store.held.size).toBe(0)
       await ui.press({ key })
       expect(l.value.questions).toEqual(QUESTIONS.map(row => ({ ...row, session_id: SESSION })))
       expect(l.value.steps).toEqual(STEPS.map(s => ({ ...(s.status === 'completed' ? { ...s, cleared: true } : s), session_id: SESSION })))
-      expect((store.held.get(`s:${SESSION}`) as any).ledger).toEqual(l.value)
+      expect((await pool.logical(store, `s:${SESSION}`) as any).ledger).toEqual(l.value)
     })
   }
 
   test(`Questions has its own completed-clear control at ${width} columns and preserves every step`, async ($, on) => {
-    const { l, store } = setup(on)
+    const { l, store, pool } = setup(on)
     const ui = await $.ui.mount(pane('dock', width, 30))
     const button = await ui.find({ key: 'clear-answered' })
     expect(button).toBeDefined()
@@ -50,7 +51,7 @@ for (const width of [17, 80]) {
     await ui.press({ key: 'clear-answered' })
     expect(l.value.steps).toEqual(STEPS.map(row => ({ ...row, session_id: SESSION })))
     expect(l.value.questions).toEqual(QUESTIONS.map(q => ({ ...(q.status === 'answered' ? { ...q, cleared: true } : q), session_id: SESSION })))
-    expect((store.held.get(`s:${SESSION}`) as any).ledger).toEqual(l.value)
+    expect((await pool.logical(store, `s:${SESSION}`) as any).ledger).toEqual(l.value)
     const writes = l.writes.length
     await ui.redraw()
     expect(l.writes.length).toBe(writes)

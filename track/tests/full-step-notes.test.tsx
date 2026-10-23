@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-23, 2026-10-14. A saved blocker note was shortened before
 // handoff compared it with the original, so otherwise valid deferred work failed.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Step } from '../types'
 
@@ -15,10 +15,11 @@ function prepare(on: On, steps = [row()]) {
   atomStore(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, eventOrder: 0 })
   atomStore(on, 'scroll', { questions: null, steps: null })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   let session = SOURCE
   on('session.id', () => ({ value: session }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
-  return { ledger, store, destination() { session = SESSION; ledger.value = { ...EMPTY, v: 1 } } }
+  return { ledger, store, pool, destination() { session = SESSION; ledger.value = { ...EMPTY, v: 1 } } }
 }
 
 const call = async ($: Engine, input: Record<string, unknown>) =>
@@ -30,7 +31,7 @@ test('mark_step keeps a long blocker note in memory, durable storage and the pub
   const saved = await call($, { tool: 'mcp__track__checkpoint', expected_session: SOURCE })
   expect(fixture.ledger.value.steps[0]?.note).toBe(NOTE)
   expect(saved.open_steps).toEqual([{ id: 'plan:1', subject: 'Deferred review', status: 'paused', note: NOTE }])
-  expect((fixture.store.held.get(`s:${SOURCE}`) as { ledger: Ledger }).ledger.steps[0]?.note).toBe(NOTE)
+  expect((await fixture.pool.logical(fixture.store, `s:${SOURCE}`) as { ledger: Ledger }).ledger.steps[0]?.note).toBe(NOTE)
 })
 
 test('restore preserves an already saved long note, its paused status and checksum on repeated calls', async ($, on) => {

@@ -1,7 +1,7 @@
 // FIXTURE, TRACK-21 refuter 4 (2026-10-11): guard receipt waits must end
 // before other owners exhaust their 3 second store lock wait.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
 test('TRACK-21 a stalled foreign guard does not consume the store lock wait', async ($, on) => {
   const clock = mock.clock(on)
@@ -13,6 +13,7 @@ test('TRACK-21 a stalled foreign guard does not consume the store lock wait', as
   const foreign = { v: 1, ledger: EMPTY }
   const store = pluginStore(on, { [`s:${FOREIGN}`]: foreign }, undefined, { guardWait,
     beforeLockSpawn: request => { if (request.argv[2] === 'guard') entered() } })
+  blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   logs(on)
   let finished = false

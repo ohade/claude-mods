@@ -2,7 +2,7 @@
 // notice for the person. The hidden user row is not a jump target. Restored
 // Q/A with no drawn row show the saved text in the pane.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, logs, pane, pluginStore } from './kit'
 
 const FROM = '11111111-2222-4333-8444-555555555555'
 const BY = '66666666-7777-4888-8999-aaaaaaaaaaaa'
@@ -19,6 +19,7 @@ test('mechanical restore appends one acknowledged plugin user note with passive 
   const l = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 3, questions: QUESTIONS.map(({ restoredBy, restoredFrom, sourceId, ...q }) => ({ ...q, turnId: 'old' })) })
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   let session = FROM
   on('session.id', () => ({ value: session }))
   const notes: any[] = []
@@ -37,7 +38,7 @@ test('mechanical restore appends one acknowledged plugin user note with passive 
   expect(notes[0].origin).toMatchObject({ kind: 'plugin', name: 'track' })
   expect(notes[0].message.content[0].text).toBe(TEXT)
   expect((l.value as any).restores.find((r: any) => r.by === notes[0].uuid)?.display).toBe('user')
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.restores.find((r: any) => r.by === notes[0].uuid)?.display).toBe('user')
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.restores.find((r: any) => r.by === notes[0].uuid)?.display).toBe('user')
   for (let n = 0; n < 3; n++) {
     const repeated = receipt(await $.tool.call({ tool: 'fixture__restore', tool_use_id: `toolu_repeat_${n}`, from_session: FROM, expected_checkpoint: expected } as never))
     expect(repeated.ok).toBe(true)
@@ -49,6 +50,7 @@ test('a restored answer is shown in the pane and the hidden user row is not a ju
   mock.clock(on)
   const l = atomStore(on, 'ledger', { ...EMPTY, questions: QUESTIONS, restores: [{ by: BY, from: FROM, steps: 0, questions: QUESTIONS, display: 'user' }] })
   const store = pluginStore(on)
+  blobPool(on)
   const debug = logs(on)
   on('ui.render', { component: 'UserMessage' }, () => ({ type: 'Text', props: {}, children: ['native plugin body'] }))
   const beforeWrites = l.writes.length

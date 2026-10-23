@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-12 review found marker answers reopened on a normal prompt.
 // The transcript API supplies text and tool IDs, but no response UUIDs.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { On } from './kit'
 
 const UUID = '15151515-2222-4333-8444-555555555555'
@@ -11,12 +11,13 @@ const prepare = (on: On) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 25 })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))
   on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
   const transcript = { rows: [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'ask-25', tool: 'mcp__track__track_question', input: { summary: 'Question 25' } }] }] as any[] }
   on('session.messages', () => ({ value: transcript.rows }))
-  return { ledger, store, transcript }
+  return { ledger, store, pool, transcript }
 }
 const capture = async ($: any) => {
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Question 25', tool_use_id: 'ask-25' })
@@ -24,25 +25,25 @@ const capture = async ($: any) => {
 }
 
 test('a marker answer survives a normal prompt when its full block remains', async ($, on) => {
-  const { ledger, store, transcript } = prepare(on)
+  const { ledger, store, pool, transcript } = prepare(on)
   await capture($)
   const answered = (ledger.value as any).questions[0]
   expect(answered.status).toBe('answered')
   transcript.rows.push({ role: 'assistant', text: marked(), toolUses: [] })
   await $.prompt.submit({ text: 'Continue.', origin: { kind: 'composer' } } as never)
   expect((ledger.value as any).questions[0]).toEqual(answered)
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0]).toEqual(answered)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(answered)
 })
 
 test('rewinding the marker response reopens its surviving question durably', async ($, on) => {
-  const { ledger, store } = prepare(on)
+  const { ledger, store, pool } = prepare(on)
   await capture($)
   await $.prompt.submit({ text: 'Continue.', origin: { kind: 'composer' } } as never)
   const q = (ledger.value as any).questions[0]
   expect(q.status).toBe('open')
   expect(q.answerText).toBeUndefined()
   expect(q.answerKey).toBeUndefined()
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })
 
 test('a different answer with the same marker id cannot preserve removed words', async ($, on) => {

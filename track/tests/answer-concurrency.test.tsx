@@ -1,11 +1,12 @@
 // FIXTURE: two overlapping responses cannot mix one message's text with the
 // other message's transcript id. The answer remains the first eligible text.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 test('an overlapping response keeps its own text and acknowledged message identity', async ($, on) => {
   const l = atomStore(on, 'ledger', EMPTY)
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))
   const held = { value: { currentId: 't1', gatedTurnId: null, eventOrder: 0 } as any, version: 1 }
@@ -35,5 +36,5 @@ test('an overlapping response keeps its own text and acknowledged message identi
   const q = (l.value as any).questions[0]
   expect(q.answerText).toBe('First actual answer')
   expect(q.answerRequestId).toBe('11111111-2222-4333-8444-555555555555')
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0]).toEqual(q)
 })

@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-29, 2026-10-19. The person needs the same lookup and durable
 // reorder operation without asking the model to invoke an MCP tool.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger } from '../types'
 
@@ -16,9 +16,10 @@ const prepare = (on: On) => {
   atomStore(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [] })
   const pane = atomStore(on, 'pane', { isOpen: false, hidden: false, closedByPerson: false })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   on('session.id', () => ({ value: SESSION }))
   on('command.run', () => ({ text: '{}' }))
-  return { ledger, pane, store }
+  return { ledger, pane, store, pool }
 }
 const command = async ($: Engine, args: string) => {
   const result = await $.command.run({ command: 'track', args } as never)
@@ -43,7 +44,7 @@ test('TRACK-29 /track reorder saves exactly the requested visible permutation', 
   const data = await command($, 'reorder ["plan:3","plan:2"]')
   expect(data.ok).toBe(true)
   expect(f.ledger.value.steps).toEqual([before[0], before[2], before[1]])
-  expect((f.store.held.get(`s:${SESSION}`) as { ledger: Ledger }).ledger.steps).toEqual(f.ledger.value.steps)
+  expect((await f.pool.logical(f.store, `s:${SESSION}`) as { ledger: Ledger }).ledger.steps).toEqual(f.ledger.value.steps)
   expect(f.pane.writes).toEqual([])
 })
 

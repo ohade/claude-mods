@@ -1,16 +1,17 @@
 // FIXTURE for the 2026-10-08 native observation: a programmatic tool call has
 // no displayed ToolUse row. Restored Q/A must link to an acknowledged notice.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const prepare = (on: any) => {
   const l = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'שאלה 😀', at: 1, turnId: 'old', status: 'answered', answerText: 'תשובה נשמרת 😀', note: 'A saved note' }], steps: [] })
   atomStore(on, 'turn', { currentId: 'new', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on)
+  const pool = blobPool(on)
   let session = OLD
   on('session.id', () => ({ value: session }))
-  return { l, store, setDestination: () => { session = SESSION; l.value = { ...EMPTY } as any } }
+  return { l, store, pool, setDestination: () => { session = SESSION; l.value = { ...EMPTY } as any } }
 }
 const receipt = (r: any) => JSON.parse(r.result)
 const mechanicalCaller = {
@@ -23,7 +24,7 @@ const mechanicalCaller = {
 }
 
 test('mechanical restoration creates one visible acknowledged Q/A target and reuses it on repeat', mechanicalCaller, async ($, on) => {
-  const { l, store, setDestination } = prepare(on)
+  const { l, store, pool, setDestination } = prepare(on)
   const notices: any[] = []
   const noticeIds: string[] = []
   on('session.append', (_, e, next) => { notices.push(e.message); noticeIds.push(e.uuid); return next(e) })
@@ -46,7 +47,7 @@ test('mechanical restoration creates one visible acknowledged Q/A target and reu
   expect(notices[1].content[0].text).toContain('A saved note')
   expect(noticeIds[0]).toMatch(/^[0-9a-f-]{36}$/)
   expect((l.value as any).questions[0].restoredBy).toBe(noticeIds[0])
-  expect((store.held.get(`s:${SESSION}`) as any).ledger.questions[0].restoredBy).toBe(noticeIds[0])
+  expect((await pool.logical(store, `s:${SESSION}`) as any).ledger.questions[0].restoredBy).toBe(noticeIds[0])
   for (let n = 0; n < 4; n++) {
     const repeated = receipt(await $.tool.call({ tool: 'fixture__restore', from_session: OLD, expected_checkpoint: expected, tool_use_id: `toolu_plugin_repeat_${n}` } as never))
     expect(repeated).toMatchObject({ ok: true, applied_checksum: expected.checksum })
