@@ -10,7 +10,7 @@ import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuest
 import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
-import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
+import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerContent } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 import { readBlob } from './blob-store'
@@ -1282,7 +1282,7 @@ const blobFs = ($: EngineInterface): BlobFs => ({
 // Returns undefined for no body, a non-v:2 body unchanged, or a v:2 body as its
 // v:1 inline equivalent (`v: 1`, `ledger` from the verified blob in place of
 // `ledger_blob`). An invalid pointer or blob throws; it is never absent.
-const logicalBody = async ($: EngineInterface, raw: unknown): Promise<unknown> => {
+const logicalBody = async ($: EngineInterface, raw: unknown, onBlobText?: (text: string) => void): Promise<unknown> => {
   if ((raw as { v?: unknown } | undefined)?.v !== 2) return raw
   const body = raw as Record<string, unknown>
   if (Object.hasOwn(body, 'ledger')) throw blobFailure('a v:2 body also holds an inline ledger')
@@ -1294,6 +1294,7 @@ const logicalBody = async ($: EngineInterface, raw: unknown): Promise<unknown> =
   try { ledger = JSON.parse(text) }
   catch (error) { throw blobFailure('blob is not JSON', error) }
   if (typeof ledger !== 'object' || ledger === null || Array.isArray(ledger)) throw blobFailure('blob is not a ledger')
+  onBlobText?.(text)
   return Object.fromEntries(Object.entries(body).map(([key, value]) =>
     key === 'v' ? [key, 1] : key === 'ledger_blob' ? ['ledger', ledger] : [key, value]))
 }
@@ -1603,7 +1604,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     let current = identifyLedger(memory, id)
     const previous = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string; generation?: string } | undefined
     // Rows come from the logical view; rollback and compare-and-set keep `previous` raw.
-    const previousView = await logicalBody($, previous)
+    let previousBlobText: string | undefined
+    const previousView = await logicalBody($, previous, text => { previousBlobText = text })
     const previousHead = await $.store.get(`h:${id}`)
     const head = sessionHead(previousHead, id)
     if (previous?.session_id !== undefined && previous.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
@@ -1644,7 +1646,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const checkpoint = await describeCheckpoint(current, id, priorCheckpoint)
     const inlineBucket = { v: 1, session_id: id, generation, savedAt: Date.now(), ledger: current, checkpoint,
       ...(missing && { recovered: true, expected_revision: expected ?? head?.checkpoint.revision ?? null }) }
-    const text = JSON.stringify(current)
+    const text = previousBlobText !== undefined && sameLedgerContent((previousView as { ledger?: unknown } | undefined)?.ledger, current)
+      ? previousBlobText : JSON.stringify(current)
     const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
     const pointer = Object.fromEntries(Object.entries(inlineBucket).map(([name, value]) =>
       name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))

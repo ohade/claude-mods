@@ -560,3 +560,105 @@ for (const family of [207, 217] as const) {
     await expectFiles(files, new Map([...originalFiles, [candidate.path, candidate.text]]))
   })
 }
+
+// TRACK-35 (2026-10-23): reload changed object key order and duplicated an unchanged full ledger.
+for (const [family, change] of [
+  [230, 'prompt key order'],
+  [231, 'prompt head'],
+  [232, 'step array order'],
+  [233, 'optional prompt requestId'],
+  [234, 'distinct Unicode key order'],
+] as const) {
+  test(`FIXTURE own-save ${family}: ${change} selects the exact full-content blob`, async ($, on) => {
+    const id = idOf(family)
+    const prompt = { rowKey: 'fixture-prompt', head: 'Stable café prompt 🧭', turnId: 'saved-turn', at: 1,
+      requestId: 'fixture-source-request', session_id: id }
+    const original = ledgerFor(id)
+    const prior: Ledger = { ...original, prompts: [prompt], steps: [...original.steps, localStep(id)],
+      ...(family === 234 && { restoredIds: { 'é': 1, 'e\u0301': 1 } }) }
+    let current: Ledger = prior
+    if (family === 230) current = { ...prior, prompts: [{ rowKey: prompt.rowKey, head: prompt.head, at: prompt.at,
+      turnId: prompt.turnId, requestId: prompt.requestId, session_id: id }] }
+    if (family === 231) current = { ...prior, prompts: [{ ...prompt, head: 'Changed café prompt 🧭' }] }
+    if (family === 232) current = { ...prior, steps: [prior.steps[1]!, prior.steps[0]!] }
+    if (family === 233) {
+      const { requestId: _requestId, ...withoutRequestId } = prompt
+      current = { ...prior, prompts: [withoutRequestId] }
+    }
+    if (family === 234) current = { ...prior, restoredIds: { 'e\u0301': 1, 'é': 1 } }
+    const reuse = family === 230 || family === 234
+    const priorText = JSON.stringify(prior)
+    const priorRef = { checksum: await sha256(priorText), bytes: utf8(priorText) }
+    const priorPath = `${BLOBS}/${priorRef.checksum}.json`
+    const currentText = JSON.stringify(current)
+    const currentRef = { checksum: await sha256(currentText), bytes: utf8(currentText) }
+    const selectedText = reuse ? priorText : currentText
+    const selectedRef = reuse ? priorRef : currentRef
+    const selectedPath = `${BLOBS}/${selectedRef.checksum}.json`
+    const files = new Map([[SENTINEL, SENTINEL_TEXT]])
+    const seeded = await seedPointer(id, prior, files)
+    const originalFiles = new Map(files)
+    const fixture = setup(on, id, current, seeded.records, files)
+    atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: id,
+      baseline: { session_id: id, ledger: prior, checkpoint: seeded.head.checkpoint, generation: GENERATION } })
+
+    expect(prior.steps).toHaveLength(2)
+    expect(new Set(prior.steps.map(step => step.id)).size).toBe(2)
+    expect(prior.prompts[0]).toEqual(prompt)
+    expect(current.prompts[0]?.turnId).toBe('saved-turn')
+    expect(currentText).not.toBe(priorText)
+    if (reuse) expect(await fingerprint(current)).toEqual(await fingerprint(prior))
+    else expect(await fingerprint(current)).not.toEqual(await fingerprint(prior))
+    expect(currentRef.checksum).not.toBe(priorRef.checksum)
+    if (family !== 232) expect(await describeCheckpoint(current, id)).toEqual(seeded.head.checkpoint)
+    if (family === 233) expect(Object.hasOwn(current.prompts[0]!, 'requestId')).toBe(false)
+    if (family === 234) {
+      expect(Object.keys(prior.restoredIds!)).toEqual(['é', 'e\u0301'])
+      expect(Object.keys(current.restoredIds!)).toEqual(['e\u0301', 'é'])
+    }
+    await expectRows(fixture.memory.value, current)
+    expect(JSON.stringify(fixture.memory.value)).toBe(currentText)
+    expect(seeded.pointer.ledger_blob).toEqual(priorRef)
+    expect(fixture.store.held.get(`s:${id}`)).toEqual(seeded.pointer)
+    expect(fixture.pool.publishes).toBe(0)
+    expect(fixture.observed).toEqual([])
+    await expectFiles(files, originalFiles)
+
+    const receipt = await checkpoint($, id)
+    const raw = fixture.store.held.get(`s:${id}`) as Record<string, any>
+    // This is the first post-checkpoint assertion: reuse must retain the prior physical reference.
+    expect(raw.ledger_blob).toEqual(selectedRef)
+    expect(fixture.observed).toEqual([{ checksum: selectedRef.checksum, text: selectedText }])
+    expect(fixture.pool.publishes).toBe(1)
+    expect(raw.v).toBe(2)
+    expect(Object.hasOwn(raw, 'ledger')).toBe(false)
+    expect(raw.session_id).toBe(id)
+    expect(raw.generation).toBe(GENERATION)
+    expect(typeof raw.savedAt).toBe('number')
+    expect(receipt).toMatchObject({ v: 1, ok: true, source_session: id,
+      counts: { questions: 1, answers: 0, steps: 2 } })
+    expect(receipt.reason).toBeUndefined()
+    expect(raw.checkpoint).toEqual(await describeCheckpoint(current, id, seeded.head.checkpoint))
+    expect(raw.checkpoint).toMatchObject({ revision: receipt.revision, checksum: receipt.checksum, counts: receipt.counts })
+    expect(files.get(selectedPath)).toBe(selectedText)
+    expect(await sha256(files.get(selectedPath)!)).toBe(selectedRef.checksum)
+    expect(utf8(files.get(selectedPath)!)).toBe(selectedRef.bytes)
+    expect(files.get(priorPath)).toBe(priorText)
+    expect(await sha256(files.get(priorPath)!)).toBe(priorRef.checksum)
+    expect(utf8(files.get(priorPath)!)).toBe(priorRef.bytes)
+    expect(files.get(SENTINEL)).toBe(SENTINEL_TEXT)
+    await expectRows(fixture.memory.value, current)
+    expect(fixture.memory.value.steps.map(step => step.id)).toEqual(current.steps.map(step => step.id))
+    const logical = await fixture.pool.logical(fixture.store, `s:${id}`) as { v: number; ledger: Ledger }
+    expect(logical.v).toBe(1)
+    await expectRows(logical.ledger, current)
+    expect(logical.ledger.steps.map(step => step.id)).toEqual(current.steps.map(step => step.id))
+    const { ledger_blob: _ref, ...metadata } = raw
+    expect(await fingerprint(logical)).toEqual(await fingerprint({ ...metadata, v: 1, ledger: current }))
+    expect(fixture.store.held.get(`h:${id}`)).toEqual({ v: 1, session_id: id, generation: GENERATION, checkpoint: raw.checkpoint })
+    const index = fixture.store.held.get('saved') as Record<string, unknown>
+    expect(index[id]).toEqual({ at: raw.savedAt, bytes: rawBytes(`s:${id}`, raw) })
+    await expectFiles(files, reuse ? originalFiles : new Map([...originalFiles, [selectedPath, selectedText]]))
+    expect(files.size).toBe(originalFiles.size + (reuse ? 0 : 1))
+  })
+}

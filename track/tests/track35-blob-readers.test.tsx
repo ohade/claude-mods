@@ -145,7 +145,7 @@ test('a stale writer reconciles against a v:2 durable body', async ($, on) => {
   expect(logical.ledger.steps.map(s => s.subject)).toEqual(['Saved step', 'Local step'])
 })
 
-test('an own save over a v:2 body writes a v:2 body and retains every old blob', async ($, on) => {
+test('an unchanged own save reuses its verified v:2 blob and retains every old blob', async ($, on) => {
   const { id } = ids(6)
   const files = new Map<string, string>()
   const { body, head } = await durable(id, ledgerFor(id))
@@ -155,22 +155,26 @@ test('an own save over a v:2 body writes a v:2 body and retains every old blob',
   const receipt = await checkpoint($, id)
   expect(receipt.reason).toBeUndefined()
   const saved = store.held.get(`s:${id}`) as Record<string, unknown>
+  expect(saved.ledger_blob).toEqual(pointer.ledger_blob)
+  expect(pool.publishes).toBe(1)
   expect(saved.v).toBe(2)
   expect(Object.hasOwn(saved, 'ledger')).toBe(false)
   const logical = await pool.logical(store, `s:${id}`) as { ledger: { steps: Array<{ subject: string }> } }
   expect(logical.ledger.steps.map(s => s.subject)).toEqual(['Saved step'])
   expect(saved.generation).toBe(GENERATION)
   expect(store.held.get(`h:${id}`)).toEqual(head)
-  const expectedText = JSON.stringify(l.value)
+  // TRACK-35 (2026-10-23): the old oracle pinned normalized property order; unchanged full content requires verified prior bytes.
+  const expectedText = JSON.stringify(body.ledger)
   const checksum = await sha256(expectedText)
   const candidatePath = `${BLOBS}/${checksum}.json`
   expect(saved.ledger_blob).toEqual({ checksum, bytes: new TextEncoder().encode(expectedText).length })
   expect(files.get(candidatePath)).toBe(expectedText)
   expect(logical.ledger).toEqual(l.value)
+  expect(logical.ledger).toEqual(body.ledger)
+  expect(l.value).toEqual(body.ledger)
   for (const [path, text] of blobs) expect(files.get(path)).toBe(text)
-  const expectedFiles = new Map(blobs)
-  expectedFiles.set(candidatePath, expectedText)
-  expect([...files.entries()]).toEqual([...expectedFiles.entries()])
+  expect([...files.entries()]).toEqual([...blobs.entries()])
+  expect(files.size).toBe(blobs.size)
 })
 
 test('a failed body, head or index write over a v:2 body rolls back to the raw pointer and its blob', async ($, on) => {

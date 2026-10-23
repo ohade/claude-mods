@@ -5,10 +5,12 @@ import type { Checkpoint } from './checkpoint'
 // unrelated nonempty memory, making a later save silently overwrite newer rows.
 export type { Baseline } from '../types'
 export type SessionHead = { v: 1; session_id: string; generation: string; checkpoint: Checkpoint; closedAt?: number }
+// TRACK-35 (2026-10-23): reload key order duplicated an unchanged ledger blob.
+// Compare complete JSON content; code-unit order keeps distinct Unicode keys distinct.
 const canonical = (value: unknown): string | undefined => JSON.stringify(value, (_, entry) =>
   entry !== null && typeof entry === 'object' && !Array.isArray(entry)
-    ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left.localeCompare(right))) : entry)
-const equal = (left: unknown, right: unknown): boolean => canonical(left) === canonical(right)
+    ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : entry)
+export const sameLedgerContent = (left: unknown, right: unknown): boolean => canonical(left) === canonical(right)
 
 export const assertLedgerOwner = (value: unknown, session: string): void => {
   const record = value as Record<string, unknown> | undefined
@@ -44,9 +46,9 @@ const mergeRows = <T>(base: T[] | undefined, durable: T[], local: T[], identity:
   for (const key of new Set([...left.keys(), ...right.keys(), ...original.keys()])) {
     const old = original.get(key), saved = left.get(key), current = right.get(key)
     let chosen: T | undefined
-    if (equal(saved, current)) chosen = saved
-    else if (base !== undefined && equal(current, old)) chosen = saved
-    else if (base !== undefined && equal(saved, old)) chosen = current
+    if (sameLedgerContent(saved, current)) chosen = saved
+    else if (base !== undefined && sameLedgerContent(current, old)) chosen = saved
+    else if (base !== undefined && sameLedgerContent(saved, old)) chosen = current
     else if (!original.has(key) && !left.has(key)) chosen = current
     else if (!original.has(key) && !right.has(key)) chosen = saved
     else throw new Error(`reconcile conflict: ${key}; both versions were kept`)
@@ -64,8 +66,8 @@ const mergeStepOrder = (base: Ledger['steps'] | undefined, durable: Ledger['step
   const members = new Set(original)
   // Additions/deletions retain normal row-merge behavior. A reorder caller
   // verifies its exact visible permutation and refuses changed membership.
-  if (saved.length !== original.length || current.length !== original.length || saved.some(id => !members.has(id)) || current.some(id => !members.has(id)) || equal(current, original)) return merged
-  if (!equal(saved, original) && !equal(saved, current)) throw new Error('reconcile conflict: step order; both versions were kept')
+  if (saved.length !== original.length || current.length !== original.length || saved.some(id => !members.has(id)) || current.some(id => !members.has(id)) || sameLedgerContent(current, original)) return merged
+  if (!sameLedgerContent(saved, original) && !sameLedgerContent(saved, current)) throw new Error('reconcile conflict: step order; both versions were kept')
   const byId = new Map(merged.map(row => [identity(row), row]))
   return current.map(id => byId.get(id)!)
 }

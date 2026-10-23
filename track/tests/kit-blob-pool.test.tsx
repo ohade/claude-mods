@@ -345,12 +345,14 @@ for (const [index, configDir] of [undefined, CUSTOM_CONFIG].entries()) {
     expect(memory.value.questions.map((question: { head: string }) => question.head)).toEqual(['Saved question'])
     expect(memory.value.steps.map((step: { subject: string }) => step.subject)).toEqual(['café 🚀'])
     expect(pool.publishes).toBe(1)
-    const expectedLedger = { ...integrationLedger(session), steps: [{ id: 'plan:1', source: 'plan', subject: 'café 🚀', status: 'in_progress', session_id: session }] }
+    // TRACK-35 (2026-10-23): a full-content no-op resume reuses the verified prior blob text.
+    const expectedLedger = integrationLedger(session)
     const ownPath = await expectOwnPublication(pool, store, session, expectedLedger, blobDir)
+    expect(ownPath).toBe(seededPath)
     expect(memory.value).toEqual(expectedLedger)
     expect(pool.files.get(seededPath)).toBe(fixture.text)
     expect(store.held.get(`h:${session}`)).toEqual(head)
-    expect([...pool.files]).toEqual([...new Map([[seededPath, fixture.text], [ownPath, JSON.stringify(expectedLedger)]])])
+    expect([...pool.files]).toEqual([[seededPath, fixture.text]])
   })
 }
 
