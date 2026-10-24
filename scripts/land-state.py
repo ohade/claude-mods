@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Private land.sh helpers: owner-safe locks, bounded processes and JSON receipts."""
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -114,16 +116,52 @@ def record_counts(log, name, path):
         raise ValueError(f'non-passing test counts: {passed} pass, {failed} fail')
 
 
-def prepare_sdk(source_root, mod, manifest, version_log, proofs_path):
+SDK_VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+')
+SDK_PARENTS = ('.local', 'share', 'claude-mods', 'sdk')
+SDK_DEFAULT_MISSING = 'SDK input missing: promote a capture with land-state.py sdk-promote or set CLAUDE_MODS_SDK_ROOT'
+
+
+def sdk_default_root(layout_root, version):
+    """plan:105: the promoted root for the pinned version; V is validated before any path use."""
+    if not isinstance(version, str) or SDK_VERSION.fullmatch(version) is None:
+        raise ValueError('SDK manifest is invalid')
+    return os.path.join(layout_root, *SDK_PARENTS, version)
+
+
+def prepare_sdk(source_root, mod, manifest, version_log, proofs_path, layout_root=None):
     """Copy only pinned engine-written inputs, never a hand-written API substitute."""
     packet_bytes = Path(manifest).read_bytes()
     packet = json.loads(packet_bytes)
     version = packet.get('version')
     if packet.get('v') != 1 or not isinstance(version, str) or not isinstance(packet.get('files'), dict):
         raise ValueError('SDK manifest is invalid')
+    missing = None
+    if not source_root:
+        # An unset override selects the promoted root; the live checkout is never read implicitly.
+        if not layout_root:
+            raise ValueError('SDK input missing: the default SDK root needs --layout-root')
+        source_root, missing = sdk_default_root(layout_root, version), SDK_DEFAULT_MISSING
     installed = re.fullmatch(r'(\d+\.\d+\.\d+) \(Claude Code\)\s*', Path(version_log).read_text())
     if installed is None or installed[1] != version:
         raise ValueError('SDK version mismatch: refresh engine-written types and reviewed hashes')
+    if missing is not None and not Path(source_root).is_dir():
+        raise ValueError(missing)
+    checked = check_sdk(source_root, mod, packet)
+    destination = Path(mod)
+    # Read and check every file before writing any; copy the checked bytes, not a second read.
+    for relative, data in checked.items():
+        target = destination / Path(relative).relative_to(destination.name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    proofs = read_json(proofs_path)
+    proofs[destination.name] = {'version': version, 'manifest_sha256': hashlib.sha256(packet_bytes).hexdigest()}
+    Path(proofs_path).write_text(json.dumps(proofs, sort_keys=True) + '\n')
+    print(json.dumps(proofs[destination.name], sort_keys=True))
+
+
+def check_sdk(source_root, mod, packet):
+    """Read and check one mod's pinned SDK files; return {relative: bytes} and write nothing."""
+    version = packet['version']
     source = Path(source_root)
     if not source.is_absolute() or not source.is_dir():
         raise ValueError('SDK input missing: set CLAUDE_MODS_SDK_ROOT to the engine-written mod layout')
@@ -151,15 +189,229 @@ def prepare_sdk(source_root, mod, manifest, version_log, proofs_path):
     header = checked[prefix + 'claude-code/index.d.ts'].splitlines()[0].decode('utf-8')
     if header != f'// Written by Claude Code {version}.':
         raise ValueError('SDK version mismatch: declaration header differs from the engine')
-    # Read and check every file before writing any; copy the checked bytes, not a second read.
-    for relative, data in checked.items():
-        target = destination / Path(relative).relative_to(destination.name)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-    proofs = read_json(proofs_path)
-    proofs[destination.name] = {'version': version, 'manifest_sha256': hashlib.sha256(packet_bytes).hexdigest()}
-    Path(proofs_path).write_text(json.dumps(proofs, sort_keys=True) + '\n')
-    print(json.dumps(proofs[destination.name], sort_keys=True))
+    return checked
+
+
+def no_replace_rename():
+    """Return a rename that fails with EEXIST instead of replacing, or None when libc lacks one."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    # macOS renameatx_np(RENAME_EXCL), Linux renameat2(RENAME_NOREPLACE). Never plain rename.
+    for name, flag in (('renameatx_np', 0x4), ('renameat2', 0x1)):
+        function = getattr(libc, name, None)
+        if function is None:
+            continue
+        function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        function.restype = ctypes.c_int
+
+        def rename(source_fd, source, target_fd, target, function=function, flag=flag):
+            if function(source_fd, os.fsencode(source), target_fd, os.fsencode(target), flag) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, os.strerror(code), target)
+        return rename
+    return None
+
+
+def open_directory(name, dir_fd=None):
+    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+
+
+def sdk_tree_matches(parent_fd, name, checked):
+    """True only for a real directory tree holding exactly the checked files, byte for byte."""
+    expected = {''}
+    for relative in checked:
+        parts = relative.split('/')[:-1]
+        expected.update('/'.join(parts[:index]) for index in range(1, len(parts) + 1))
+    found_dirs, found_files = set(), set()
+
+    def walk(fd, prefix):
+        found_dirs.add(prefix)
+        for entry in os.listdir(fd):
+            relative = f'{prefix}/{entry}' if prefix else entry
+            mode = os.stat(entry, dir_fd=fd, follow_symlinks=False).st_mode
+            if stat.S_ISDIR(mode) and relative in expected:
+                child = open_directory(entry, fd)
+                try:
+                    if not walk(child, relative):
+                        return False
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(mode) and relative in checked:
+                handle = os.fdopen(os.open(entry, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=fd), 'rb')
+                with handle:
+                    data = handle.read(len(checked[relative]) + 1)
+                    if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode) or data != checked[relative]:
+                        return False
+                found_files.add(relative)
+            else:
+                return False
+        return True
+
+    top = open_directory(name, parent_fd)
+    try:
+        return walk(top, '') and found_dirs == expected and found_files == set(checked)
+    finally:
+        os.close(top)
+
+
+def discard_stage(created, sdk_fd, stage, identity):
+    """Remove only entries this run created, deepest first, then its own stage directory.
+
+    The stage's identity is checked first: on a mismatch or any error reading it, nothing is removed.
+    """
+    try:
+        info = os.stat(stage, dir_fd=sdk_fd, follow_symlinks=False)
+        if (info.st_dev, info.st_ino) != identity:
+            raise ValueError('stage identity changed')
+    except (OSError, ValueError) as error:
+        left = ', '.join(name for _, name, _ in created) or 'none'
+        print(f'land: sdk-promote: left stage {stage} and every entry this run created ({left}): {error}',
+              file=sys.stderr)
+        return
+    for parent_fd, name, is_directory in reversed(created):
+        try:
+            if is_directory:
+                os.rmdir(name, dir_fd=parent_fd)
+            else:
+                os.unlink(name, dir_fd=parent_fd)
+        except OSError as error:
+            print(f'land: sdk-promote: could not remove stage entry {name}: {error}', file=sys.stderr)
+    try:
+        os.rmdir(stage, dir_fd=sdk_fd)
+    except OSError as error:
+        print(f'land: sdk-promote: left stage {stage}: {error}', file=sys.stderr)
+
+
+def open_sdk_chain(layout_root, opened):
+    """Step 4: return the sdk directory fd, walking by fd and never following or re-moding a component."""
+    try:
+        parent = opened(layout_root)
+    except OSError as error:
+        raise ValueError(f'SDK layout root is not a real directory: {error}') from error
+    for index, name in enumerate(SDK_PARENTS):
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+            created = True
+        except FileExistsError:
+            created = False
+        component = '/'.join(SDK_PARENTS[:index + 1])
+        try:
+            child = opened(name, parent)
+        except OSError as error:
+            raise ValueError(f'SDK root path is not a real directory owned by you: {component}') from error
+        if os.fstat(child).st_uid != os.getuid():
+            raise ValueError(f'SDK root path is not a real directory owned by you: {component}')
+        if created:
+            os.fchmod(child, 0o700)  # Only a component this run created; defeats the umask.
+        parent = child
+    return parent
+
+
+def write_stage(stage_fd, checked, created, opened):
+    """Step 6: write the checked bytes into the private stage, recording each entry it creates."""
+    directories = {'': stage_fd}
+    for relative in sorted(checked):
+        parts = relative.split('/')
+        for index in range(1, len(parts)):
+            path = '/'.join(parts[:index])
+            if path not in directories:
+                holder = directories['/'.join(parts[:index - 1])]
+                os.mkdir(parts[index - 1], 0o700, dir_fd=holder)
+                created.append((holder, parts[index - 1], True))
+                directories[path] = opened(parts[index - 1], holder)
+                os.fchmod(directories[path], 0o700)
+        holder = directories['/'.join(parts[:-1])]
+        fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=holder)
+        created.append((holder, parts[-1], False))
+        with os.fdopen(fd, 'wb') as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(checked[relative])
+            handle.flush()
+            os.fsync(handle.fileno())
+    for path in sorted(directories, key=len, reverse=True):
+        os.fsync(directories[path])
+
+
+def publish_sdk(layout_root, version, root, checked):
+    """Steps 4-8 of sdk-promote; the caller holds the land lock."""
+    descriptors = []
+
+    def opened(name, dir_fd=None):
+        descriptors.append(open_directory(name, dir_fd))
+        return descriptors[-1]
+
+    try:
+        sdk_fd = open_sdk_chain(layout_root, opened)
+        try:
+            existing = os.stat(version, dir_fd=sdk_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            try:
+                same = (stat.S_ISDIR(existing.st_mode) and existing.st_uid == os.getuid()
+                        and sdk_tree_matches(sdk_fd, version, checked))
+            except OSError:
+                same = False  # An unreadable or swapped entry is not the checked tree.
+            if same:
+                print(json.dumps({'version': version, 'root': root, 'status': 'already promoted'}))
+                return
+            raise ValueError(f'SDK root exists and differs: {root}')
+        rename = no_replace_rename()
+        if rename is None:
+            raise ValueError('no no-replace rename (renameatx_np or renameat2) is available; refusing to publish')
+        leftovers = sorted(entry for entry in os.listdir(sdk_fd) if entry.startswith(f'.{version}.stage-'))
+        if leftovers:
+            print(f'land: sdk-promote: leaving foreign stage entries untouched: {", ".join(leftovers)}', file=sys.stderr)
+        stage = os.path.basename(tempfile.mkdtemp(prefix=f'.{version}.stage-', dir=os.path.join(layout_root, *SDK_PARENTS)))
+        info = os.stat(stage, dir_fd=sdk_fd, follow_symlinks=False)
+        identity = (info.st_dev, info.st_ino)
+        created, published = [], False
+        try:
+            stage_fd = opened(stage, sdk_fd)
+            if (os.fstat(stage_fd).st_dev, os.fstat(stage_fd).st_ino) != identity:
+                raise ValueError(f'SDK stage changed while it was opened: {stage}')
+            write_stage(stage_fd, checked, created, opened)
+            try:
+                rename(sdk_fd, stage, sdk_fd, version)
+            except FileExistsError as error:
+                raise ValueError(f'SDK root exists and differs: {root}') from error
+            published = True
+            os.fsync(sdk_fd)
+        except BaseException:
+            if not published:
+                discard_stage(created, sdk_fd, stage, identity)
+            raise
+        print(json.dumps({'version': version, 'root': root}))
+    finally:
+        for fd in descriptors:
+            os.close(fd)
+
+
+def sdk_promote(capture_root, manifest, layout_root):
+    """plan:105: publish a checked capture as the stable root for its pinned version; never replace one."""
+    packet = json.loads(Path(manifest).read_bytes())
+    files = packet.get('files')
+    if packet.get('v') != 1 or not isinstance(files, dict) or not files:
+        raise ValueError('SDK manifest is invalid')
+    if not os.path.isabs(layout_root):
+        raise ValueError('SDK layout root must be absolute')
+    root = sdk_default_root(layout_root, packet.get('version'))
+    mods = sorted({name.split('/', 1)[0] for name in files})
+    if any(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', mod) is None for mod in mods):
+        raise ValueError('SDK manifest is invalid')
+    # Hold every checked byte in memory before any destination work.
+    checked = {}
+    for mod in mods:
+        checked.update(check_sdk(capture_root, mod, packet))
+    if set(checked) != set(files):
+        raise ValueError('SDK manifest is invalid')
+    # The land lock, before any destination mkdir: promotion and landing exclude each other.
+    lock = os.path.join(layout_root, '.claude', 'state', 'claude-mods-land.lock')
+    pid = os.getpid()
+    acquire_lock(lock, pid)
+    try:
+        publish_sdk(layout_root, packet['version'], root, checked)
+    finally:
+        release_lock(lock, pid)
 
 
 def prepare_receipt(path, commit, previous, mods, log_dir, sdk=None):
@@ -199,6 +451,10 @@ def main():
     child = commands.add_parser('sdk')
     for field in ('source_root', 'mod', 'manifest', 'version_log', 'proofs_path'):
         child.add_argument(field)
+    child.add_argument('--layout-root')
+    child = commands.add_parser('sdk-promote')
+    for field in ('capture_root', 'manifest', 'layout_root'):
+        child.add_argument(field)
     args = parser.parse_args()
     try:
         if args.command == 'lock':
@@ -210,7 +466,9 @@ def main():
         elif args.command == 'counts':
             record_counts(args.log, args.name, args.path)
         elif args.command == 'sdk':
-            prepare_sdk(args.source_root, args.mod, args.manifest, args.version_log, args.proofs_path)
+            prepare_sdk(args.source_root, args.mod, args.manifest, args.version_log, args.proofs_path, args.layout_root)
+        elif args.command == 'sdk-promote':
+            sdk_promote(args.capture_root, args.manifest, args.layout_root)
         else:
             prepare_receipt(args.path, args.commit, args.previous, args.mods, args.log_dir, args.sdk)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:

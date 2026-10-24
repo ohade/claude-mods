@@ -29,18 +29,23 @@ Bun, Node/npm and `~/.Trash` available; keep the real `HOME`, since OS helpers u
 find the installed checkout. `CLAUDE_MODS_HOME` changes only the deployment layout.
 
 TypeScript mods also need the engine-written SDK input. Test/validate do not generate it.
-`CLAUDE_MODS_SDK_ROOT` selects an absolute mod-layout root containing
-`<mod>/.claude-plugin/types/`; by default the gate reads the live layout. The engine version
-must match `scripts/sdk-types.json`, every SDK file must match its reviewed digest, and the
-API declaration header must name that version. Only then are the checked bytes copied into
-the temporary test tree. Missing, stale or changed inputs refuse landing.
+The input is a mod-layout root containing `<mod>/.claude-plugin/types/`. By default the gate
+reads the promoted root for the pinned version, `<layout root>/.local/share/claude-mods/sdk/<version>`,
+where the layout root is `CLAUDE_MODS_HOME` or your home directory and `<version>` is
+`version` in `scripts/sdk-types.json`. A non-empty `CLAUDE_MODS_SDK_ROOT`
+is the only input instead, with no fallback. The live checkout is never read unless you name it
+there. The engine version must match the manifest, every SDK file must match its reviewed
+digest, and the API declaration header must name that version. Only then are the checked bytes
+copied into the temporary test tree. Missing, stale or changed inputs refuse landing.
 
-Bootstrap this input by loading the reviewed mod once in the matching Claude Code version.
-Retain the engine-written folder outside the temporary landing tree. On an engine update,
-regenerate those files and review the API changes and new manifest hashes together. Do not
-edit the generated declarations or replace them with stubs. For an explicit input:
+On an engine update, load the reviewed mod once in the matching Claude Code version, keep the
+engine-written folder outside the landing tree, and review the API changes and new manifest
+hashes together. Then promote that capture. Promotion checks every file against the manifest,
+holds the land lock, and never replaces an existing root. Do not edit the generated
+declarations or replace them with stubs.
 
 ```sh
+python3 scripts/land-state.py sdk-promote /absolute/path/to/engine-written-mod-layout scripts/sdk-types.json "$HOME"
 CLAUDE_MODS_SDK_ROOT=/absolute/path/to/engine-written-mod-layout scripts/land.sh <reviewed-commit>
 ```
 

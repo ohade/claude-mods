@@ -143,7 +143,7 @@ for mod in "$temporary_tree"/*; do
   if [ -f "$mod/package.json" ]; then
     if [ -f "$mod/tsconfig.json" ]; then
       if ! run_check "$name-engine-version" "$mod" claude --version; then has_failed=true; continue; fi
-      if ! run_check "$name-sdk" "$mod" python3 "$helper" sdk "${CLAUDE_MODS_SDK_ROOT:-$live}" "$mod" "$script_dir/sdk-types.json" "$log_dir/$name-engine-version.log" "$sdk_file"; then
+      if ! run_check "$name-sdk" "$mod" python3 "$helper" sdk "${CLAUDE_MODS_SDK_ROOT:-}" "$mod" "$script_dir/sdk-types.json" "$log_dir/$name-engine-version.log" "$sdk_file" --layout-root "$layout_root"; then
         has_failed=true
         continue
       fi
