@@ -272,14 +272,33 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
 }
 
 // TRACK-43: a CLOSED v1 body keeps its history inline; the injected compaction
-// moves it to a blob pointer.
-const isInlineBody = (body: unknown): boolean => typeof body === 'object' && body !== null && (body as Value).v === 1 &&
-  Object.hasOwn(body, 'ledger') && !Object.hasOwn(body, 'ledger_blob')
+// moves it to a blob pointer. This is the one shape both the hourly cleanup and
+// compaction require: v:1, an inline ledger object, no blob pointer.
+export const isInlineV1Body = (body: unknown): body is Value & { v: 1; ledger: Value } => typeof body === 'object' && body !== null &&
+  (body as Value).v === 1 && typeof (body as Value).ledger === 'object' && (body as Value).ledger !== null && !Array.isArray((body as Value).ledger) &&
+  !Object.hasOwn(body, 'ledger_blob')
+
+// An imported savedAt comes from the source store, so only closedAt can expire or compact an import.
+const isImported = (body: Value | undefined): boolean => body !== undefined && Object.hasOwn(body, 'import_provenance')
+
+// The clock that expires a session: an expired valid closedAt first; else an expired
+// valid savedAt, never an import's; otherwise none. Zero is a valid clock.
+const expiryClockOf = (closedAt: number | undefined, body: Value | undefined, now: number): number | undefined => {
+  if (closedAt !== undefined && now - closedAt >= CLOSED_TTL) return closedAt
+  return !isImported(body) && validClock(body?.savedAt, now) && now - body.savedAt >= CLOSED_TTL ? body.savedAt : undefined
+}
+
+// Gives a session without a usable closing clock the clock of this sighting, through the verified journal.
+const stampMissingClock = (store: RetentionStore, session: string, head: Value | undefined, now: number, sizes: Map<string, number>, canStart: () => boolean): Promise<boolean> => {
+  const headKey = `h:${session}`
+  const stamped = { ...(head ?? { v: 1, retentionOnly: true }), session_id: session, closedAt: now }
+  return changeRecord(store, session, [[headKey, head]], [[headKey, stamped]], sizes, canStart)
+}
 
 // Runs the injected compaction for one visit. `confirm` is valid only while the
 // visit's guard is held, the budget remains and the s: value is the one read.
-const migrateInline = (store: RetentionStore, compact: Compaction, session: string, body: Value, guardHeld: () => boolean, canStart: () => boolean) => {
-  const confirm = async (): Promise<boolean> => guardHeld() && canStart() && sameRecord(await store.get(`s:${session}`), body)
+const migrateInline = (store: RetentionStore, compact: Compaction, session: string, body: Value, isGuardHeld: () => boolean, canStart: () => boolean) => {
+  const confirm = async (): Promise<boolean> => isGuardHeld() && canStart() && sameRecord(await store.get(`s:${session}`), body)
   return compact(session, confirm)
 }
 
@@ -359,12 +378,8 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       const closedAt = validClock(head?.closedAt, now) ? head.closedAt : closures.length > 0 && closures.every(value => validClock(value, now)) ? Math.max(...closures as number[]) : undefined
       const bodyKey = `s:${session}`
       const body = entries.find(([key]) => key === bodyKey)?.[1] as Value | undefined
-      const closedExpired = closedAt !== undefined && now - closedAt >= CLOSED_TTL
       // The last save is a second, independent expiry clock; an unusable one is ignored.
-      // An imported savedAt comes from the source store, so only closedAt can expire an import.
-      const imported = body !== undefined && Object.hasOwn(body, 'import_provenance')
-      const expiringSavedAt = !imported && validClock(body?.savedAt, now) && now - body.savedAt >= CLOSED_TTL ? body.savedAt : undefined
-      const expiryClock = closedExpired ? closedAt : expiringSavedAt
+      const expiryClock = expiryClockOf(closedAt, body, now)
       if (sizes === undefined) sizes = await readSizes(store)
       if (!canStart()) break
       if (expiryClock !== undefined) {
@@ -372,12 +387,14 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
         checkSizes(sizes, { [recoveryKey(session)]: intent }, 4 * 1024 * 1024)
         if (!canStart()) break
         if (await finishExpiry(store, intent, canStart, probe, true)) verified++
+        // A refused expiry changed nothing; without a closing clock it still needs one, or it is refused again on every pass.
+        else if (closedAt === undefined && await stampMissingClock(store, session, head, now, sizes, canStart)) verified++
         sizes = undefined // Finished expiry changed several indexed keys.
       } else if (closedAt === undefined) {
-        const stamped = { ...(head ?? { v: 1, retentionOnly: true }), session_id: session, closedAt: closedAt ?? now }
-        if (await changeRecord(store, session, [[headKey, head]], [[headKey, stamped]], sizes, canStart)) verified++
+        if (await stampMissingClock(store, session, head, now, sizes, canStart)) verified++
       }
-      if (expiryClock === undefined && compacting && options.compact !== undefined && isInlineBody(body)) {
+      // An import is never compacted by the hourly path.
+      if (expiryClock === undefined && compacting && options.compact !== undefined && !isImported(body) && isInlineV1Body(body)) {
         if (!canStart()) break
         const outcome = await migrateInline(store, options.compact, session, body as Value, () => guardHeld && guard?.state === 'closed', canStart)
         sizes = undefined // Compaction rewrote an indexed key.

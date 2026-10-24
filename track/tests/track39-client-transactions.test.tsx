@@ -466,7 +466,7 @@ test('TRACK-39 P1b a size-index read-back failure inside a kept compaction taint
 })
 
 test('TRACK-39 P1b a size-index read-back failure inside foreign cleanup taints the save that continues', async ($, on) => {
-  const { body, head } = await closedBody(FOREIGN)
+  const { body, head } = await closedBody(FOREIGN, 0, Date.now())
   let store: ReturnType<typeof pluginStore> | undefined
   let armed = false
   const f = fixture(on, {
@@ -503,7 +503,7 @@ test('TRACK-39 P1b a size-index read-back failure inside foreign cleanup taints 
 })
 
 test('TRACK-39 P1b a caught foreign cleanup failure keeps the save but never completes it', async ($, on) => {
-  const { body, head } = await closedBody(FOREIGN)
+  const { body, head } = await closedBody(FOREIGN, 0, Date.now())
   const f = fixture(on, {
     records: { [`s:${FOREIGN}`]: body, [`h:${FOREIGN}`]: head }, guardStates: { [FOREIGN]: 'closed' },
     refuseSet: key => key === `h:${FOREIGN}` ? 'fixture foreign head write refused' : undefined,

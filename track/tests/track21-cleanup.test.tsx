@@ -9,7 +9,7 @@ const save = async ($: Parameters<import('claude-code/testing').TestBody>[0]) =>
 }
 
 test('TRACK-21 first closed sighting stamps closure without expiring recently saved unfinished rows', async ($, on) => {
-  blobPool(on)
+  const pool = blobPool(on)
   const foreign = { v: 1, savedAt: Date.now(), ledger: { ...EMPTY, questions: [{ id: 1, head: 'unfinished', status: 'open', at: 1, turnId: null }] } }
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
@@ -17,12 +17,23 @@ test('TRACK-21 first closed sighting stamps closure without expiring recently sa
   on('session.id', () => ({ value: SESSION }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   await save($)
-  const retained = store.held.get(`s:${FOREIGN}`) as { closedAt?: number; session_id?: string; ledger: unknown }
+  const retained = store.held.get(`s:${FOREIGN}`) as { v: number; savedAt: number; ledger?: unknown; ledger_blob: { checksum: string; bytes: number } }
   const head = store.held.get(`h:${FOREIGN}`) as { closedAt?: number; session_id?: string }
   expect(head.closedAt).toBeGreaterThan(0)
   expect(head.session_id).toBe(FOREIGN)
-  expect(retained).toEqual(foreign)
-  expect(retained.ledger).toEqual(foreign.ledger)
+  // Contract A1: the recent CLOSED v1 body becomes a v2 pointer in the same visit; no ledger content is lost.
+  expect(retained.v).toBe(2)
+  expect(Object.hasOwn(retained, 'ledger')).toBe(false)
+  expect(Object.keys(retained).sort()).toEqual(['ledger_blob', 'savedAt', 'v'])
+  expect(retained.savedAt).toBe(foreign.savedAt)
+  expect(Object.keys(retained.ledger_blob).sort()).toEqual(['bytes', 'checksum'])
+  const text = JSON.stringify(foreign.ledger)
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  expect(retained.ledger_blob.checksum).toBe(Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join(''))
+  expect(retained.ledger_blob.bytes).toBe(new TextEncoder().encode(text).length)
+  const blob = pool.files.get(`/fixture/config/state/track/blobs/${retained.ledger_blob.checksum}.json`)
+  expect(blob).toBeDefined()
+  expect(JSON.parse(blob as string)).toEqual(foreign.ledger)
 })
 
 test('TRACK-21 expired closed unfinished records are removed', async ($, on) => {

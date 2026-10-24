@@ -7,7 +7,7 @@ import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
-import { cleanupRecords, clearOwnedClocks, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
+import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerContent } from './reconcile'
@@ -1558,8 +1558,7 @@ const compactBody = ($: EngineInterface, context: WriteContext, onCompacted?: (s
   catch (error) { return keep(`body unreadable: ${reason(error)}`) }
   const body = original as Record<string, unknown> | undefined
   const ledger = body?.ledger
-  if (body?.v !== 1 || typeof ledger !== 'object' || ledger === null || Array.isArray(ledger)) return 'kept'
-  if (Object.hasOwn(body, 'ledger_blob')) return keep('a v:1 body already names a blob')
+  if (!isInlineV1Body(body)) return body?.v === 1 && Object.hasOwn(body, 'ledger_blob') ? keep('a v:1 body already names a blob') : 'kept'
   const text = JSON.stringify(ledger)
   const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
   const pointer = Object.fromEntries(Object.entries(body).map(([name, value]) =>
@@ -1697,7 +1696,7 @@ const adoptAfterConflict = async ($: EngineInterface, context: WriteContext, id:
 }
 
 const cleanupOwned = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
-  await transactionOperation(context, () => cleanupRecords(retentionStore($, context), id, probeGuard($, context)))
+  await transactionOperation(context, () => cleanupRecords(retentionStore($, context), id, probeGuard($, context), { compact: compactBody($, context) }))
 }
 
 // A save acknowledges body, durable head and index only after exact read-back.

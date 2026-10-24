@@ -366,7 +366,11 @@ Cleanup runs only during saves, at most hourly, with a fair cursor, eight target
 a 250 ms elapsed budget for starting targets, including pending rollback. An individual store
 operation can take longer. A foreign target is removable only while its CLOSED lease guard is
 held. First CLOSED observation starts its clock; a later CLOSED observation expires its body,
-head and recovery snapshots after seven full days. Cleaners leave LIVE or unknown records
+head and recovery snapshots after seven full days. The same hourly pass also converts another
+CLOSED session's recent v1 body to a v2 blob pointer, under that session's CLOSED guard and only
+after the blob is published and read back; the ledger stays logically identical. It skips
+imported history, which only a closing time can expire, and it never deletes a blob file.
+Cleaners leave LIVE or unknown records
 byte-identical. Owners clear their own clocks under their lease during resume and save, even
 when resume has no later save. The caller is never expired. Metadata changes do not advance
 checkpoint revisions. Interrupted cleanup
