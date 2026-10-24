@@ -100,7 +100,7 @@ test('an unverified foreign history write remains pending without blocking the c
   logs(on)
   // The removed count-pruner no longer writes history-0. Exercise the same
   // unverified foreign write through retained-lease closure stamping instead.
-  const body = { v: 1, savedAt: 0, ledger: { ...EMPTY } }
+  const body = { v: 1, savedAt: Date.now(), ledger: { ...EMPTY } }
   store.held.set(`s:${foreign}`, body)
   store.faults.alteredAfterSet = `h:${foreign}`
   // TRACK-21 Refuter H2 (2026-10-11): a foreign cleanup error must preserve
