@@ -1,11 +1,11 @@
 {
   "v": 1,
-  "version": "2.1.309",
-  "provenance": "Engine-written SDK from a native Claude Code 2.1.309 load on 2026-10-23 (interactive startup of a b160728 Track copy in a scratch config). Contains digests only, no copied API or machine-specific tool schemas.",
+  "version": "2.1.310",
+  "provenance": "Engine-written SDK from a native Claude Code 2.1.310 load on 2026-10-24 (interactive startup of a cd627b6 Track copy in a scratch config). Contains digests only, no copied API or machine-specific tool schemas.",
   "files": {
     "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
-    "track/.claude-plugin/types/claude-code/index.d.ts": "8c37b2b5422de9af9e1a1e8689acc32f4d6e1e38c60e59db92ed0221fc79c770",
-    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "71d16efc587421d7b66f13e7573d13caa49f86cfdcde960e85ee21f3c101f771",
+    "track/.claude-plugin/types/claude-code/index.d.ts": "95bd52583669d28e8fefb0675fe48630a4f7cc42a1d3ee22aa445d7998a45334",
+    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "e2c906e244c78cba9b0d1dff41bec4c0ae59795485e636011b02f14dd79ee5d2",
     "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "0cab298516885f406c7762cf83b84334b5f5f02e1207abc79a02d136f518354b"
   }
 }
