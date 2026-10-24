@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import selectors
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -31,6 +32,20 @@ SCRUB_ENVIRONMENT = (
     "TRACK_LOCK_PROTOCOL", "TRACK_LOCK_DIR", "CLAUDE_CONFIG_DIR",
     "PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX",
 )
+UNSUPPORTED_PROTOCOLS = (None, "", "1", "3", "02", "unsupported")
+
+# FIXTURE only: a native process holds the historical token-only lease format.
+# Its readiness record is not a helper grant. The parent owns bounded cleanup,
+# and this lifetime also prevents an abandoned fixture from keeping the flock.
+LEGACY_LEASE_FIXTURE = (
+    "import fcntl,json,os,sys,time; "
+    "descriptor=os.open(sys.argv[1],os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600); "
+    "fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB); "
+    "os.ftruncate(descriptor,0); "
+    "os.write(descriptor,json.dumps({'token':sys.argv[2]}).encode('ascii')); "
+    "print(json.dumps({'fixture':'legacy-token-only-lease','pid':os.getpid()}),flush=True); "
+    "time.sleep(float(sys.argv[3]))"
+)
 
 # FIXTURE safety only: run the same absolute entrypoint with a temporary passwd
 # home. Without this wrapper old Path.home() would use the real account's home.
@@ -45,11 +60,14 @@ SAFE_PASSWD_WRAPPER = (
 class OwnedHelper:
     """Own one child and bounded binary protocol/diagnostic pipe buffers."""
 
-    def __init__(self, command, environment, cwd):
+    def __init__(self, command, environment, cwd, *, isolated_group=False):
         self.process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=0, env=environment, cwd=cwd,
+            start_new_session=isolated_group,
         )
+        # start_new_session makes this child's pid its dedicated process group.
+        self.process_group = self.process.pid if isolated_group else None
         self.selector = selectors.DefaultSelector()
         self.stdout_buffer = bytearray()
         self.stderr_buffer = bytearray()
@@ -119,20 +137,26 @@ class OwnedHelper:
             self._read_ready(min(remaining, 0.05))
         return self.process.wait(timeout=0)
 
+    def _signal_owned_process(self, number):
+        if self.process_group is None:
+            self.process.send_signal(number)
+            return
+        try:
+            os.killpg(self.process_group, number)
+        except ProcessLookupError:
+            pass  # The isolated child exited; stop() still reaps it below.
+
     def stop(self, kill=False):
         if self.closed:
             return
         try:
             if self.process.poll() is None:
-                if kill:
-                    self.process.kill()
-                else:
-                    self.process.terminate()
+                self._signal_owned_process(signal.SIGKILL if kill else signal.SIGTERM)
                 try:
                     self.process.wait(timeout=GRANT_TIMEOUT)
                 except subprocess.TimeoutExpired:
-                    # Escalate only this explicitly owned child, never its group.
-                    self.process.kill()
+                    # Only an opt-in fixture has its own recorded process group.
+                    self._signal_owned_process(signal.SIGKILL)
                     self.process.wait(timeout=GRANT_TIMEOUT)
         finally:
             self.selector.close()
@@ -175,15 +199,47 @@ class TransactionFixture(unittest.TestCase):
             child.stop()
 
     def spawn(self, mode=None, *, session=None, token=None, environment=None,
-              helper=HELPER, arguments=None, safe_missing_home=False):
+              helper=HELPER, arguments=None, safe_missing_home=False,
+              isolated_group=False):
         child_arguments = ([mode, session or self.session, token or self.token]
                            if arguments is None else list(arguments))
         command = [sys.executable, str(helper), *child_arguments]
         if safe_missing_home:
             command = [sys.executable, "-c", SAFE_PASSWD_WRAPPER,
                        str(self.home), str(helper), *child_arguments]
-        child = OwnedHelper(command, environment or self.environment, self.cwd)
+        child = OwnedHelper(command, environment or self.environment, self.cwd,
+                            isolated_group=isolated_group)
         self.children.append(child)
+        return child
+
+    def protocol_environment(self, protocol, **overrides):
+        environment = dict(self.environment, **overrides)
+        if protocol is None:
+            environment.pop("TRACK_LOCK_PROTOCOL")
+        else:
+            environment["TRACK_LOCK_PROTOCOL"] = protocol
+        return environment
+
+    def start_legacy_lease_fixture(self, locks=None):
+        """Hold a real flock in a FIXTURE process, without the legacy CLI."""
+        directory = self.locks if locks is None else locks
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        leaf = directory / (self.session + ".lock")
+        child = OwnedHelper(
+            [sys.executable, "-c", LEGACY_LEASE_FIXTURE, str(leaf), self.token,
+             str(4 * GRANT_TIMEOUT)],
+            self.environment, self.cwd, isolated_group=True,
+        )
+        self.children.append(child)
+        self.assertEqual(child.read_record(), {
+            "fixture": "legacy-token-only-lease", "pid": child.process.pid,
+        })
+        self.assertIsNone(child.process.poll(), "legacy FIXTURE must still own its flock")
+        self.assertEqual(json.loads(leaf.read_bytes()), {"token": self.token})
+        with leaf.open("r+") as probe:
+            with self.assertRaises(BlockingIOError,
+                                   msg="legacy FIXTURE must hold an actual native flock"):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return child
 
     def start_success(self, mode, **kwargs):
@@ -280,7 +336,8 @@ class TransactionFixture(unittest.TestCase):
                 elif stat.S_ISLNK(metadata.st_mode):
                     payload = os.readlink(path)
                 entries[str(path.relative_to(self.root))] = (
-                    metadata.st_mode, metadata.st_uid, metadata.st_nlink, payload,
+                    metadata.st_mode, metadata.st_uid, metadata.st_nlink,
+                    metadata.st_dev, metadata.st_ino, payload,
                 )
         return entries
 
@@ -667,11 +724,15 @@ class LeaseProtocolTests(TransactionFixture):
         self.assertFalse(list((self.locks / "tx").glob("*.json")))
 
     def test_legacy_lease_does_not_authorize_protocol2_write(self):
-        environment = dict(self.environment)
-        environment.pop("TRACK_LOCK_PROTOCOL")
-        _, receipt = self.start_success("lease", environment=environment)
-        self.assertEqual(receipt, {"ok": True, "mode": "lease", "token": self.token})
-        self.assert_refused(self.spawn("write"))
+        legacy = self.start_legacy_lease_fixture()
+        leaf = self.locks / (self.session + ".lock")
+        before = leaf.read_bytes()
+        receipt = self.assert_refused(self.spawn("write"))
+        self.assertEqual(receipt, {
+            "ok": False, "reason": "session writer protocol is not supported",
+        })
+        self.assertIsNone(legacy.process.poll(), "refusal must exercise a live legacy lease")
+        self.assertEqual(leaf.read_bytes(), before)
         self.assertFalse(list((self.locks / "tx").glob("*.json")))
 
     def test_queued_writer_rechecks_lease_after_token_changes(self):
@@ -710,32 +771,116 @@ class LeaseProtocolTests(TransactionFixture):
         self.assertEqual((self.locks / (self.session + ".lock")).read_bytes(), before)
 
 
+class StrictProtocolTests(TransactionFixture):
+    """Refuse unsupported protocols before touching either lock namespace."""
+
+    def assert_strict_protocol_refused(self, mode, environment):
+        before = self.snapshot()
+        child = self.spawn(mode, environment=environment, isolated_group=True)
+        try:
+            receipt = child.read_record()
+            self.assertIs(
+                receipt.get("ok"), False,
+                "unsupported protocol must refuse before namespace effects; "
+                + repr(receipt),
+            )
+            self.assertEqual(receipt, {
+                "ok": False, "reason": "unsupported lock protocol",
+            })
+            self.assertEqual(child.wait_exit(), 1)
+            self.assertFalse(child.stdout_buffer,
+                             "refusal must emit exactly one record and no successful receipt")
+            self.assertFalse(child.stderr_buffer, "protocol refusal must not emit diagnostics")
+            self.assertEqual(self.snapshot(), before,
+                             "unsupported protocol must not create, replace or change paths")
+        finally:
+            # Old lease/write helpers ignore stdin EOF. Never wait for their
+            # natural exit or signal any process outside this fixture group.
+            child.stop()
+
+    def test_unset_protocol_lease_is_refused_before_namespace_effects(self):
+        self.assertFalse(self.config.exists(), "primary RED needs a fresh namespace")
+        self.assertFalse((self.home / ".claude").exists())
+        self.assert_strict_protocol_refused("lease", self.protocol_environment(None))
+
+    def test_unset_protocol_write_and_guard_are_refused_before_namespace_effects(self):
+        # A matching token-only native lease makes the old write a valid grant.
+        self.start_legacy_lease_fixture()
+        environment = self.protocol_environment(None)
+        for mode in ("write", "guard"):
+            with self.subTest(mode=mode):
+                self.assert_strict_protocol_refused(mode, environment)
+
+    def test_empty_and_unsupported_protocols_are_refused_for_all_modes(self):
+        self.start_legacy_lease_fixture()
+        for protocol in UNSUPPORTED_PROTOCOLS[1:]:
+            for mode in ("lease", "write", "guard"):
+                with self.subTest(protocol=protocol, mode=mode):
+                    self.assert_strict_protocol_refused(
+                        mode, self.protocol_environment(protocol))
+
+    def test_unsupported_protocols_ignore_override_before_namespace_effects(self):
+        canary = self.root / "override-canary"
+        canary.mkdir(mode=0o700)
+        sentinel = canary / "sentinel"
+        sentinel.write_bytes(b"preserve override canary bytes, mode and inode")
+        sentinel.chmod(0o644)
+        for protocol_index, protocol in enumerate(UNSUPPORTED_PROTOCOLS):
+            for override_kind in ("empty", "missing", "canary"):
+                for mode in ("lease", "write", "guard"):
+                    with self.subTest(protocol=protocol, override=override_kind, mode=mode):
+                        name = f"{protocol_index}-{override_kind}-{mode}"
+                        missing = self.root / ("override-" + name)
+                        override = {"empty": "", "missing": str(missing),
+                                    "canary": str(canary)}[override_kind]
+                        environment = self.protocol_environment(
+                            protocol, CLAUDE_CONFIG_DIR=str(self.root / ("config-" + name)),
+                            TRACK_LOCK_DIR=override,
+                        )
+                        legacy = None
+                        try:
+                            if mode == "write":
+                                directory = self.cwd if override == "" else Path(override)
+                                legacy = self.start_legacy_lease_fixture(directory)
+                            self.assert_strict_protocol_refused(mode, environment)
+                        finally:
+                            if legacy is not None:
+                                legacy.stop()
+
+
 class ProtocolCliTests(TransactionFixture):
-    """Assert usage/protocol failures and exact legacy wire compatibility."""
+    """Assert help and usage validation precede lock protocol routing."""
 
     def test_help_is_successful_short_and_nonmutating(self):
-        for argument in ("--help", "-h"):
-            with self.subTest(argument=argument):
-                before = self.snapshot()
-                child = self.spawn(arguments=[argument])
-                self.assertEqual(child.wait_exit(), 0)
-                output = bytes(child.stdout_buffer)
-                self.assertGreater(len(output), 0)
-                self.assertLess(len(output), MAX_RECORD_BYTES)
-                self.assertIn(b"lease", output)
-                self.assertIn(b"write", output)
-                self.assertIn(b"guard", output)
-                self.assertNotIn(b"Traceback", output + child.stderr_buffer)
-                self.assertEqual(self.snapshot(), before)
+        for protocol in (*UNSUPPORTED_PROTOCOLS, "2"):
+            for argument in ("--help", "-h"):
+                with self.subTest(protocol=protocol, argument=argument):
+                    environment = self.protocol_environment(
+                        protocol, TRACK_LOCK_DIR=str(self.root / "unused-override"))
+                    before = self.snapshot()
+                    child = self.spawn(arguments=[argument], environment=environment)
+                    self.assertEqual(child.wait_exit(), 0)
+                    output = bytes(child.stdout_buffer)
+                    self.assertGreater(len(output), 0)
+                    self.assertLess(len(output), MAX_RECORD_BYTES)
+                    self.assertIn(b"lease", output)
+                    self.assertIn(b"write", output)
+                    self.assertIn(b"guard", output)
+                    self.assertNotIn(b"Traceback", output + child.stderr_buffer)
+                    self.assertEqual(self.snapshot(), before)
 
     def test_noargs_unknown_mode_and_malformed_canary_have_usage_exit(self):
         canary = "PRIVATE-CANARY-" + uuid.uuid4().hex + "\nnot-a-record"
         arguments = ([], ["badmode", self.session, self.token],
                      ["lease", canary, self.token], ["lease", self.session, canary])
-        for invocation in arguments:
-            with self.subTest(argument_count=len(invocation)):
-                self.assert_nonmutating_refusal(
-                    lambda: self.spawn(arguments=invocation), expected_code=2, canary=canary)
+        for protocol in (*UNSUPPORTED_PROTOCOLS, "2"):
+            for invocation in arguments:
+                with self.subTest(protocol=protocol, argument_count=len(invocation)):
+                    environment = self.protocol_environment(
+                        protocol, TRACK_LOCK_DIR=str(self.root / "unused-override"))
+                    self.assert_nonmutating_refusal(
+                        lambda: self.spawn(arguments=invocation, environment=environment),
+                        expected_code=2, canary=canary)
 
     def test_unsupported_and_empty_protocol_are_nonmutating_failures(self):
         for protocol in ("", "1", "3", "02", "unsupported"):
@@ -743,17 +888,6 @@ class ProtocolCliTests(TransactionFixture):
                 environment = dict(self.environment, TRACK_LOCK_PROTOCOL=protocol)
                 self.assert_nonmutating_refusal(
                     lambda: self.spawn("lease", environment=environment))
-
-    def test_unset_protocol_preserves_exact_valid_legacy_receipts(self):
-        environment = dict(self.environment)
-        environment.pop("TRACK_LOCK_PROTOCOL")
-        self.start_success("lease", environment=environment)
-        _, receipt = self.start_success("write", environment=environment)
-        self.assertEqual(receipt, {"ok": True, "mode": "write", "token": self.token})
-        _, guard = self.start_success("guard", environment=environment)
-        self.assertEqual(guard, {
-            "ok": True, "mode": "guard", "token": self.token, "state": "live",
-        })
 
 
 if __name__ == "__main__":

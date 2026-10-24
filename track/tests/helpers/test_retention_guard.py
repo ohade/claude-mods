@@ -14,8 +14,17 @@ SID = '11111111-2222-4333-8444-555555555555'
 
 class RetentionGuardTests(unittest.TestCase):
     def setUp(self):
-        self.directory = Path(tempfile.mkdtemp(prefix='track21-guard-'))
-        self.environment = dict(os.environ, TRACK_LOCK_DIR=str(self.directory))
+        self.root = Path(tempfile.mkdtemp(prefix='track21-guard-')).resolve()
+        self.home = self.root / 'home'
+        self.config = self.root / 'config'
+        self.directory = self.config / 'state' / 'track' / 'locks'
+        self.home.mkdir(mode=0o700)
+        self.directory.mkdir(mode=0o700, parents=True)
+        inherited = ('TRACK_LOCK_PROTOCOL', 'TRACK_LOCK_DIR', 'CLAUDE_CONFIG_DIR')
+        self.environment = {name: value for name, value in os.environ.items()
+                            if name not in inherited}
+        self.environment.update(HOME=str(self.home), CLAUDE_CONFIG_DIR=str(self.config),
+                                TRACK_LOCK_PROTOCOL='2')
         self.children = []
 
     def tearDown(self):
@@ -23,7 +32,7 @@ class RetentionGuardTests(unittest.TestCase):
             if child.poll() is None:
                 child.terminate()
             child.communicate(timeout=5)
-        self.directory.rename(Path.home() / '.Trash' / self.directory.name)
+        self.root.rename(Path.home() / '.Trash' / self.root.name)
 
     def start_helper(self, mode, token='cleaner'):
         child = subprocess.Popen(['python3', str(HELPER), mode, SID, token],
