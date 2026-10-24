@@ -100,11 +100,11 @@ type Closed = { body: Record<string, unknown>; head: Record<string, unknown>; te
 // A v:1 body big enough that its v:2 pointer is smaller, so compaction has something to gain.
 const sessionOf = async (session: string, savedAt: number, extra: Record<string, unknown> = {}, closedAt?: number): Promise<Closed> => {
   const ledger = { ...EMPTY, session_id: session, nextQuestionId: 2, questions: [{ id: 1, head: `Question of ${session}`, at: 1, turnId: 'old', status: 'deferred', note: 'n'.repeat(3000), session_id: session }] }
-  const checkpoint = await describeCheckpoint(ledger as never, session)
+  const described = await describeCheckpoint(ledger as never, session)
   const text = JSON.stringify(ledger)
   return {
-    body: { v: 1, session_id: session, generation: GENERATION, savedAt, ledger, checkpoint, ...extra },
-    head: { v: 1, session_id: session, generation: GENERATION, checkpoint, ...(closedAt !== undefined && { closedAt }) },
+    body: { v: 1, session_id: session, generation: GENERATION, savedAt, ledger, checkpoint: described, ...extra },
+    head: { v: 1, session_id: session, generation: GENERATION, checkpoint: described, ...(closedAt !== undefined && { closedAt }) },
     text, checksum: await sha256(text),
   }
 }
