@@ -2,9 +2,11 @@
 
 Every test uses its own temporary directory; none touches a real config directory.
 """
+import contextlib
 import fcntl
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -301,6 +303,9 @@ class SweepInProcessTests(unittest.TestCase):
     def test_defaults_are_pinned(self):
         self.assertEqual(blob_fs.DEFAULT_MAX_REMOVALS, 200)
         self.assertEqual(blob_fs.DEFAULT_MIN_AGE_SECONDS, 604800)
+        self.assertEqual(blob_fs.LOCK_RETRY_SECONDS, 0.01)
+        self.assertEqual(blob_fs.PUBLISH_LOCK_WAIT_SECONDS, 5)
+        self.assertEqual(blob_fs.SWEEP_LOCK_WAIT_SECONDS, 2)
 
     def test_age_check_boundary_is_exact(self):
         path = self.blob("edge", 0)
@@ -507,6 +512,129 @@ class SweepInProcessTests(unittest.TestCase):
             call(*args)
         return type(caught.exception).__name__
 
+    def before_recheck(self, target, action):
+        """Patcher for blob_age_state that runs `action()` just before the second look at `target` (the re-check)."""
+        real = blob_fs.blob_age_state
+        looks = []
+
+        def wrapper(dir_fd, name, now, min_age):
+            if name == target.name:
+                looks.append(name)
+                if len(looks) == 2:
+                    action()
+            return real(dir_fd, name, now, min_age)
+        return mock.patch.object(blob_fs, "blob_age_state", wrapper)
+
+    def sweep_capturing_stderr(self):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            try:
+                receipt = self.sweep()
+            except OSError as error:
+                self.fail(f"the sweep was aborted by {error!r}")
+        return receipt, captured.getvalue()
+
+    def test_sweep_holds_the_exclusive_lock_during_the_scan(self):
+        self.blob("old")
+        real_listdir, real_age = os.listdir, blob_fs.blob_age_state
+        outcomes = []
+
+        def probe(label):
+            handle = os.open(self.dir, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                outcomes.append((label, "acquired"))
+            except BlockingIOError:
+                outcomes.append((label, "blocked"))
+            finally:
+                os.close(handle)
+
+        def listing(path):
+            probe("listdir")
+            return real_listdir(path)
+
+        def aging(dir_fd, name, now, min_age):
+            probe("age check")
+            return real_age(dir_fd, name, now, min_age)
+
+        with mock.patch.object(blob_fs.os, "listdir", listing), mock.patch.object(blob_fs, "blob_age_state", aging):
+            self.sweep()
+        self.assertEqual(outcomes[:2], [("listdir", "blocked"), ("age check", "blocked")])
+        self.assertEqual({outcome for _, outcome in outcomes}, {"blocked"})
+
+    def test_unlink_failure_prints_the_cause_and_the_run_continues(self):
+        paths = sorted([self.blob(label) for label in ("a", "b", "c")], key=lambda p: p.name)
+        real = os.unlink
+
+        def failing(name, *args, **kwargs):
+            if name == paths[1].name:
+                raise PermissionError(13, "denied")
+            return real(name, *args, **kwargs)
+
+        with mock.patch.object(blob_fs.os, "unlink", failing):
+            receipt, stderr = self.sweep_capturing_stderr()
+        self.assertEqual(receipt, expected(removed=[paths[0].name, paths[2].name], failed=1))
+        self.assertEqual(stderr, f"blob-fs: could not remove {paths[1].name}: [Errno 13] denied\n")
+
+    def test_recheck_error_is_counted_reported_and_the_run_continues(self):
+        paths = sorted([self.blob(label) for label in ("a", "b", "c")], key=lambda p: p.name)
+        target = paths[1]
+        real_stat = os.stat
+        armed = []
+
+        def stat_that_fails(path, *args, **kwargs):
+            if armed and path == target.name and "dir_fd" in kwargs:
+                raise PermissionError(13, "denied")
+            return real_stat(path, *args, **kwargs)
+
+        def arm():
+            armed.append(True)
+
+        patcher, calls = self.dir_fsyncs()
+        with self.before_recheck(target, arm), mock.patch.object(blob_fs.os, "stat", stat_that_fails), patcher:
+            receipt, stderr = self.sweep_capturing_stderr()
+        self.assertTrue(target.exists())
+        self.assertFalse(paths[0].exists())
+        self.assertFalse(paths[2].exists())
+        self.assertEqual(receipt, expected(removed=[paths[0].name, paths[2].name], failed=1))
+        self.assertEqual(stderr, f"blob-fs: could not re-check {target.name}: [Errno 13] denied\n")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_file_replaced_by_another_inode_after_the_scan_is_kept(self):
+        paths = sorted([self.blob(label) for label in ("a", "b", "c")], key=lambda p: p.name)
+        target = paths[1]
+        scanned = os.lstat(target)
+        replacement = self.dir / "replacement.tmp"
+
+        def replace():
+            # Create the new file before the rename, so it cannot reuse the old inode.
+            replacement.write_text("new owner of the name")
+            stamp = int(time.time()) - 10 * DAY
+            os.utime(replacement, (stamp, stamp))
+            os.rename(replacement, target)
+
+        with self.before_recheck(target, replace):
+            receipt = self.sweep()
+        self.assertTrue(target.exists(), "the replacement file was deleted")
+        replaced = os.lstat(target)
+        self.assertNotEqual((replaced.st_dev, replaced.st_ino), (scanned.st_dev, scanned.st_ino))
+        self.assertEqual(target.read_text(), "new owner of the name")
+        self.assertFalse(paths[0].exists())
+        self.assertFalse(paths[2].exists())
+        self.assertEqual(receipt, expected(removed=[paths[0].name, paths[2].name], vanished=1))
+
+    def test_a_keep_set_json_error_keeps_its_cause(self):
+        with self.assertRaises(blob_fs.SweepError) as caught:
+            blob_fs.parse_keep_set("{nope")
+        self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+
+    def test_a_directory_open_failure_keeps_its_cause(self):
+        failure = PermissionError(13, "denied")
+        with mock.patch.object(blob_fs.os, "open", side_effect=failure):
+            with self.assertRaises(blob_fs.SweepError) as caught:
+                blob_fs.open_existing_dir(str(self.dir))
+        self.assertIs(caught.exception.__cause__, failure)
+
     def test_sweep_errors_are_sweep_errors(self):
         link = self.root / "link"
         os.symlink(self.dir, link)
@@ -576,17 +704,18 @@ class DirectoryLockCliTests(unittest.TestCase):
         self.assertFalse(old.exists())
 
     def test_publish_waits_for_the_lock_and_then_completes(self):
-        started = time.time()
         lock = self.hold(fcntl.LOCK_EX)
+        locked_at = time.monotonic()
         timer = threading.Timer(0.3, lock.release)
         timer.start()
         sum_, process = self.start_publish("waited text")
         try:
             out, err = process.communicate(b"waited text", timeout=15)
+            finished_at = time.monotonic()
         finally:
             timer.join()
         self.assertEqual(process.returncode, 0, err.decode())
-        self.assertGreaterEqual(time.time() - started, 0.3)
+        self.assertGreaterEqual(finished_at - locked_at, 0.3)
         self.assertEqual(json.loads(out)["checksum"], sum_)
         self.assertEqual((self.dir / f"{sum_}.json").read_text(), "waited text")
 
@@ -599,7 +728,50 @@ class DirectoryLockCliTests(unittest.TestCase):
         self.assertEqual(process.returncode, 1, err.decode())
         self.assertEqual(err.decode().strip(), "blob-fs: blob directory is busy")
         self.assertGreaterEqual(elapsed, 4.5)
+        self.assertLess(elapsed, 6.5)
         self.assertEqual(os.listdir(self.dir), [])
+
+    def test_sweep_gives_up_after_two_seconds_and_deletes_nothing(self):
+        old = self.old_blob()
+        self.hold(fcntl.LOCK_SH)
+        started = time.monotonic()
+        result = self.run_sweep()
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 1, result.stderr.decode())
+        self.assertEqual(result.stderr.decode().strip(), "blob-fs: blob directory is busy")
+        self.assertTrue(old.exists())
+        self.assertGreaterEqual(elapsed, 1.5)
+        self.assertLess(elapsed, 3.5)
+
+    def test_publish_of_an_existing_blob_waits_for_the_lock_before_refreshing_it(self):
+        text = "existing blob text"
+        sum_ = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        path = self.dir / f"{sum_}.json"
+        path.write_text(text)
+        os.chmod(path, 0o600)
+        old = time.time() - 30 * DAY
+        os.utime(path, (old, old))
+        old_mtime = os.lstat(path).st_mtime
+        lock = self.hold(fcntl.LOCK_EX)
+        _, process = self.start_publish(text)
+        try:
+            process.stdin.write(text.encode("utf-8"))
+            process.stdin.close()
+            time.sleep(0.3)
+            self.assertIsNone(process.poll(), "publish finished while the directory lock was held")
+            self.assertEqual(os.lstat(path).st_mtime, old_mtime)
+            lock.release()
+            out = process.stdout.read()
+            self.assertEqual(process.wait(timeout=15), 0, process.stderr.read().decode())
+        finally:
+            lock.release()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            for stream in (process.stdout, process.stderr):
+                stream.close()
+        self.assertEqual(json.loads(out)["checksum"], sum_)
+        self.assertLess(abs(os.lstat(path).st_mtime - time.time()), 5)
 
 
 if __name__ == "__main__":

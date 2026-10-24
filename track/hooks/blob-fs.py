@@ -17,12 +17,14 @@ with nothing deleted. The caller MUST hold Track's store write lock for the
 whole run: the keep-set is a snapshot, and a concurrent writer could otherwise
 start referencing a blob after it was read.
 
-Saves publish before they take the store lock, so the store lock alone cannot
-keep a sweep away from a publish. The two exclude each other through flock on
-the blob directory: `publish` holds LOCK_SH from just after opening the directory
-until after its final directory fsync (waiting up to 5 s, then "blob directory
-is busy"), and `sweep` holds LOCK_EX for its whole scan, re-check and unlink
-phase (waiting up to 2 s, then the same error, deleting nothing).
+Track's saves and compaction publish while holding the store write lock, and the
+sweep caller must hold the same lock, so the two never overlap. The directory
+flock is a second guard against any publisher that does not hold the store lock,
+and the age gate protects a blob such a publisher has not yet referenced.
+`publish` holds LOCK_SH from just after opening the directory until after its
+final directory fsync (waiting up to 5 s, then "blob directory is busy"), and
+`sweep` holds LOCK_EX for its whole scan, re-check and unlink phase (waiting up
+to 2 s, then the same error, deleting nothing).
 """
 import fcntl
 import hashlib
@@ -170,7 +172,7 @@ def parse_keep_set(raw):
     try:
         document = json.loads(raw)
     except (ValueError, RecursionError) as error:
-        raise SweepError(f"keep-set is not valid JSON: {error}")
+        raise SweepError(f"keep-set is not valid JSON: {error}") from error
     keep = document.get("keep") if isinstance(document, dict) else None
     if not isinstance(keep, list):
         raise SweepError("keep-set must be an object with a list under 'keep'")
@@ -197,7 +199,7 @@ def open_existing_dir(directory):
     try:
         return os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as error:
-        raise SweepError(f"cannot open blob directory {directory}: {error}")
+        raise SweepError(f"cannot open blob directory {directory}: {error}") from error
 
 
 def blob_age_state(dir_fd, name, now, min_age):
@@ -213,6 +215,69 @@ def blob_age_state(dir_fd, name, now, min_age):
     return "eligible"
 
 
+def blob_identity(dir_fd, name):
+    """(st_dev, st_ino) of `name`, not following symlinks; None when it is gone."""
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def scan_blobs(dir_fd, keep, now, min_age, receipt):
+    """Count the referenced and young blobs into `receipt`; return [(name, identity)] of the eligible ones."""
+    eligible = []
+    for name in sorted(os.listdir(dir_fd)):
+        if not BLOB_NAME.fullmatch(name):
+            continue
+        # The identity is read before the age, so a replacement in between is caught by the re-check.
+        identity = blob_identity(dir_fd, name)
+        state = blob_age_state(dir_fd, name, now, min_age)
+        if identity is None or state is None:
+            continue
+        if name[:-len(".json")] in keep:
+            receipt["kept_referenced"] += 1
+        elif state == "young":
+            receipt["kept_young"] += 1
+        else:
+            eligible.append((name, identity))
+    return eligible
+
+
+def remove_blobs(dir_fd, eligible, min_age, receipt):
+    """Re-check each scanned blob and unlink it; the directory is fsynced when anything was removed."""
+    try:
+        for name, scanned_identity in eligible:
+            try:
+                state = blob_age_state(dir_fd, name, time.time(), min_age)
+                identity = blob_identity(dir_fd, name)
+            except OSError as error:
+                receipt["failed"] += 1
+                print(f"blob-fs: could not re-check {name}: {error}", file=sys.stderr)
+                continue
+            if state is None or identity != scanned_identity:
+                # Gone, no longer an owned regular file, or a different file under the same name.
+                receipt["vanished"] += 1
+                continue
+            if state == "young":
+                receipt["kept_young"] += 1
+                continue
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                # Someone else removed it between the re-check and the unlink: nothing left to delete.
+                receipt["vanished"] += 1
+                continue
+            except OSError as error:
+                receipt["failed"] += 1
+                print(f"blob-fs: could not remove {name}: {error}", file=sys.stderr)
+                continue
+            receipt["removed"].append(name)
+    finally:
+        if receipt["removed"]:
+            os.fsync(dir_fd)
+
+
 def sweep(directory, keep, min_age=DEFAULT_MIN_AGE_SECONDS, max_removals=DEFAULT_MAX_REMOVALS):
     receipt = {"ok": True, "removed": [], "kept_referenced": 0, "kept_young": 0,
                "vanished": 0, "failed": 0, "more": False}
@@ -221,43 +286,9 @@ def sweep(directory, keep, min_age=DEFAULT_MIN_AGE_SECONDS, max_removals=DEFAULT
         return receipt
     try:
         lock_directory(dir_fd, fcntl.LOCK_EX, SWEEP_LOCK_WAIT_SECONDS, SweepError)
-        now = time.time()
-        eligible = []
-        for name in sorted(os.listdir(dir_fd)):
-            if not BLOB_NAME.fullmatch(name):
-                continue
-            state = blob_age_state(dir_fd, name, now, min_age)
-            if state is None:
-                continue
-            if name[:-len(".json")] in keep:
-                receipt["kept_referenced"] += 1
-            elif state == "young":
-                receipt["kept_young"] += 1
-            else:
-                eligible.append(name)
+        eligible = scan_blobs(dir_fd, keep, time.time(), min_age, receipt)
         receipt["more"] = len(eligible) > max_removals
-        try:
-            for name in eligible[:max_removals]:
-                state = blob_age_state(dir_fd, name, time.time(), min_age)
-                if state is None:
-                    receipt["vanished"] += 1
-                    continue
-                if state == "young":
-                    receipt["kept_young"] += 1
-                    continue
-                try:
-                    os.unlink(name, dir_fd=dir_fd)
-                except FileNotFoundError:
-                    # Someone else removed it between the re-check and the unlink: nothing left to delete.
-                    receipt["vanished"] += 1
-                    continue
-                except OSError:
-                    receipt["failed"] += 1
-                    continue
-                receipt["removed"].append(name)
-        finally:
-            if receipt["removed"]:
-                os.fsync(dir_fd)
+        remove_blobs(dir_fd, eligible[:max_removals], min_age, receipt)
     finally:
         os.close(dir_fd)
     return receipt
