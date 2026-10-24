@@ -8,7 +8,7 @@ test('TRACK-21 a permitted large closure stamp preserves the exact body payload'
   atomStore(on, 'ledger', EMPTY)
   const padding = 'p'.repeat(1486000)
   const beforeHash = await checksumOf(padding)
-  const before = { v: 1, savedAt: 1, ledger: EMPTY, padding }
+  const before = { v: 1, savedAt: Date.now(), ledger: EMPTY, padding }
   const bodyHash = await checksumOf(before)
   const store = pluginStore(on, { [`s:${FOREIGN}`]: before }, undefined, { guardStates: { [FOREIGN]: 'closed' } })
   const pool = blobPool(on)

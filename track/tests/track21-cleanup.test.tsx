@@ -8,9 +8,9 @@ const save = async ($: Parameters<import('claude-code/testing').TestBody>[0]) =>
   await $.turn.complete({ answer: 'done', reason: 'answer', turnId: 't1', durationMs: 1, isAborted: false } as never)
 }
 
-test('TRACK-21 first closed sighting stamps closure without expiring old unfinished rows', async ($, on) => {
+test('TRACK-21 first closed sighting stamps closure without expiring recently saved unfinished rows', async ($, on) => {
   blobPool(on)
-  const foreign = { v: 1, savedAt: 1, ledger: { ...EMPTY, questions: [{ id: 1, head: 'unfinished', status: 'open', at: 1, turnId: null }] } }
+  const foreign = { v: 1, savedAt: Date.now(), ledger: { ...EMPTY, questions: [{ id: 1, head: 'unfinished', status: 'open', at: 1, turnId: null }] } }
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
   const store = pluginStore(on, { [`s:${FOREIGN}`]: foreign }, undefined, { guardStates: { [FOREIGN]: 'closed' } })

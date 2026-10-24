@@ -271,11 +271,24 @@ const changeRecord = async (store: RetentionStore, session: string, entries: Arr
   }
 }
 
-export const cleanupRecords = async (store: RetentionStore, caller: string, probe: Probe): Promise<void> => {
+// TRACK-43: a CLOSED v1 body keeps its history inline; the injected compaction
+// moves it to a blob pointer.
+const isInlineBody = (body: unknown): boolean => typeof body === 'object' && body !== null && (body as Value).v === 1 &&
+  Object.hasOwn(body, 'ledger') && !Object.hasOwn(body, 'ledger_blob')
+
+// Runs the injected compaction for one visit. `confirm` is valid only while the
+// visit's guard is held, the budget remains and the s: value is the one read.
+const migrateInline = (store: RetentionStore, compact: Compaction, session: string, body: Value, guardHeld: () => boolean, canStart: () => boolean) => {
+  const confirm = async (): Promise<boolean> => guardHeld() && canStart() && sameRecord(await store.get(`s:${session}`), body)
+  return compact(session, confirm)
+}
+
+export const cleanupRecords = async (store: RetentionStore, caller: string, probe: Probe, options: { compact?: Compaction } = {}): Promise<void> => {
   const now = Date.now()
   const canStart = () => Date.now() - now < WORK_MS
   let visited = 0
   let verified = 0
+  let compacting = options.compact !== undefined
   let sizes: Map<string, number> | undefined
   const failures: string[] = []
   const previous = await store.get(CLEANUP) as { lastCleanup?: number; lastAttempt?: number; cursor?: string; recoveryCursor?: string; blocked?: string[] } | undefined
@@ -324,8 +337,9 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
   for (const session of isDue ? ordered.slice(0, BATCH - visited) : []) {
     if (!canStart()) break
     let guard: Guard | undefined
+    let guardHeld = false
     try {
-      try { guard = await probe(session) }
+      try { guard = await probe(session); guardHeld = true }
       catch (error) { store.log(`track: cleanup keeps ${session}: lease ambiguous: ${String(error)}`); cursor = session; continue }
       // Cleaners never rewrite LIVE or unknown records. Only an owner clears
       // its own clocks, under its retained lease, including on resume.
@@ -343,11 +357,18 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       const head = entries.find(([key]) => key === headKey)?.[1] as Value | undefined
       const closures = entries.map(([, value]) => (value as Value).closedAt)
       const closedAt = validClock(head?.closedAt, now) ? head.closedAt : closures.length > 0 && closures.every(value => validClock(value, now)) ? Math.max(...closures as number[]) : undefined
-      const expired = closedAt !== undefined && now - closedAt >= CLOSED_TTL
+      const bodyKey = `s:${session}`
+      const body = entries.find(([key]) => key === bodyKey)?.[1] as Value | undefined
+      const closedExpired = closedAt !== undefined && now - closedAt >= CLOSED_TTL
+      // The last save is a second, independent expiry clock; an unusable one is ignored.
+      // An imported savedAt comes from the source store, so only closedAt can expire an import.
+      const imported = body !== undefined && Object.hasOwn(body, 'import_provenance')
+      const expiringSavedAt = !imported && validClock(body?.savedAt, now) && now - body.savedAt >= CLOSED_TTL ? body.savedAt : undefined
+      const expiryClock = closedExpired ? closedAt : expiringSavedAt
       if (sizes === undefined) sizes = await readSizes(store)
       if (!canStart()) break
-      if (expired) {
-        const intent = await deletionIntent(session, closedAt, entries, 'expiry')
+      if (expiryClock !== undefined) {
+        const intent = await deletionIntent(session, expiryClock, entries, 'expiry')
         checkSizes(sizes, { [recoveryKey(session)]: intent }, 4 * 1024 * 1024)
         if (!canStart()) break
         if (await finishExpiry(store, intent, canStart, probe, true)) verified++
@@ -356,6 +377,13 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
         const stamped = { ...(head ?? { v: 1, retentionOnly: true }), session_id: session, closedAt: closedAt ?? now }
         if (await changeRecord(store, session, [[headKey, head]], [[headKey, stamped]], sizes, canStart)) verified++
       }
+      if (expiryClock === undefined && compacting && options.compact !== undefined && isInlineBody(body)) {
+        if (!canStart()) break
+        const outcome = await migrateInline(store, options.compact, session, body as Value, () => guardHeld && guard?.state === 'closed', canStart)
+        sizes = undefined // Compaction rewrote an indexed key.
+        if (outcome === 'compacted') verified++
+        else if (outcome === 'stop') compacting = false
+      }
       cursor = session
     } catch (error) {
       failures.push(String(error))
@@ -363,6 +391,7 @@ export const cleanupRecords = async (store: RetentionStore, caller: string, prob
       cursor = session
       store.log(`track: cleanup keeps ${session}; deferred: ${String(error)}`)
     } finally {
+      guardHeld = false
       try { await guard?.release() }
       catch (error) { failures.push(String(error)); store.log(`track: cleanup guard release failed: ${String(error)}`) }
     }
