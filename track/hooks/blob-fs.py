@@ -5,8 +5,26 @@
 `<dir>/<checksum>.json`, mode 0600 in a 0700 directory. Publication is a hard
 link from a private temp file, so it is atomic and never replaces an existing
 file: a matching blob is accepted, anything else is refused and left untouched.
-Nothing here deletes a blob.
+Accepting an existing blob sets its atime and mtime to now, so a reused blob
+counts as young again for the sweep.
+
+`sweep <dir> [--min-age-seconds N] [--max N]` is the only command that deletes
+a blob (TRACK-42). The keep-set arrives on stdin as {"keep": [<64 hex>, ...]}.
+It removes `<checksum>.json` regular files owned by this user that are not in
+the keep-set and are at least N seconds old (default 604800, seven days), at
+most --max per run (default 200). An empty or malformed keep-set is refused
+with nothing deleted. The caller MUST hold Track's store write lock for the
+whole run: the keep-set is a snapshot, and a concurrent writer could otherwise
+start referencing a blob after it was read.
+
+Saves publish before they take the store lock, so the store lock alone cannot
+keep a sweep away from a publish. The two exclude each other through flock on
+the blob directory: `publish` holds LOCK_SH from just after opening the directory
+until after its final directory fsync (waiting up to 5 s, then "blob directory
+is busy"), and `sweep` holds LOCK_EX for its whole scan, re-check and unlink
+phase (waiting up to 2 s, then the same error, deleting nothing).
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -14,12 +32,38 @@ import re
 import secrets
 import stat
 import sys
+import time
 
 CHECKSUM = re.compile(r"[0-9a-f]{64}")
+BLOB_NAME = re.compile(r"[0-9a-f]{64}\.json")
+DEFAULT_MIN_AGE_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_MAX_REMOVALS = 200
+SWEEP_USAGE = "usage: blob-fs.py sweep <dir> [--min-age-seconds N] [--max N]"
+LOCK_RETRY_SECONDS = 0.01
+PUBLISH_LOCK_WAIT_SECONDS = 5
+SWEEP_LOCK_WAIT_SECONDS = 2
+BUSY_MESSAGE = "blob directory is busy"
 
 
 class PublishError(Exception):
     pass
+
+
+class SweepError(PublishError):
+    pass
+
+
+def lock_directory(dir_fd, mode, wait_seconds, error_class):
+    """flock `dir_fd` in `mode`, retrying every 10 ms for `wait_seconds`; `error_class` when it stays held."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(dir_fd, mode | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise error_class(BUSY_MESSAGE)
+            time.sleep(LOCK_RETRY_SECONDS)
 
 
 def open_dir(directory):
@@ -68,6 +112,7 @@ def accept_existing(dir_fd, name, data):
             raise PublishError(f"existing blob {name} differs from the published text; it was kept")
         if stat.S_IMODE(info.st_mode) != 0o600:
             os.fchmod(fd, 0o600)
+        os.utime(fd)
     finally:
         os.close(fd)
     return True
@@ -86,6 +131,8 @@ def publish(directory, checksum, text, before_link=None):
     try:
         dir_fd = open_dir(directory)
         try:
+            # Held until the directory is closed, which is after the final fsync below.
+            lock_directory(dir_fd, fcntl.LOCK_SH, PUBLISH_LOCK_WAIT_SECONDS, PublishError)
             name = f"{checksum}.json"
             if accept_existing(dir_fd, name, data):
                 return receipt
@@ -119,7 +166,136 @@ def publish(directory, checksum, text, before_link=None):
         os.umask(previous)
 
 
+def parse_keep_set(raw):
+    try:
+        document = json.loads(raw)
+    except (ValueError, RecursionError) as error:
+        raise SweepError(f"keep-set is not valid JSON: {error}")
+    keep = document.get("keep") if isinstance(document, dict) else None
+    if not isinstance(keep, list):
+        raise SweepError("keep-set must be an object with a list under 'keep'")
+    if not keep:
+        raise SweepError("keep-set is empty; refusing to sweep without a readable store")
+    for entry in keep:
+        if not isinstance(entry, str) or not CHECKSUM.fullmatch(entry):
+            raise SweepError("keep-set entries must be 64 lowercase hex characters")
+    return set(keep)
+
+
+def open_existing_dir(directory):
+    """Open `directory` for sweeping; None when it does not exist. Never creates it."""
+    if not os.path.isabs(directory):
+        raise SweepError("blob directory must be an absolute path")
+    try:
+        info = os.lstat(directory)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        raise SweepError(f"blob directory is a symlink: {directory}")
+    if not stat.S_ISDIR(info.st_mode):
+        raise SweepError(f"blob directory is not a directory: {directory}")
+    try:
+        return os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise SweepError(f"cannot open blob directory {directory}: {error}")
+
+
+def blob_age_state(dir_fd, name, now, min_age):
+    """'eligible', 'young' (too new or future-dated), or None when `name` is not an owned regular blob file."""
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        return None
+    if info.st_mtime > now or now - info.st_mtime < min_age:
+        return "young"
+    return "eligible"
+
+
+def sweep(directory, keep, min_age=DEFAULT_MIN_AGE_SECONDS, max_removals=DEFAULT_MAX_REMOVALS):
+    receipt = {"ok": True, "removed": [], "kept_referenced": 0, "kept_young": 0,
+               "vanished": 0, "failed": 0, "more": False}
+    dir_fd = open_existing_dir(directory)
+    if dir_fd is None:
+        return receipt
+    try:
+        lock_directory(dir_fd, fcntl.LOCK_EX, SWEEP_LOCK_WAIT_SECONDS, SweepError)
+        now = time.time()
+        eligible = []
+        for name in sorted(os.listdir(dir_fd)):
+            if not BLOB_NAME.fullmatch(name):
+                continue
+            state = blob_age_state(dir_fd, name, now, min_age)
+            if state is None:
+                continue
+            if name[:-len(".json")] in keep:
+                receipt["kept_referenced"] += 1
+            elif state == "young":
+                receipt["kept_young"] += 1
+            else:
+                eligible.append(name)
+        receipt["more"] = len(eligible) > max_removals
+        try:
+            for name in eligible[:max_removals]:
+                state = blob_age_state(dir_fd, name, time.time(), min_age)
+                if state is None:
+                    receipt["vanished"] += 1
+                    continue
+                if state == "young":
+                    receipt["kept_young"] += 1
+                    continue
+                try:
+                    os.unlink(name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    # Someone else removed it between the re-check and the unlink: nothing left to delete.
+                    receipt["vanished"] += 1
+                    continue
+                except OSError:
+                    receipt["failed"] += 1
+                    continue
+                receipt["removed"].append(name)
+        finally:
+            if receipt["removed"]:
+                os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    return receipt
+
+
+def parse_sweep_args(args):
+    """(directory, min_age, max_removals) from the argv after 'sweep'; ValueError on bad usage."""
+    if not args:
+        raise ValueError("missing <dir>")
+    directory, rest = args[0], args[1:]
+    options = {"--min-age-seconds": DEFAULT_MIN_AGE_SECONDS, "--max": DEFAULT_MAX_REMOVALS}
+    while rest:
+        if rest[0] not in options or len(rest) < 2 or not re.fullmatch(r"[0-9]+", rest[1]):
+            raise ValueError(f"bad option: {rest[0]}")
+        options[rest[0]] = int(rest[1])
+        rest = rest[2:]
+    return directory, options["--min-age-seconds"], options["--max"]
+
+
+def main_sweep(args):
+    try:
+        directory, min_age, max_removals = parse_sweep_args(args)
+    except ValueError:
+        print(SWEEP_USAGE, file=sys.stderr)
+        return 2
+    try:
+        keep = parse_keep_set(sys.stdin.buffer.read())
+        receipt = sweep(directory, keep, min_age, max_removals)
+    except (PublishError, OSError) as error:
+        print(f"blob-fs: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(receipt), flush=True)
+    return 0
+
+
 def main(argv):
+    if len(argv) > 1 and argv[1] == "sweep":
+        return main_sweep(argv[2:])
     if len(argv) != 4 or argv[1] != "publish":
         print("usage: blob-fs.py publish <dir> <checksum>", file=sys.stderr)
         return 2
