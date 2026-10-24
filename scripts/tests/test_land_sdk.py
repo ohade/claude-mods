@@ -46,8 +46,10 @@ class SdkLandingTest(unittest.TestCase):
         self.run_command('git', 'clone', str(origin), str(self.repo))
         self.git('config', 'user.name', 'Fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
-        self.git('checkout', '-b', 'fixture-main')
-        self.git('branch', '-m', 'main')
+        if self.git('branch', '--list', 'main').stdout.strip():
+            self.git('checkout', 'main')
+        else:
+            self.git('checkout', '-b', 'main')
         # Only this disposable clone is replaced with the minimal test world.
         self.git('rm', '-r', '--', '.')
         mod = self.repo / 'track'
