@@ -46,6 +46,7 @@ test('resume retains a restore record still needed by an uncleared question', as
   const live = { by: BY, from: FROM, steps: 0, questions: QUESTIONS }
   const history = [1, 2, 3, 4].map(n => ({ by: `older-${n}`, from: FROM, steps: 0, questions: [] }))
   const ledger = atomStore(on, 'ledger', EMPTY as any)
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, { [`s:${SESSION}`]: { v: 1, ledger: { ...EMPTY, nextQuestionId: 3, questions: QUESTIONS, restores: [live, ...history] } } })
   on('session.id', () => ({ value: SESSION }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))

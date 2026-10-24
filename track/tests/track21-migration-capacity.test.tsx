@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 
 const FOREIGN = '11111111-2222-4333-8444-555555555555'
@@ -8,6 +8,7 @@ test('TRACK-21 imported legacy rows have explicit owners, provenance and a match
   const row = { id: 1, head: 'imported row', status: 'open', at: 1, turnId: 'old' }
   const legacy = { v: 1, savedAt: 1, ledger: { ...EMPTY, nextQuestionId: 2, questions: [row] } }
   atomStore(on, 'ledger', EMPTY)
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   const store = pluginStore(on, { [`s:${FOREIGN}`]: legacy }, undefined, { guardStates: { [FOREIGN]: 'closed' } })
   const files = new Map<string, string>()
   on('session.id', () => ({ value: SESSION }))

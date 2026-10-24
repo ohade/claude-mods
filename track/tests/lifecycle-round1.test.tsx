@@ -14,6 +14,7 @@ const setup = (on: On, steps: Step[]) => {
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
   const turn = atomStore<Turn>(on, 'turn', { currentId: 't1', gatedTurnId: null })
   const activity = atomStore<Activity>(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [] })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   return { ledger, turn, activity }
@@ -128,6 +129,7 @@ test('completing a cancelled step clears the cancel reason and the cancel mark',
 
 test('a checkpoint round trip keeps a cancel reason on the paused step', async ($, on) => {
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps: [step('plan:1', { subject: 'Launch', status: 'paused', note: 'cancelled by you' })] })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   let session = SESSION
   on('session.id', () => ({ value: session }))

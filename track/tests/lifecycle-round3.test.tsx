@@ -12,6 +12,7 @@ const setup = (on: On, steps: Step[]) => {
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
   const turn = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
   const activity = atomStore<Activity>(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [] })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   return { ledger, turn, activity }

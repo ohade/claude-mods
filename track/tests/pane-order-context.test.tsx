@@ -22,6 +22,7 @@ const prepare = async ($: Engine, on: On) => {
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
   atomStore(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [] })
   atomStore(on, 'scroll', { questions: null, steps: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   const store = pluginStore(on)
   const contexts: string[] = []
   on('session.id', () => ({ value: SESSION }))

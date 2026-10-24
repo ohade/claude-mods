@@ -1,5 +1,5 @@
 // FIXTURE: actual registered import command; lock streams model flock ownership.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { checksumOf, describeCheckpoint } from '../hooks/checkpoint'
 import { EMPTY, SESSION, atomStore, pluginStore, trackCommand } from './kit'
 import type { On } from './kit'
@@ -35,7 +35,8 @@ const fixture = async (on: On, liveArchiveSource = false) => {
   const writes: string[] = []
   const reads: string[] = []
   // Registered before pluginStore, so this stream owns the lock receipt and cleanup.
-  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
+  // The kit's lock stream answers legacy or protocol 2, including the completion handshake.
+  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e, next) {
     const mode = e.argv[2]!
     const session = e.argv[3]!
     const state = active.has(session) || session === LIVE || session === OTHER_LIVE ? 'live' : 'closed'
@@ -44,8 +45,7 @@ const fixture = async (on: On, liveArchiveSource = false) => {
       if (state === 'closed') active.add(session)
     }
     try {
-      yield { stream: 'stdout' as const, text: JSON.stringify({ ok: true, mode, token: e.argv[4], ...(mode === 'guard' && { state }) }) }
-      return { value: { code: 0, signal: null } }
+      return yield* store.locks.serve(e, next.signal, mode === 'guard' ? { state } : {})
     } finally {
       if (mode === 'guard') {
         releases.push(`${session}:${state}`)
@@ -62,6 +62,7 @@ const fixture = async (on: On, liveArchiveSource = false) => {
     return { value: undefined }
   })
   atomStore(on, 'ledger', EMPTY)
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   store = pluginStore(on, initial, undefined, { beforeGet: key => {
     if (writes.length > 0 && (key === `s:${TARGET}` || key === `h:${TARGET}`)) {
       reads.push(key)

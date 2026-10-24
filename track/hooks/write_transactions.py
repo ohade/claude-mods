@@ -154,10 +154,65 @@ def open_namespace(session):
         yield directories["locks"], directories["tx"]
 
 
+class OutputWatcher:
+    """Reports a stdout reader that went away, in the poll(ms) shape callers use.
+
+    macOS sets POLLHUP on a socket whose peer only stopped writing, which Bun's
+    spawn does from the start, so kqueue says whether the write side reached
+    end-of-file instead. POLLERR and POLLNVAL still count; POLLHUP alone does
+    not. Ordinary writability is not an event, every wait lasts its full
+    timeout, and a watcher that cannot answer fails closed. The first lost
+    owner it observes is final: a later clean probe never restores it.
+    """
+
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+        self.errors = select.poll()
+        self.errors.register(descriptor, select.POLLERR | select.POLLNVAL)
+        self.queue = select.kqueue()
+        self.lost = False
+
+    def disconnected(self):
+        if not self.lost:
+            self.lost = self.probe()
+        return self.lost
+
+    def probe(self):
+        if any(events & (select.POLLERR | select.POLLNVAL) for _, events in self.errors.poll(0)):
+            return True
+        change = select.kevent(self.descriptor, select.KQ_FILTER_WRITE,
+                               select.KQ_EV_ADD | select.KQ_EV_ONESHOT)
+        try:
+            events = self.queue.control([change], 1, 0)
+        except OSError:
+            return True
+        return any(event.flags & (select.KQ_EV_EOF | select.KQ_EV_ERROR) for event in events)
+
+    def poll(self, timeout):
+        if not self.disconnected() and timeout:
+            time.sleep(timeout / 1000)
+        return [(self.descriptor, select.POLLHUP)] if self.disconnected() else []
+
+    def close(self):
+        self.queue.close()
+
+
+@contextmanager
 def output_disconnects():
+    descriptor = sys.stdout.fileno()
+    mode = os.fstat(descriptor).st_mode
+    if hasattr(select, "kqueue") and (stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode)):
+        watcher = OutputWatcher(descriptor)
+        try:
+            yield watcher
+        finally:
+            watcher.close()
+        return
+    # Without kqueue, POLLHUP means both directions closed (a half-close is
+    # POLLRDHUP). A regular-file stdout never reports a disconnect.
     disconnected = select.poll()
-    disconnected.register(sys.stdout.fileno(), select.POLLERR | select.POLLHUP | select.POLLNVAL)
-    return disconnected
+    disconnected.register(descriptor, select.POLLERR | select.POLLHUP | select.POLLNVAL)
+    yield disconnected
 
 
 def owner_connected(parent, disconnected):
@@ -235,6 +290,9 @@ def run_lease(directory, name, descriptor, token, parent, disconnected):
 
 
 def run_guard(descriptor, token, parent, disconnected):
+    # A guard its owner cannot keep must not be granted, even for a moment.
+    if not owner_connected(parent, disconnected):
+        raise TransactionError("lock owner is no longer connected")
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = "closed"
@@ -415,8 +473,7 @@ def main(mode, session, token):
     previous_mask = os.umask(0o077)
     try:
         parent = os.getppid()
-        disconnected = output_disconnects()
-        with open_namespace(session) as (locks, transactions):
+        with output_disconnects() as disconnected, open_namespace(session) as (locks, transactions):
             name = session + ".lock"
             with open_leaf(locks, name, writable=True, create=True) as session_file:
                 if mode == "lease":

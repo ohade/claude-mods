@@ -7,6 +7,7 @@ const prepare = (on: any, options: Parameters<typeof pluginStore>[3] = {}) => {
   const clock = mock.clock(on)
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, {}, undefined, options)
   on('session.id', () => ({ value: SESSION }))
   return clock

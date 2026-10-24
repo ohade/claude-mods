@@ -1,5 +1,5 @@
 // FIXTURE: delayed work keeps the main-turn identity observed when its call entered.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { Ledger, Step } from '../types'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 
@@ -9,6 +9,7 @@ test('a delayed mark_step belongs to its entering turn, not a newer turn at cloc
   })
   const t = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null })
   const a = atomStore(on, 'activity', { isWorking: true, mainTurnId: 't1', agentCalls: [], askCalls: [], background: [] })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('turn.complete', (_, e) => ({ text: e.answer }))

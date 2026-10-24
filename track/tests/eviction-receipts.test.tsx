@@ -1,6 +1,6 @@
 // FIXTURE: T31-2 receipts must name completed capacity deletions, even if the
 // subsequent import fails. These tests use registered commands and save tools.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { checksumOf, describeCheckpoint } from '../hooks/checkpoint'
 import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
@@ -42,6 +42,7 @@ const fixture = async (on: On, options: { full?: boolean; victimLive?: boolean; 
     [VICTIM]: options.victimLive ? 'live' : 'closed', [TARGET]: 'closed', [INCOMING]: 'closed', [LIVE]: 'live', [OTHER_LIVE]: 'live',
   }
   atomStore(on, 'ledger', EMPTY)
+  if (!options.checkpointPool) mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   const store = pluginStore(on, initial, undefined, { guardStates: states })
   const history = Object.entries(initial).filter(([key]) => key.startsWith('s:') || key.startsWith('h:')).map(([key, value]) => [key, JSON.stringify(value)] as const)
   const files = new Map([[BUNDLE, source]])

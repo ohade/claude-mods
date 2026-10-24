@@ -70,6 +70,7 @@ const OWN = { ...EMPTY, nextQuestionId: 2, questions: [{ id: 1, head: 'a questio
 const setUp = (on: On, saved: unknown = SAVED) => {
   const ledger = atomStore<L>(on, 'ledger', OWN as L)
   atomStore(on, 'scroll', { questions: null, steps: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   const store = pluginStore(on, saved === null ? {} : { [`s:${OLD}`]: saved })
 
   return { ledger, store }
@@ -118,6 +119,7 @@ test('a saved register keeps answerText and restoredFrom through a save and a re
   const row: Q = { id: 1, head: 'why?', status: 'answered', at: 1000, turnId: 't1', answeredAt: 1100, answerText: ANSWER, restoredFrom: OLD }
   const ledger = atomStore<L>(on, 'ledger', { ...EMPTY, nextQuestionId: 2, questions: [row] } as L)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('turn.complete', (_, e) => ({ text: e.answer }))

@@ -10,6 +10,7 @@ test('answer-before-mark links and highlights only the real answer row', async (
   const clock = mock.clock(on)
   const ledger = atomStore(on, 'ledger', EMPTY as any)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))

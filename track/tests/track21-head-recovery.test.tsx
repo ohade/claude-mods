@@ -1,10 +1,11 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 
 // TRACK-21 (2026-10-11): a missing body does not give a stale writer authority
 // to replace a genuinely newer durable head with its older memory.
 test('TRACK-21 missing newer body preserves the newer head byte for byte', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   const store = pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'acknowledged local row' } as never)

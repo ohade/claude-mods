@@ -1,6 +1,6 @@
 // FIXTURE: bounded saved words must not reject a correct full native answer,
 // or grant a source to different full words that share the saved prefix.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 import type { On } from './kit'
 
@@ -13,6 +13,7 @@ const SAVED = Array.from(ANSWER).slice(0, 999).join('') + '…'
 const prepare = async ($: any, on: On) => {
   const l = atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))

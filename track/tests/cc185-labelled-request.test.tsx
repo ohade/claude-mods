@@ -16,6 +16,7 @@ const labelledBlock = (excerpt: string) =>
 
 const prepare = (on: Parameters<typeof atomStore>[0], isOn: boolean) => {
   const clock = mock.clock(on)
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, { classifier: { isOn } })
   on('session.id', () => ({ value: SESSION }))
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 1 })

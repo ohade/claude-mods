@@ -65,27 +65,175 @@ export const atomStore = <T>(on: On, key: StateKey, initial: T, options: { holdR
   return held
 }
 
+type LockRequest = { argv: readonly string[]; cwd?: string; env?: Record<string, string> }
+type LockChunk = { stream: 'stdout' | 'stderr'; text: string }
+type LockEnd = { value: { code: number | null; signal: 'SIGTERM' | 'SIGKILL' | null } }
+// How the fixture helper answers a protocol-2 write once its exact request arrived. The wrong-protocol,
+// wrong-mode and wrong-token receipts name the right transaction and exit normally.
+export type LockAck = 'normal' | 'hold' | 'refuse' | 'wrong-nonce' | 'stale' | 'wrong-protocol' | 'wrong-mode' | 'wrong-token' | 'eof' | 'nonzero' | 'signal'
+// A protocol-2 receipt the client must refuse before any durable work.
+export type GrantFault = 'legacy' | 'protocol-1' | 'flat' | 'no-transaction' | 'bad-id' | 'bad-nonce' | 'upper-nonce' | 'wrong-token' | 'wrong-mode' | 'oversized'
+export type LockGrant = { id: string; nonce: string; token: string; config: string | undefined; path: string; fault?: GrantFault; requested: boolean; arrived: Promise<void>; arrive: () => void }
+export type WriterLockOptions = {
+  ack?: (grant: LockGrant) => LockAck
+  // 'hold' waits for this before answering; a client that closes the stream ends the wait.
+  ackHold?: Promise<void>
+  grantFault?: (mode: string) => GrantFault | undefined
+  refuseRequest?: (path: string) => string | undefined
+  onRequest?: (request: { path: string; text: string; grant?: LockGrant }) => void
+}
+
+// The completion request P1a's helper polls for: <tx>/<UUID4 id>.<64 lowercase hex nonce>.complete.
+// Any other path, in the tx directory or not, passes on to the providers beneath.
+export const TX_REQUEST = /\/state\/track\/locks\/tx\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[0-9a-f]{64}\.complete$/
+const randomHex = (bytes: number) => Array.from(crypto.getRandomValues(new Uint8Array(bytes)), b => b.toString(16).padStart(2, '0')).join('')
+// Resolves 'done' once `wait` settles, 'closed' once the client closed the stream instead, or
+// 'dead' once the deadman fired.
+const until = (wait: Promise<void>, signal: AbortSignal, dead: Promise<void>): Promise<'done' | 'closed' | 'dead'> => signal.aborted ? Promise.resolve('closed') : new Promise(resolve => {
+  const closed = () => resolve('closed')
+  signal.addEventListener('abort', closed, { once: true })
+  void wait.then(() => {
+    signal.removeEventListener('abort', closed)
+    resolve('done')
+  })
+  void dead.then(() => {
+    signal.removeEventListener('abort', closed)
+    resolve('dead')
+  })
+})
+
+// FIXTURE: writer-lock.py's receipts in memory. Without TRACK_LOCK_PROTOCOL=2 in the spawn's env
+// it answers the legacy receipt byte for byte. With it, a write grant names a fresh transaction and
+// the stream waits for that grant's exact completion request (the nonce, no newline, at the config
+// string the client passed) before it acknowledges and exits. Real flock, markers and fsync are
+// exercised by the helper tests.
+export const writerLocks = (on: On, options: WriterLockOptions = {}) => {
+  const spawns: LockRequest[] = []
+  const grants: LockGrant[] = []
+  const requests: Array<{ path: string; text: string }> = []
+  // Lock, request and (through pluginStore) store events in the order they happened.
+  const timeline: string[] = []
+  // A test driver's last resort for a client stuck on a stationary clock: every open protocol-2 wait
+  // ends with SIGKILL and `deadman:<id>`, never with an acknowledgement.
+  let deadman = () => {}
+  const dead = new Promise<void>(resolve => { deadman = () => {
+    timeline.push('deadman')
+    resolve()
+  } })
+  const ended = (grant: LockGrant, why: 'closed' | 'dead'): LockEnd => {
+    if (why === 'closed') return { value: { code: null, signal: 'SIGTERM' } }
+    timeline.push(`deadman:${grant.id}`)
+    return { value: { code: null, signal: 'SIGKILL' } }
+  }
+  on('fs.write', { path: TX_REQUEST }, (_, e) => {
+    const text = String(e.text)
+    const grant = grants.find(candidate => candidate.path === e.path)
+    requests.push({ path: e.path, text })
+    timeline.push(`request:${grant?.id ?? 'unmatched'}`)
+    const refusal = options.refuseRequest?.(e.path)
+    if (refusal !== undefined) return { deny: refusal }
+    // P1a leaves a partial or different request pending: only the exact nonce wakes its own grant.
+    if (grant !== undefined && text === grant.nonce && !grant.requested) {
+      grant.requested = true
+      grant.arrive()
+    }
+    options.onRequest?.({ path: e.path, text, grant })
+    return { value: undefined }
+  })
+  const receipt = (e: LockRequest, mode: string, token: string, state: string | undefined, grant: LockGrant | undefined) => {
+    const fault = e.env?.TRACK_LOCK_PROTOCOL === '2' ? options.grantFault?.(mode) : undefined
+    if (e.env?.TRACK_LOCK_PROTOCOL !== '2' || fault === 'legacy') return { ok: true, mode, token, ...(state !== undefined && { state }) }
+    const transaction = grant === undefined ? undefined : {
+      id: fault === 'bad-id' ? `${grant.id.slice(0, 14)}1${grant.id.slice(15)}` : grant.id,
+      nonce: fault === 'bad-nonce' ? grant.nonce.slice(1) : fault === 'upper-nonce' ? grant.nonce.toUpperCase() : grant.nonce,
+    }
+    return {
+      ok: true, protocol: fault === 'protocol-1' ? 1 : 2, mode: fault === 'wrong-mode' ? 'lease' : mode,
+      token: fault === 'wrong-token' ? `${token}-other` : token, ...(state !== undefined && { state }),
+      ...(transaction !== undefined && fault !== 'no-transaction' && (fault === 'flat' ? transaction : { transaction })),
+      ...(fault === 'oversized' && { padding: 'x'.repeat(4096) }),
+    }
+  }
+  // One writer-lock.py child as its stream. `shape` carries pluginStore's legacy options.
+  async function* serve(e: LockRequest, signal: AbortSignal, shape: { refusal?: string; state?: string; split?: boolean; ending?: Promise<void> } = {}): AsyncGenerator<LockChunk, LockEnd> {
+    const [, , mode = '', , token = ''] = e.argv
+    const isProtocol2 = e.env?.TRACK_LOCK_PROTOCOL === '2'
+    spawns.push({ argv: [...e.argv], cwd: e.cwd, ...(e.env !== undefined && { env: { ...e.env } }) })
+    timeline.push(`spawn:${mode}`)
+    let grant: LockGrant | undefined
+    if (isProtocol2 && mode === 'write' && shape.refusal === undefined) {
+      const id = crypto.randomUUID()
+      const nonce = randomHex(32)
+      let arrive = () => {}
+      const arrived = new Promise<void>(resolve => { arrive = resolve })
+      const fault = options.grantFault?.(mode)
+      grant = { id, nonce, token, config: e.env?.CLAUDE_CONFIG_DIR, path: `${e.env?.CLAUDE_CONFIG_DIR}/state/track/locks/tx/${id}.${nonce}.complete`, ...(fault !== undefined && { fault }), requested: false, arrived, arrive }
+      grants.push(grant)
+    }
+    try {
+      const text = JSON.stringify(shape.refusal !== undefined ? { ok: false, reason: shape.refusal } : receipt(e, mode, token, shape.state, grant))
+      timeline.push(grant === undefined ? `receipt:${mode}` : `grant:${grant.id}`)
+      if (shape.split) {
+        yield { stream: 'stderr' as const, text: 'A harmless diagnostic\n' }
+        yield { stream: 'stdout' as const, text: text.slice(0, 5) }
+        yield { stream: 'stdout' as const, text: text.slice(5) + '\n' }
+      } else {
+        // The real helper ends each protocol-2 record with a newline.
+        yield { stream: 'stdout' as const, text: isProtocol2 ? `${text}\n` : text }
+      }
+      if (shape.ending !== undefined) await shape.ending
+      // Testing hooks wrap their final noun result in { value }; production
+      // process.spawn hooks return the result directly. The consumer must be
+      // able to reach a real, valid end-of-stream result.
+      if (grant === undefined || grant.fault !== undefined) return { value: { code: shape.ending !== undefined ? 1 : 0, signal: null } }
+      // The client reads on only after its awaited request; until then P1a keeps polling.
+      const arrival = await until(grant.arrived, signal, dead)
+      if (arrival !== 'done') return ended(grant, arrival)
+      const ack = options.ack?.(grant) ?? 'normal'
+      if (ack === 'hold') {
+        const held = await until(options.ackHold ?? new Promise<void>(() => {}), signal, dead)
+        if (held !== 'done') return ended(grant, held)
+      }
+      if (ack === 'eof') {
+        timeline.push(`exit:${grant.id}:0`)
+        return { value: { code: 0, signal: null } }
+      }
+      if (ack === 'refuse') {
+        yield { stream: 'stdout' as const, text: `${JSON.stringify({ ok: false, reason: 'fixture completion refused' })}\n` }
+        timeline.push(`exit:${grant.id}:1`)
+        return { value: { code: 1, signal: null } }
+      }
+      const transaction = ack === 'wrong-nonce' ? { id: grant.id, nonce: randomHex(32) } : ack === 'stale' ? { id: crypto.randomUUID(), nonce: randomHex(32) } : { id: grant.id, nonce: grant.nonce }
+      timeline.push(`ack:${grant.id}`)
+      const answer = { ok: true, protocol: ack === 'wrong-protocol' ? 1 : 2, mode: ack === 'wrong-mode' ? 'write' : 'completed',
+        token: ack === 'wrong-token' ? `${token}-other` : token, transaction }
+      yield { stream: 'stdout' as const, text: `${JSON.stringify(answer)}\n` }
+      const end: LockEnd['value'] = ack === 'nonzero' ? { code: 1, signal: null } : ack === 'signal' ? { code: null, signal: 'SIGKILL' } : { code: 0, signal: null }
+      timeline.push(`exit:${grant.id}:${end.code ?? end.signal}`)
+      return { value: end }
+    } finally {
+      timeline.push(`close:${grant?.id ?? mode}`)
+    }
+  }
+
+  return { spawns, grants, requests, timeline, options, serve, deadman: () => deadman() }
+}
+
 // The plugin's $.store, in a Map. A set that would take the JSON text of the whole store past
 // `capBytes` rejects, as the engine's store does past 4 MiB.
-export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; guardStates?: Record<string, 'live' | 'closed'>; guardWait?: Promise<void>; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void; beforeLockSpawn?: (request: { argv: readonly string[]; cwd?: string }) => void; refuseSet?: (key: string, value: unknown) => string | undefined } = {}) => {
+export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBytes = 4 * 1024 * 1024, options: { leaseFailure?: string; guardStates?: Record<string, 'live' | 'closed'>; guardWait?: Promise<void>; splitLockReceipt?: true; leaseEnding?: { count: number; wait: Promise<void> }; beforeGet?: (key: string) => void; beforeLockSpawn?: (request: { argv: readonly string[]; cwd?: string }) => void; refuseSet?: (key: string, value: unknown) => string | undefined; locks?: WriterLockOptions } = {}) => {
+  const locks = writerLocks(on, options.locks)
   // FIXTURE: helper lock receipt. The real flock/exclusion is exercised by helper tests.
-  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
+  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e, next) {
     options.beforeLockSpawn?.(e)
     if (e.argv[2] === 'guard' && options.guardWait !== undefined) await options.guardWait
-    const text = JSON.stringify(e.argv[2] === 'lease' && options.leaseFailure !== undefined ? { ok: false, reason: options.leaseFailure } : { ok: true, mode: e.argv[2], token: e.argv[4], ...(e.argv[2] === 'guard' && { state: options.guardStates?.[e.argv[3]!] ?? 'live' }) })
-    if (e.argv[2] === 'lease' && options.leaseEnding !== undefined) options.leaseEnding.count++
-    if (options.splitLockReceipt) {
-      yield { stream: 'stderr' as const, text: 'A harmless diagnostic\n' }
-      yield { stream: 'stdout' as const, text: text.slice(0, 5) }
-      yield { stream: 'stdout' as const, text: text.slice(5) + '\n' }
-    } else {
-      yield { stream: 'stdout' as const, text }
-    }
-    if (e.argv[2] === 'lease' && options.leaseEnding !== undefined) await options.leaseEnding.wait
-    // Testing hooks wrap their final noun result in { value }; production
-    // process.spawn hooks return the result directly. The consumer must be
-    // able to reach a real, valid end-of-stream result.
-    return { value: { code: options.leaseEnding !== undefined && e.argv[2] === 'lease' ? 1 : 0, signal: null } }
+    const ending = e.argv[2] === 'lease' ? options.leaseEnding : undefined
+    if (ending !== undefined) ending.count++
+    return yield* locks.serve(e, next.signal, {
+      refusal: e.argv[2] === 'lease' ? options.leaseFailure : undefined,
+      state: e.argv[2] === 'guard' ? options.guardStates?.[e.argv[3]!] ?? 'live' : undefined,
+      split: options.splitLockReceipt, ending: ending?.wait,
+    })
   })
   const held = new Map<string, unknown>(Object.entries(initial))
   const faults = { write: '', mismatchAfterSet: '', alteredAfterSet: '', failRollback: false }
@@ -93,6 +241,7 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
   let refusesRollback = false
   const size = () => [...held.values()].reduce<number>((sum, v) => sum + JSON.stringify(v).length, 0)
   on('store.get', (_, e) => {
+    locks.timeline.push(`get:${e.key}`)
     options.beforeGet?.(e.key)
     if (e.key === mismatchedRead) {
       mismatchedRead = ''
@@ -103,6 +252,7 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
     return { value: held.get(e.key) as never }
   })
   on('store.set', (_, e) => {
+    locks.timeline.push(`set:${e.key}`)
     // Opt-in: refuse one chosen write before it applies, leaving the stored value unchanged.
     const refusal = options.refuseSet?.(e.key, e.value)
     if (refusal !== undefined) return { deny: refusal }
@@ -131,13 +281,14 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
     return { value: undefined }
   })
   on('store.delete', (_, e) => {
+    locks.timeline.push(`delete:${e.key}`)
     held.delete(e.key)
 
     return { value: undefined }
   })
   on('store.keys', () => ({ value: [...held.keys()] }))
 
-  return { held, size, faults }
+  return { held, size, faults, locks }
 }
 
 // The debug lines and toasts the mod writes.

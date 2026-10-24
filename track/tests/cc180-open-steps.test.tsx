@@ -1,6 +1,6 @@
 // FIXTURE: CC-180, 2026-10-10. Restored pending/paused/waiting steps were counted but
 // not named to the model, so finished or cancelled work stayed open after handoff.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Ledger, Step } from '../types'
@@ -16,6 +16,7 @@ const prepare = (on: On, steps: Step[] = []) => {
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps })
   atomStore(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, eventOrder: 0 })
   atomStore(on, 'scroll', { questions: null, steps: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   let session = OLD
   on('session.id', () => ({ value: session }))

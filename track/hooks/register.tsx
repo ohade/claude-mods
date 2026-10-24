@@ -958,7 +958,9 @@ const savedRevisions = new Map<string, number>()
 type SaveRecovery = { previous: unknown; previousBlobText?: string; bucket: unknown; previousHead: unknown; head: SessionHead; previousIndex: unknown; index: unknown }
 const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
+type WriteGrant = { config: string; token: string; id: string; nonce: string }
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+type WriteContext = { stream: LockStream; grant: WriteGrant; phase: 'open' | 'sealed'; tainted: boolean }
 const writer = { session: '', token: crypto.randomUUID(), lease: null as LockStream | null }
 const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as PluginState['track']['durability'])
 // A failed replacement leaves proposed words in memory. The transcript and pane
@@ -1050,9 +1052,13 @@ const captureMintOwner = async ($: EngineInterface): Promise<string | undefined>
 
 const closeLock = async (stream: LockStream): Promise<void> => { await stream.return({ code: null, signal: 'SIGTERM' }) }
 const guardStates = new WeakMap<LockStream, 'live' | 'closed'>()
+const writeGrants = new WeakMap<LockStream, WriteGrant>()
 const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write' | 'guard', session: string): Promise<LockStream> => {
+  const config = await configDir($)
+  if (!config?.startsWith('/')) throw new Error('writer lock configuration unavailable')
   // The caller's worktree may have been removed while this session stayed open.
-  const stream = $.process.spawn({ argv: ['python3', `${$.plugin.root}/hooks/writer-lock.py`, mode, session, writer.token], cwd: $.plugin.root })
+  const stream: LockStream = $.process.spawn({ argv: ['python3', `${$.plugin.root}/hooks/writer-lock.py`, mode, session, writer.token], cwd: $.plugin.root,
+    env: { TRACK_LOCK_PROTOCOL: '2', CLAUDE_CONFIG_DIR: config } })
   // return() closes a live stream by design, so its result rejects on normal cleanup.
   void stream.result.catch(() => undefined)
   let deadline: Timer | undefined
@@ -1063,11 +1069,11 @@ const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write' | 'guard'
       while (true) {
         const chunk = await stream.next()
         if (chunk.done) throw new Error('writer lock returned no receipt')
-        received += chunk.value.text.length
+        received += encodeURIComponent(chunk.value.text).replace(/%[0-9A-F]{2}/g, 'x').length
         if (received > 4096) throw new Error('writer lock receipt exceeded its limit')
         if (chunk.value.stream !== 'stdout') continue
         output += chunk.value.text
-        try { return JSON.parse(output) as { ok?: boolean; reason?: string; token?: string; mode?: string; state?: string } }
+        try { return JSON.parse(output) as { ok?: boolean; protocol?: number; reason?: string; token?: string; mode?: string; state?: string; transaction?: { id?: unknown; nonce?: unknown } } | null }
         catch { /* A stdout chunk may end inside the JSON receipt. */ }
       }
     })()
@@ -1075,7 +1081,13 @@ const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write' | 'guard'
       deadline = $.clock.after(mode === 'guard' ? 1000 : 4000, () => reject(new Error('writer lock receipt timed out')))
     })
     const receipt = await Promise.race([reading, expired])
-    if (receipt.ok !== true || receipt.token !== writer.token || receipt.mode !== mode) throw new Error(receipt.reason ?? 'writer lock receipt is incompatible')
+    if (receipt?.ok !== true || receipt.protocol !== 2 || receipt.token !== writer.token || receipt.mode !== mode) throw new Error(receipt?.reason ?? 'writer lock receipt is incompatible')
+    if (mode === 'write') {
+      const transaction = receipt.transaction
+      if (typeof transaction?.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(transaction.id) ||
+          typeof transaction.nonce !== 'string' || !/^[0-9a-f]{64}$/.test(transaction.nonce)) throw new Error('writer lock transaction is incompatible')
+      writeGrants.set(stream, { config, token: receipt.token, id: transaction.id, nonce: transaction.nonce })
+    }
     if (mode === 'guard') {
       if (receipt.state !== 'closed' && receipt.state !== 'live') throw new Error('target lease state is unknown')
       guardStates.set(stream, receipt.state)
@@ -1089,6 +1101,70 @@ const acquireLock = async ($: EngineInterface, mode: 'lease' | 'write' | 'guard'
     throw error
   } finally {
     deadline?.cancel()
+  }
+}
+const writeContext = (stream: LockStream): WriteContext => {
+  const grant = writeGrants.get(stream)
+  if (grant === undefined) throw new Error('writer lock transaction is unavailable')
+  return { stream, grant: { ...grant }, phase: 'open', tainted: false }
+}
+const assertWriteOpen = (context: WriteContext): void => {
+  if (context.phase === 'open') return
+  context.tainted = true
+  throw new Error('writer transaction is sealed')
+}
+// Taint survives caught errors and successful rollback. An open, tainted
+// transaction may still repair its writes, but can never request completion.
+const transactionOperation = async <T,>(context: WriteContext, operation: () => Promise<T>): Promise<T> => {
+  assertWriteOpen(context)
+  try { return await operation() }
+  catch (error) { context.tainted = true; throw error }
+}
+const finishWrite = async ($: EngineInterface, context: WriteContext): Promise<void> => {
+  const { stream, grant } = context
+  let deadline: Timer | undefined
+  try {
+    assertWriteOpen(context)
+    context.phase = 'sealed'
+    if (context.tainted) return
+    // The request is the last durable action. Its own write is awaited before
+    // starting the acknowledgement/normal-exit deadline.
+    await $.fs.write(`${grant.config}/state/track/locks/tx/${grant.id}.${grant.nonce}.complete`, grant.nonce)
+    const reading = (async () => {
+      let output = ''
+      let received = 0
+      let acknowledged = false
+      while (true) {
+        const chunk = await stream.next()
+        if (chunk.done) {
+          if (!acknowledged || chunk.value.code !== 0 || chunk.value.signal !== null) throw new Error('writer completion needs its acknowledgement and normal exit')
+          return
+        }
+        received += new TextEncoder().encode(chunk.value.text).length
+        if (received > 4096) throw new Error('writer completion receipt exceeded its limit')
+        if (chunk.value.stream !== 'stdout') continue
+        output += chunk.value.text
+        let receipt: { ok?: unknown; protocol?: unknown; mode?: unknown; token?: unknown; transaction?: { id?: unknown; nonce?: unknown } } | null
+        try { receipt = JSON.parse(output) }
+        catch { continue } // A stdout chunk may end inside the JSON receipt.
+        if (acknowledged || receipt?.ok !== true || receipt.protocol !== 2 || receipt.mode !== 'completed' || receipt.token !== grant.token ||
+            receipt.transaction?.id !== grant.id || receipt.transaction.nonce !== grant.nonce) throw new Error('writer completion receipt is incompatible')
+        acknowledged = true
+        output = ''
+      }
+    })()
+    const expired = new Promise<never>((_, reject) => {
+      deadline = $.clock.after(2000, () => reject(new Error('writer completion timed out')))
+    })
+    await Promise.race([reading, expired])
+  } catch (error) {
+    context.tainted = true
+    $.ui.log(`track: completion-unconfirmed: ${truncate(reason(error), 200)}`, { to: 'debug' })
+  } finally {
+    deadline?.cancel()
+    // return() also cancels a pending next() on a failed acknowledgement.
+    // Its cancellation result is never evidence that the helper exited normally.
+    await closeLock(stream).catch(error => $.ui.log(`track: writer lock cleanup failed: ${truncate(reason(error), 200)}`, { to: 'debug' }))
   }
 }
 const ensureWriter = async ($: EngineInterface, session: string): Promise<void> => {
@@ -1339,7 +1415,8 @@ const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
 
 // A failed acknowledgement restores only this writer's attempted values, under the
 // same store lock. Keep the recovery in memory if the store also refuses rollback.
-const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
+const recoverSave = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
+  assertWriteOpen(context)
   const recovery = saveRecoveries.get(id)
   if (recovery === undefined) return
   const previous = recovery.previous as { v?: unknown; ledger_blob?: { checksum?: unknown; bytes?: unknown } } | undefined
@@ -1357,7 +1434,7 @@ const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
     if (await fs.read(`${dir}/${ref.checksum}.json`) !== undefined) {
       if (await readBlob(fs, dir, ref) !== text) throw blobFailure('previous blob changed or invalid; existing file was kept')
     } else {
-      const publication = await publishLedgerBlob($, text, ref)
+      const publication = await publishLedgerBlob($, context, text, ref)
       if (publication !== undefined) throw new Error('unavailable' in publication ? publication.unavailable : publication.rejected)
     }
   }
@@ -1367,51 +1444,60 @@ const recoverSave = async ($: EngineInterface, id: string): Promise<void> => {
     const current = await $.store.get(key)
     if (!sameValue(current, recovery.previous)) {
       if (!sameValue(current, recovery.bucket)) throw new Error('save recovery kept a changed durable ledger; reload this session before writing')
-      if (recovery.previous === undefined) await retentionStore($).delete(key)
-      else await retentionStore($).set(key, recovery.previous)
+      if (recovery.previous === undefined) await retentionStore($, context).delete(key)
+      else await retentionStore($, context).set(key, recovery.previous)
       if (!sameValue(await $.store.get(key), recovery.previous)) throw new Error('save recovery read-back did not match the prior ledger')
     }
-  } catch (error) { failures.push(reason(error)) }
+  } catch (error) { context.tainted = true; failures.push(reason(error)) }
   try {
     const headKey = `h:${id}`
     const currentHead = await $.store.get(headKey)
     if (!sameValue(currentHead, recovery.previousHead)) {
       if (!sameValue(currentHead, recovery.head)) throw new Error('save recovery kept a changed durable head')
-      await writeVerified($, headKey, recovery.previousHead)
+      await writeVerified($, context, headKey, recovery.previousHead)
     }
-  } catch (error) { failures.push(reason(error)) }
+  } catch (error) { context.tainted = true; failures.push(reason(error)) }
   try {
     const index = await $.store.get(SAVED_INDEX)
     if (!sameValue(index, recovery.previousIndex)) {
       // The index is a cache. Rebuild a changed one from actual buckets, keeping
       // another session's entries instead of treating metadata as ownership.
       const restoredIndex = sameValue(index, recovery.index) ? recovery.previousIndex : await savedIndex($)
-      if (restoredIndex === undefined) await retentionStore($).delete(SAVED_INDEX)
-      else await retentionStore($).set(SAVED_INDEX, restoredIndex)
+      if (restoredIndex === undefined) await retentionStore($, context).delete(SAVED_INDEX)
+      else await retentionStore($, context).set(SAVED_INDEX, restoredIndex)
       if (!sameValue(await $.store.get(SAVED_INDEX), restoredIndex)) throw new Error('save recovery could not verify the rebuilt index')
     }
-  } catch (error) { failures.push(reason(error)) }
+  } catch (error) { context.tainted = true; failures.push(reason(error)) }
   if (failures.length > 0) throw new Error(failures.join('; '))
   saveRecoveries.delete(id)
 }
 
 // The hooks compiler requires engine calls to stay in this module. Imported
 // retention logic receives ordinary callbacks, never the engine interface.
-const retentionStore = ($: EngineInterface): RetentionStore => indexedStore({
-  get: key => $.store.get(key),
-  set: (key, value) => $.store.set(key, value),
-  delete: key => $.store.delete(key),
-  keys: () => $.store.keys(),
-  log: message => { $.ui.log(message, { to: 'debug' }) },
-})
-const writeVerified = async ($: EngineInterface, key: string, value: unknown): Promise<void> => {
-  await writeRetentionValue(retentionStore($), key, value)
+const retentionStore = ($: EngineInterface, context: WriteContext): RetentionStore => {
+  const store = indexedStore({
+    get: key => transactionOperation(context, () => $.store.get(key)),
+    set: (key, value) => transactionOperation(context, () => $.store.set(key, value)),
+    delete: key => transactionOperation(context, () => $.store.delete(key)),
+    keys: () => transactionOperation(context, () => $.store.keys()),
+    log: message => { $.ui.log(message, { to: 'debug' }) },
+  })
+  // The index can fail after a raw mutation succeeded, including inside sizes().
+  // Protect the whole indexed operation as well as each raw mutation above.
+  return { ...store,
+    set: (key, value) => transactionOperation(context, () => store.set(key, value)),
+    delete: key => transactionOperation(context, () => store.delete(key)),
+    sizes: () => transactionOperation(context, () => store.sizes!()),
+  }
+}
+const writeVerified = async ($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> => {
+  await transactionOperation(context, () => writeRetentionValue(retentionStore($, context), key, value))
 }
 // A cleaner's or evictor's view of another session's writer lease: CLOSED
 // only when the guard says so; the caller releases the guard.
-const probeGuard = ($: EngineInterface) => async (target: string) => {
-  const guard = await acquireLock($, 'guard', target)
-  return { state: guardStates.get(guard) ?? 'live', release: () => closeLock(guard) }
+const probeGuard = ($: EngineInterface, context: WriteContext) => async (target: string) => {
+  const guard = await transactionOperation(context, () => acquireLock($, 'guard', target))
+  return { state: guardStates.get(guard) ?? 'live', release: () => transactionOperation(context, () => closeLock(guard)) }
 }
 const sha256Hex = async (text: string): Promise<string> =>
   Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), b => b.toString(16).padStart(2, '0')).join('')
@@ -1420,7 +1506,8 @@ type Publication = { unavailable: string } | { rejected: string } | undefined
 // Publishes `text` through blob-fs.py and reads it back. `unavailable` means the
 // helper or the blob directory is unavailable, so no later candidate can work;
 // `rejected` keeps only this candidate.
-const publishLedgerBlob = async ($: EngineInterface, text: string, ref: { checksum: string; bytes: number }): Promise<Publication> => {
+const publishLedgerBlob = async ($: EngineInterface, context: WriteContext, text: string, ref: { checksum: string; bytes: number }): Promise<Publication> => {
+  assertWriteOpen(context)
   let config: string | undefined
   try { config = await configDir($) }
   catch (error) { return { unavailable: `blob directory unavailable: ${reason(error)}` } }
@@ -1430,17 +1517,24 @@ const publishLedgerBlob = async ($: EngineInterface, text: string, ref: { checks
   try {
     result = await $.process.run(['python3', `${$.plugin.root}/hooks/blob-fs.py`, 'publish', dir, ref.checksum],
       { stdin: text, timeoutMs: 10000, env: { CLAUDE_CONFIG_DIR: config } })
-  } catch (error) { return { unavailable: `blob helper unavailable: ${reason(error)}` } }
+  } catch (error) { context.tainted = true; return { unavailable: `blob helper unavailable: ${reason(error)}` } }
   if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) {
+    context.tainted = true
     return { rejected: `blob helper exit ${result.exitCode}${result.stderr.trim() === '' ? '' : `: ${result.stderr.trim()}`}` }
   }
   let receipt: { ok?: unknown; checksum?: unknown; bytes?: unknown } | null
   try { receipt = JSON.parse(result.stdout) }
-  catch { return { rejected: 'blob helper receipt is not JSON' } }
-  if (receipt?.ok !== true || receipt.checksum !== ref.checksum || receipt.bytes !== ref.bytes) return { rejected: 'blob helper receipt does not match the ledger' }
+  catch { context.tainted = true; return { rejected: 'blob helper receipt is not JSON' } }
+  if (receipt?.ok !== true || receipt.checksum !== ref.checksum || receipt.bytes !== ref.bytes) {
+    context.tainted = true
+    return { rejected: 'blob helper receipt does not match the ledger' }
+  }
   try {
-    if (await readBlob(blobFs($), dir, ref) !== text) return { rejected: 'published blob does not match the ledger' }
-  } catch (error) { return { rejected: `published blob unreadable: ${reason(error)}` } }
+    if (await readBlob(blobFs($), dir, ref) !== text) {
+      context.tainted = true
+      return { rejected: 'published blob does not match the ledger' }
+    }
+  } catch (error) { context.tainted = true; return { rejected: `published blob unreadable: ${reason(error)}` } }
   return undefined
 }
 
@@ -1453,7 +1547,8 @@ const uncertainCompaction = (session: string, detail: string, cause: unknown): E
 // every other key in place, so its logical view equals the v:1 body exactly.
 // A failure before the pointer write keeps the v:1 body; an unprovable state
 // after it throws, so the caller's write fails closed with the value kept.
-const compactBody = ($: EngineInterface, onCompacted?: (session: string, bytes: number) => void): Compaction => async (session, confirm) => {
+const compactBody = ($: EngineInterface, context: WriteContext, onCompacted?: (session: string, bytes: number) => void): Compaction => async (session, confirm) => {
+  assertWriteOpen(context)
   const key = `s:${session}`
   const note = (why: string): void => { $.ui.log(`track: compaction keeps ${session}: ${why}`, { to: 'debug' }) }
   const keep = (why: string): 'kept' => { note(why); return 'kept' }
@@ -1470,13 +1565,13 @@ const compactBody = ($: EngineInterface, onCompacted?: (session: string, bytes: 
   const pointer = Object.fromEntries(Object.entries(body).map(([name, value]) =>
     name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
   if (utf8Bytes({ [key]: pointer }) >= utf8Bytes({ [key]: original })) return keep('the pointer does not shrink the full stored entry')
-  const publication = await publishLedgerBlob($, text, ref)
+  const publication = await publishLedgerBlob($, context, text, ref)
   if (publication !== undefined) return 'unavailable' in publication ? stop(publication.unavailable) : keep(publication.rejected)
   if (!(await confirm())) return keep('session is not CLOSED or its records are ambiguous')
   try {
     if (!sameValue(await $.store.get(key), original)) return keep('body changed before compaction')
-  } catch (error) { return keep(`body unreadable under its guard: ${reason(error)}`) }
-  try { await writeVerified($, key, pointer) }
+  } catch (error) { context.tainted = true; return keep(`body unreadable under its guard: ${reason(error)}`) }
+  try { await writeVerified($, context, key, pointer) }
   catch (error) {
     // The size index's pending marker repairs this key's size for the next locked caller.
     let after: unknown
@@ -1488,7 +1583,7 @@ const compactBody = ($: EngineInterface, onCompacted?: (session: string, bytes: 
   const bytes = utf8Bytes({ [key]: pointer }) + 1
   onCompacted?.(session, bytes)
   const stored = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
-  if (stored !== undefined && Object.hasOwn(stored, session)) await writeVerified($, SAVED_INDEX, { ...stored, [session]: { ...stored[session], bytes } })
+  if (stored !== undefined && Object.hasOwn(stored, session)) await writeVerified($, context, SAVED_INDEX, { ...stored, [session]: { ...stored[session], bytes } })
   return 'compacted'
 }
 
@@ -1503,16 +1598,16 @@ const patchCompacted = (index: SavedIndex) => (session: string, bytes: number): 
 // the stored saved index and each compaction updates its bytes there; a caller
 // that publishes its own planned index removes the returned ids from it and
 // applies `onCompacted`.
-const ensureCapacity = async ($: EngineInterface, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = [], onEvicted?: (session: string) => void, heldGuards?: ReadonlyMap<string, Guard>, onCompacted?: (session: string, bytes: number) => void): Promise<string[]> =>
-  checkCapacity(retentionStore($), replacements, budget, { caller: id, protect, probe: probeGuard($), heldGuards, compact: compactBody($, onCompacted),
+const ensureCapacity = async ($: EngineInterface, context: WriteContext, id: string, replacements: Record<string, unknown>, budget: number, protect: string[] = [], onEvicted?: (session: string) => void, heldGuards?: ReadonlyMap<string, Guard>, onCompacted?: (session: string, bytes: number) => void): Promise<string[]> =>
+  transactionOperation(context, () => checkCapacity(retentionStore($, context), replacements, budget, { caller: id, protect, probe: probeGuard($, context), heldGuards, compact: compactBody($, context, onCompacted),
     afterEviction: async session => {
       // The history is already deleted; a later index or save failure must not hide it.
       onEvicted?.(session)
       $.ui.toast(`track: closed history for session ${session} was evicted to make room`)
       const stored = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
       if (stored === undefined || !Object.hasOwn(stored, session)) return
-      await writeVerified($, SAVED_INDEX, Object.fromEntries(Object.entries(stored).filter(([other]) => other !== session)))
-    } })
+      await writeVerified($, context, SAVED_INDEX, Object.fromEntries(Object.entries(stored).filter(([other]) => other !== session)))
+    } }))
 
 const sessionHead = (raw: unknown, id: string): SessionHead | undefined => {
   if (raw === undefined) return undefined
@@ -1532,7 +1627,8 @@ const bodyMatchesHead = (body: { generation?: string; checkpoint?: Checkpoint },
 
 // Under the owner's lease and store lock, complete a torn next-revision write
 // or accept a checksummed legacy successor after preserving the prior head.
-const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
+const repairHead = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
+  assertWriteOpen(context)
   const raw = await $.store.get(`s:${id}`)
   const head = sessionHead(await $.store.get(`h:${id}`), id)
   const body = await logicalBody($, raw) as { v?: number; session_id?: string; generation?: string; checkpoint?: Checkpoint; ledger?: Ledger } | undefined
@@ -1554,23 +1650,25 @@ const repairHead = async ($: EngineInterface, id: string): Promise<void> => {
     const baseline = pending.baseline?.session_id === id ? pending.baseline : undefined
     // Foreign or unknown memory is preserved by the session-switch path.
     const local = owner === id || owner === undefined ? memory : baseline?.ledger
-    if (local !== undefined) await preserveConflict($, id, local, baseline, { body: raw, head })
-    await preserveVersion($, id, 'legacy-head', head)
+    if (local !== undefined) await preserveConflict($, context, id, local, baseline, { body: raw, head })
+    await preserveVersion($, context, id, 'legacy-head', head)
   } else if (body.checkpoint?.revision !== head.checkpoint.revision + 1) throw new Error('durable head/body checkpoint mismatch; both were kept')
-  await writeVerified($, `h:${id}`, { v: 1, session_id: id, generation: head.generation, checkpoint: body.checkpoint })
+  await writeVerified($, context, `h:${id}`, { v: 1, session_id: id, generation: head.generation, checkpoint: body.checkpoint })
 }
 
-const preserveVersion = async ($: EngineInterface, id: string, kind: string, value: unknown): Promise<void> => {
+const preserveVersion = async ($: EngineInterface, context: WriteContext, id: string, kind: string, value: unknown): Promise<void> => {
+  assertWriteOpen(context)
   const key = `r:${id}:${kind}-${await checksumOf(value)}`
   const snapshot = { v: 1, session_id: id, kind, value }
-  await ensureCapacity($, id, { [key]: snapshot }, STORE_BUDGET)
-  await writeVerified($, key, snapshot)
+  await ensureCapacity($, context, id, { [key]: snapshot }, STORE_BUDGET)
+  await writeVerified($, context, key, snapshot)
 }
 
 // TRACK-21 refuter 4: a refusal must not archive a fresh full ledger on every
 // call. Deduplicate identical inputs, including memory: a concurrent new row
 // needs its own archive before durable history can replace local memory.
-const preserveConflict = async ($: EngineInterface, id: string, memory: Ledger, baseline: Baseline | undefined, durable: unknown): Promise<string> => {
+const preserveConflict = async ($: EngineInterface, context: WriteContext, id: string, memory: Ledger, baseline: Baseline | undefined, durable: unknown): Promise<string> => {
+  assertWriteOpen(context)
   const identified = identifyLedger(memory, id)
   const key = `r:${id}:conflict-${await checksumOf({ durable, baseline, memory: identified })}`
   const existing = await $.store.get(key) as { session_id?: string; kind?: string } | undefined
@@ -1579,13 +1677,13 @@ const preserveConflict = async ($: EngineInterface, id: string, memory: Ledger, 
     return key
   }
   const snapshot = { v: 1, session_id: id, kind: 'conflict', value: { ledger: identified, baseline, durable } }
-  await ensureCapacity($, id, { [key]: snapshot }, STORE_BUDGET)
-  await writeVerified($, key, snapshot)
+  await ensureCapacity($, context, id, { [key]: snapshot }, STORE_BUDGET)
+  await writeVerified($, context, key, snapshot)
   return key
 }
 
-const adoptAfterConflict = async ($: EngineInterface, id: string, memory: Ledger, baseline: Baseline | undefined, durable: Ledger, checkpoint: Checkpoint | undefined, generation: string | undefined): Promise<string> => {
-  const key = await preserveConflict($, id, memory, baseline, { checkpoint, generation })
+const adoptAfterConflict = async ($: EngineInterface, context: WriteContext, id: string, memory: Ledger, baseline: Baseline | undefined, durable: Ledger, checkpoint: Checkpoint | undefined, generation: string | undefined): Promise<string> => {
+  const key = await preserveConflict($, context, id, memory, baseline, { checkpoint, generation })
   await update($, ledger, current => {
     if (!sameValue(current, memory)) throw new Error('ledger changed during conflict recovery; archive was kept')
     return durable
@@ -1598,8 +1696,8 @@ const adoptAfterConflict = async ($: EngineInterface, id: string, memory: Ledger
   return key
 }
 
-const cleanupOwned = async ($: EngineInterface, id: string): Promise<void> => {
-  await cleanupRecords(retentionStore($), id, probeGuard($))
+const cleanupOwned = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
+  await transactionOperation(context, () => cleanupRecords(retentionStore($, context), id, probeGuard($, context)))
 }
 
 // A save acknowledges body, durable head and index only after exact read-back.
@@ -1607,6 +1705,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
   let saved = false
   const run = persistence.queue.then(async () => {
   let lock: LockStream | undefined
+  let context: WriteContext | undefined
   let id: string | undefined
   try {
     const intent = await read($, durability)
@@ -1616,10 +1715,11 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     await update($, durability, current => current.memorySession === undefined || declaredOwner === id ? { ...current, memorySession: id } : current)
     await ensureWriter($, id)
     lock = await acquireLock($, 'write', id)
-    await recoverSave($, id)
-    if (await recoverCleanup(retentionStore($), id, { owner: true })) await resumeLedger($, id)
-    else await clearOwnedClocks(retentionStore($), id)
-    await repairHead($, id)
+    context = writeContext(lock)
+    await recoverSave($, context, id)
+    if (await recoverCleanup(retentionStore($, context), id, { owner: true })) await resumeLedger($, context, id)
+    else await clearOwnedClocks(retentionStore($, context), id)
+    await repairHead($, context, id)
     const owned = await read($, ledger)
     const acknowledged = await read($, durability)
     if (acknowledged.memorySession !== id || owned.session_id !== undefined && owned.session_id !== id ||
@@ -1627,12 +1727,12 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
         (await $.store.get(`s:${id}`) !== undefined || await $.store.get(`h:${id}`) !== undefined) &&
         (acknowledged.rewindBaseline?.session_id !== id || await $.store.get(`s:${id}`) === undefined ||
          !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await logicalBody($, await $.store.get(`s:${id}`)), id) ?? EMPTY_LEDGER, id)))) {
-      await resumeLedger($, id)
+      await resumeLedger($, context, id)
     }
     const pending = { ...await read($, durability), closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }
     const preference = pending.closedByPerson
     if (preference !== undefined) {
-      await retentionStore($).set('closedByPerson', preference)
+      await retentionStore($, context).set('closedByPerson', preference)
       if (await $.store.get('closedByPerson') !== preference) throw new Error('pane preference read-back did not match')
     }
     const memory = await read($, ledger)
@@ -1657,7 +1757,7 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     if (previous === undefined && head !== undefined &&
         (expected === undefined || expected !== head.checkpoint.revision ||
          (baseline?.generation !== undefined && baseline.generation !== head.generation))) {
-      await preserveConflict($, id, memory, baseline, previousHead)
+      await preserveConflict($, context, id, memory, baseline, previousHead)
       throw new Error('stale writer revision; newer durable head was kept; its missing body needs recovery')
     }
     if (previous !== undefined && head !== undefined && !bodyMatchesHead(previous, head)) throw new Error('durable head/body checkpoint mismatch; both were kept')
@@ -1667,7 +1767,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       if (durable === undefined) throw new Error('stale writer revision; newer durable ledger was kept')
       try { current = reconcileLedger(baseline?.ledger, durable, current, id) }
       catch (error) {
-        const archive = await adoptAfterConflict($, id, memory, baseline, identifyLedger(durable, id), previous.checkpoint, head?.generation)
+        context.tainted = true
+        const archive = await adoptAfterConflict($, context, id, memory, baseline, identifyLedger(durable, id), previous.checkpoint, head?.generation)
         throw new Error(`stale writer revision; newer durable ledger was kept; local rows archived in ${archive}; ${reason(error)}`)
       }
     }
@@ -1686,13 +1787,13 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
     const pointer = Object.fromEntries(Object.entries(inlineBucket).map(([name, value]) =>
       name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
-    const publication = await publishLedgerBlob($, text, ref)
+    const publication = await publishLedgerBlob($, context, text, ref)
     if (publication !== undefined && 'rejected' in publication) throw new Error(publication.rejected)
     const fallbackCause = publication?.unavailable
     const bucket = publication === undefined ? pointer : inlineBucket
     if (publication === undefined) {
-      try { await cleanupOwned($, id) }
-      catch (error) { $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
+      try { await cleanupOwned($, context, id) }
+      catch (error) { context.tainted = true; $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
     }
     const nextHead: SessionHead = { v: 1, session_id: id, generation, checkpoint }
     const bytes = utf8Bytes({ [`s:${id}`]: bucket }) + 1
@@ -1702,18 +1803,18 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
     const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
     const replacements = { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }
     if (fallbackCause === undefined) {
-      const evicted = await ensureCapacity($, id, replacements, STORE_BUDGET, [], undefined, undefined, patchCompacted(index))
+      const evicted = await ensureCapacity($, context, id, replacements, STORE_BUDGET, [], undefined, undefined, patchCompacted(index))
       for (const session of evicted) delete index[session]
     } else {
-      try { await checkCapacity(retentionStore($), replacements, STORE_BUDGET) }
+      try { await checkCapacity(retentionStore($, context), replacements, STORE_BUDGET) }
       catch (error) { throw new Error(`blob storage is unavailable: ${fallbackCause}; inline fallback does not fit: ${reason(error)}`, { cause: error }) }
     }
     saveRecoveries.set(id, { previous, previousBlobText, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
-    await retentionStore($).set(`s:${id}`, bucket)
+    await retentionStore($, context).set(`s:${id}`, bucket)
     const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
     if (JSON.stringify(verified) !== JSON.stringify(bucket)) throw new Error('save read-back did not match the acknowledged ledger')
-    await writeVerified($, `h:${id}`, nextHead)
-    await retentionStore($).set(SAVED_INDEX, index)
+    await writeVerified($, context, `h:${id}`, nextHead)
+    await retentionStore($, context).set(SAVED_INDEX, index)
     if (!sameValue(await $.store.get(SAVED_INDEX), index)) throw new Error('save index read-back did not match')
     let memoryChanged = false
     await update($, ledger, cur => {
@@ -1731,16 +1832,18 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
     if (fallbackCause !== undefined) $.ui.toast(`track: saved inline because blob storage is unavailable: ${fallbackCause}`)
   } catch (error) {
+    if (context !== undefined) context.tainted = true
     persistence.failure = reason(error)
-    if (lock !== undefined && id !== undefined) {
-      try { await recoverSave($, id) }
+    if (context !== undefined && id !== undefined) {
+      try { await recoverSave($, context, id) }
       catch (recoveryError) { persistence.failure += `; recovery pending: ${reason(recoveryError)}` }
     }
     await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: persistence.failure }))
     $.ui.log(`track: unsaved; save failed: ${persistence.failure}`, { to: 'debug' })
     $.ui.toast(`track: unsaved — ${persistence.failure}`)
   } finally {
-    if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: writer lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
+    if (context !== undefined) await finishWrite($, context)
+    else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: writer lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
   }
   })
   persistence.queue = run.catch(() => undefined)
@@ -1751,13 +1854,19 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
 const saveClassifierSetting = async ($: EngineInterface, isOn: boolean): Promise<void> => {
   const run = persistence.queue.then(async () => {
     let lock: LockStream | undefined
+    let context: WriteContext | undefined
     try {
       const session = await $.session.id()
       await ensureWriter($, session)
       lock = await acquireLock($, 'write', session)
-      await writeVerified($, CLASSIFIER_KEY, { isOn })
+      context = writeContext(lock)
+      await writeVerified($, context, CLASSIFIER_KEY, { isOn })
+    } catch (error) {
+      if (context !== undefined) context.tainted = true
+      throw error
     } finally {
-      if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log('track: classifier lock cleanup failed: ' + reason(error), { to: 'debug' }))
+      if (context !== undefined) await finishWrite($, context)
+      else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log('track: classifier lock cleanup failed: ' + reason(error), { to: 'debug' }))
     }
   })
   persistence.queue = run.catch(() => undefined)
@@ -1773,10 +1882,11 @@ const savePanePreference = async ($: EngineInterface, closedByPerson: boolean): 
   await saveLedger($)
 }
 
-const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
-      await recoverCleanup(retentionStore($), id, { owner: true })
-      await clearOwnedClocks(retentionStore($), id)
-      await repairHead($, id)
+const resumeLedger = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
+      assertWriteOpen(context)
+      await recoverCleanup(retentionStore($, context), id, { owner: true })
+      await clearOwnedClocks(retentionStore($, context), id)
+      await repairHead($, context, id)
       const raw = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string; generation?: string } | undefined
       const head = sessionHead(await $.store.get(`h:${id}`), id)
       if (raw?.session_id !== undefined && raw.session_id !== id) throw new Error('resume record identity is ambiguous')
@@ -1786,7 +1896,7 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
       let memory = await read($, ledger)
       const memoryOwner = memory.session_id ?? (await read($, durability)).memorySession
       if (memoryOwner !== undefined && memoryOwner !== id) {
-        await preserveVersion($, id, 'session-switch', { source_session: memoryOwner, ledger: memory })
+        await preserveVersion($, context, id, 'session-switch', { source_session: memoryOwner, ledger: memory })
         const stale = memory
         await update($, ledger, current => {
           if (!sameValue(current, stale)) throw new Error('ledger changed during session switch; archived snapshot was kept')
@@ -1813,7 +1923,8 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
         if (!isEmpty && !sameValue(reconciled, durable)) {
           try { reconciled = reconcileLedger(prior?.ledger, durable, reconciled, id) }
           catch (error) {
-            await adoptAfterConflict($, id, memory, prior, durable, raw?.checkpoint ?? head?.checkpoint, head?.generation)
+            context.tainted = true
+            await adoptAfterConflict($, context, id, memory, prior, durable, raw?.checkpoint ?? head?.checkpoint, head?.generation)
             $.ui.log(`track: resume conflict: ${reason(error)}`, { to: 'debug' })
             await publishGate($)
             return
@@ -1839,16 +1950,20 @@ const resumeLedger = async ($: EngineInterface, id: string): Promise<void> => {
 const resumeOwned = async ($: EngineInterface, id: string): Promise<void> => {
   const run = persistence.queue.then(async () => {
     let lock: LockStream | undefined
+    let context: WriteContext | undefined
     try {
       await ensureWriter($, id)
       lock = await acquireLock($, 'write', id)
-      await recoverSave($, id)
-      await resumeLedger($, id)
+      context = writeContext(lock)
+      await recoverSave($, context, id)
+      await resumeLedger($, context, id)
     } catch (error) {
+      if (context !== undefined) context.tainted = true
       await update($, durability, current => ({ ...current, isUnsaved: true, reason: `resume: ${reason(error)}` }))
       throw error
     } finally {
-      if (lock !== undefined) await closeLock(lock)
+      if (context !== undefined) await finishWrite($, context)
+      else if (lock !== undefined) await closeLock(lock)
     }
   })
   persistence.queue = run.catch(() => undefined)
@@ -1858,6 +1973,7 @@ const resumeOwned = async ($: EngineInterface, id: string): Promise<void> => {
 const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path: string): Promise<string> => {
   const run = persistence.queue.then(async () => {
   let lock: LockStream | undefined
+  let context: WriteContext | undefined
   const guards: LockStream[] = []
   const heldGuards = new Map<string, Guard>()
   const evicted: string[] = []
@@ -1866,14 +1982,17 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     const session = await $.session.id()
     await ensureWriter($, session)
     lock = await acquireLock($, 'write', session)
-    await recoverSave($, session)
+    context = writeContext(lock)
+    await recoverSave($, context, session)
     if (mode === 'export') {
       const records = [] as Array<{ key: string; value: unknown }>
       for (const key of (await $.store.keys()).filter(key => key.startsWith('s:')).sort()) records.push({ key, value: await logicalBody($, await $.store.get(key)) })
       const checksum = await checksumOf(records)
-      await $.fs.write(path, JSON.stringify({ v: 1, source_identity: $.plugin.root, checksum, records }))
-      const verified = JSON.parse(await $.fs.read(path) as string) as { checksum?: string; records?: unknown }
-      if (verified.checksum !== checksum || await checksumOf(verified.records) !== checksum) throw new Error('export read-back does not match')
+      await transactionOperation(context, async () => {
+        await $.fs.write(path, JSON.stringify({ v: 1, source_identity: $.plugin.root, checksum, records }))
+        const verified = JSON.parse(await $.fs.read(path) as string) as { checksum?: string; records?: unknown }
+        if (verified.checksum !== checksum || await checksumOf(verified.records) !== checksum) throw new Error('export read-back does not match')
+      })
       return JSON.stringify({ v: 1, ok: true, checksum, records: records.length })
     }
     const bundle = JSON.parse(await $.fs.read(path) as string) as { v?: number; source_identity?: string; checksum?: string; records?: Array<{ key: string; value: unknown }> }
@@ -1912,7 +2031,8 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
           const guard = await acquireLock($, 'guard', target)
           guards.push(guard)
           if (guardStates.get(guard) !== 'closed') throw new Error(`migration keeps live or unknown session ${target}`)
-          heldGuards.set(target, { state: 'closed', release: () => closeLock(guard) })
+          const guardedContext = context
+          heldGuards.set(target, { state: 'closed', release: () => transactionOperation(guardedContext, () => closeLock(guard)) })
         }
         replacements[record.key] = value
         replacements[`h:${target}`] = head
@@ -1928,26 +2048,31 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     }
     replacements[SAVED_INDEX] = index
     // Unchanged records are verified below, so every bundle session is kept.
-    const completedEvictions = await ensureCapacity($, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)), other => { evicted.push(other) }, heldGuards,
+    const completedEvictions = await ensureCapacity($, context, session, replacements, STORE_BUDGET, normalized.map(record => record.key.slice(2)), other => { evicted.push(other) }, heldGuards,
       patchCompacted(index))
     for (const other of completedEvictions) delete index[other]
     const verified: string[] = []
     for (const record of normalized) {
       if (Object.hasOwn(replacements, record.key)) {
-        await writeVerified($, record.key, record.value)
-        await writeVerified($, `h:${record.key.slice(2)}`, record.head)
+        await writeVerified($, context, record.key, record.value)
+        await writeVerified($, context, `h:${record.key.slice(2)}`, record.head)
       }
       const reread = await $.store.get(record.key)
       if (!sameValue(record.isKept ? await logicalBody($, reread) : reread, record.value) || !sameValue(await $.store.get(`h:${record.key.slice(2)}`), record.head)) throw new Error(`migration verification failed for session ${record.key.slice(2)}; source was kept`)
       verified.push(record.key.slice(2))
     }
-    await writeVerified($, SAVED_INDEX, index)
+    await writeVerified($, context, SAVED_INDEX, index)
     return JSON.stringify({ v: 1, ok: true, checksum: bundle.checksum, imported, verified, evicted })
   } catch (error) {
+    if (context !== undefined) context.tainted = true
     return JSON.stringify({ v: 1, ok: false, reason: reason(error), ...(mode === 'import' && { evicted }) })
   } finally {
-    for (const guard of guards) await closeLock(guard).catch(error => $.ui.log(`track: import lease cleanup failed: ${reason(error)}`, { to: 'debug' }))
-    if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: migration lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
+    for (const guard of guards) await closeLock(guard).catch(error => {
+      if (context !== undefined) context.tainted = true
+      $.ui.log(`track: import lease cleanup failed: ${reason(error)}`, { to: 'debug' })
+    })
+    if (context !== undefined) await finishWrite($, context)
+    else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: migration lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
   }
   })
   persistence.queue = run.then(() => undefined, () => undefined)

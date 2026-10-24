@@ -13,6 +13,7 @@ const prepare = (on: On, questions: Question[]) => {
   mock.clock(on)
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, nextQuestionId: 100, questions })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   // These questions' tracking calls still exist; an empty transcript would

@@ -46,7 +46,8 @@ const fixture = (on: On, isOn = false, interceptClassifier = true) => {
     }
   }
   // This first provider owns grant counts and releases; pluginStore's fallback never grants here.
-  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e) {
+  // The kit's lock stream answers legacy or protocol 2, including the completion handshake.
+  on('process.spawn', { argv: /writer-lock\.py$/ }, async function* (_, e, next) {
     const mode = e.argv[2]!
     events.push(`spawn:${mode}`)
     const refusal = mode === 'lease' ? options.leaseFailure : mode === 'write' ? control.writeRefusal : 'unexpected fixture guard'
@@ -58,8 +59,7 @@ const fixture = (on: On, isOn = false, interceptClassifier = true) => {
     if (mode === 'write') control.heldWrite++
     events.push(`grant:${mode}`)
     try {
-      yield { stream: 'stdout' as const, text: JSON.stringify({ ok: true, mode, token: e.argv[4] }) }
-      return { value: { code: 0, signal: null } }
+      return yield* store.locks.serve(e, next.signal)
     } finally {
       events.push(`release:${mode}`)
       if (mode === 'write') control.heldWrite--
@@ -94,6 +94,7 @@ const fixture = (on: On, isOn = false, interceptClassifier = true) => {
   })
   atomStore(on, 'ledger', EMPTY)
   on('session.id', () => ({ value: SESSION }))
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   store = pluginStore(on, initial, undefined, options)
   const assertPreserved = () => {
     const allowed = new Set(['classifier', SIZE_INDEX])

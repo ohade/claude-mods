@@ -1,5 +1,5 @@
 // FIXTURE: stable marker IDs and source/order guards must not depend on ordinals.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 import type { On } from './kit'
 
@@ -9,6 +9,7 @@ const TEXT = `<!-- A25:start -->\n${BODY}\n<!-- A25:end -->\n\nLeft: review.`
 const prepare = (on: On) => {
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 25 })
   const turn = atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))

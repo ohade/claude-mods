@@ -23,6 +23,7 @@ type Input = { id: number; excerpt: string }
 
 const prepare = (on: On, options: { classifier?: boolean; seed?: Record<string, unknown> } = {}) => {
   const clock = mock.clock(on)
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, options.classifier === true ? { classifier: { isOn: true } } : {})
   on('session.id', () => ({ value: SESSION }))
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 1, ...options.seed })

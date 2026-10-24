@@ -1,7 +1,7 @@
 // FIXTURE: unsupported declared body versions must preserve saved history and memory.
 // These public-path checks do not prove live host locking or filesystem atomicity.
 import { expect, test } from 'claude-code/testing'
-import { atomStore, blobPool, pluginStore, trackCommand } from './kit'
+import { TX_REQUEST, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 import { checksumOf, describeCheckpoint } from '../hooks/checkpoint'
 import type { Checkpoint } from '../hooks/checkpoint'
@@ -55,7 +55,9 @@ const setup = (on: On, destination: string, records: Record<string, unknown>, fi
     const text = files.get(event.path)
     return text === undefined ? { deny: `ENOENT: no such file: ${event.path}` } : { value: text }
   })
-  on('fs.write', (_, event) => {
+  // Writer-lock completion requests belong to the kit's lock fixture beneath.
+  on('fs.write', (_, event, next) => {
+    if (TX_REQUEST.test(event.path)) return next(event)
     fileWrites.push(event.path)
     files.set(event.path, String(event.text))
     return { value: undefined }

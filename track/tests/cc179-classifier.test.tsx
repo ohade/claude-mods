@@ -24,6 +24,7 @@ type Input = { id: number; label?: string; excerpt: string }
 const prepare = (on: Parameters<typeof atomStore>[0], options: { isOn?: boolean } = { isOn: true }) => {
   const clock = mock.clock(on)
   // The kit's store answers the writer lock too, so a save after a Track call succeeds.
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, options.isOn === undefined ? {} : { classifier: { isOn: options.isOn } })
   on('session.id', () => ({ value: SESSION }))
   const ledger = atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 1 })

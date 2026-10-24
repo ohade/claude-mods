@@ -1,10 +1,11 @@
 // FIXTURE: native lifecycle inputs publish the independent Track Stop snapshot.
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
 
 test('restore tool description teaches repeat-safe preservation instead of a false repeat refusal', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   let description = ''
@@ -23,6 +24,7 @@ test('restore tool description teaches repeat-safe preservation instead of a fal
 test('native tracking publishes the exact current open question to the ordinary Stop hook', async ($, on) => {
   atomStore(on, 'ledger', EMPTY)
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   const values: string[] = []
@@ -40,6 +42,7 @@ test('capacity is checked inside the atomic question write under concurrent regi
   const questions = Array.from({ length: 199 }, (_, i) => ({ id: i + 1, head: `Open ${i}`, at: 1, turnId: 't1', status: 'open' }))
   const l = atomStore(on, 'ledger', { ...EMPTY, questions, nextQuestionId: 200 }, { holdReads: 2 })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   const results = await Promise.all([

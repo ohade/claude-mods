@@ -294,16 +294,50 @@ for (const fault of ['exit', 'truncated', 'receipt', 'mismatch'] as const) test(
   for (const session of sessions) expect(store.held.has(`s:${session}`)).toBe(true)
 })
 
-for (const missing of ['helper', 'config'] as const) test(`TRACK-35 U2b unavailable own blob storage (${missing}) refuses a non-fitting inline save without compaction or eviction`, async ($, on) => {
-  const family = 20 + (missing === 'helper' ? 0 : 1)
+for (const missing of ['helper'] as const) test(`TRACK-35 U2b unavailable own blob storage (${missing}) refuses a non-fitting inline save without compaction or eviction`, async ($, on) => {
+  const family = 20
   const caller = callerOf(family)
   const { sessions, records, bodies, states } = await prefill(family)
   const files = new Map<string, string>()
-  const { store, lines, published } = setup(on, caller, records, files, { states, ...(missing === 'helper' ? { helper: false } : { config: false }) })
+  const { store, lines, published } = setup(on, caller, records, files, { states, helper: false })
   const result = await checkpoint($, caller)
   expect(result.ok).toBe(false)
-  expect(String(result.reason)).toContain(missing === 'helper' ? 'blob helper unavailable' : 'blob directory unavailable')
+  expect(String(result.reason)).toContain('blob helper unavailable')
   expect(String(result.reason)).toContain('capacity:')
+  expect(store.held.has(`s:${caller}`)).toBe(false)
+  expect(store.held.has(`h:${caller}`)).toBe(false)
+  const saved = store.held.get('saved') as Record<string, unknown>
+  for (const session of sessions) {
+    expect(await print(store.held.get(`s:${session}`))).toBe(await print(bodies[session]))
+    expect(await print(store.held.get(`h:${session}`))).toBe(await print(records[`h:${session}`]))
+    expect(saved[session]).toEqual((records.saved as Record<string, unknown>)[session])
+    expect(store.held.has(`cleanup:${session}`)).toBe(false)
+  }
+  expect(store.held.get('cleanup')).toEqual(records.cleanup)
+  expect(lines.filter(line => line.includes('was evicted'))).toEqual([])
+  expect(lines.filter(line => line.startsWith('track: compaction keeps '))).toEqual([])
+  expect(published).toEqual([])
+  expect([...files]).toEqual([])
+})
+
+// TRACK-39 P1b (2026-10-24): with neither CLAUDE_CONFIG_DIR nor HOME there is no lock config,
+// so the save refuses before any helper or store call instead of checking inline capacity.
+test('TRACK-39 P1b missing lock config refuses before mutation and preserves over-budget history', async ($, on) => {
+  const family = 21
+  const caller = callerOf(family)
+  const { sessions, records, bodies, states } = await prefill(family)
+  const files = new Map<string, string>()
+  const { store, lines, published } = setup(on, caller, records, files, { states, config: false })
+  const keys = [...store.held.keys()]
+  const before = await print([...store.held])
+  const result = await checkpoint($, caller)
+  expect(result.ok).toBe(false)
+  expect(String(result.reason)).toContain('writer lock configuration unavailable')
+  expect(store.locks.spawns).toEqual([])
+  expect(store.locks.requests).toEqual([])
+  expect(store.locks.timeline.filter(event => /^(?:set|delete):/.test(event))).toEqual([])
+  expect([...store.held.keys()]).toEqual(keys)
+  expect(await print([...store.held])).toBe(before)
   expect(store.held.has(`s:${caller}`)).toBe(false)
   expect(store.held.has(`h:${caller}`)).toBe(false)
   const saved = store.held.get('saved') as Record<string, unknown>

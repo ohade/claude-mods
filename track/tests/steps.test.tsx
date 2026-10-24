@@ -12,6 +12,7 @@ for (const tool of ['TaskUpdate', 'TodoWrite'] as const) {
     mock.clock(on)
     const ledger = atomStore(on, 'ledger', { ...EMPTY, steps: tool === 'TaskUpdate'
       ? [{ id: 'task:native-task', source: 'task', taskId: 'native-task', subject: 'Legacy completion', status: 'pending' }] : [] } as any)
+    mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
     pluginStore(on)
     on('session.id', () => ({ value: SESSION }))
     on('tool.call', { tool: [tool] }, () => tool === 'TodoWrite'
@@ -50,6 +51,7 @@ test('two track_steps calls in flight at once insert steps with distinct ids', a
 test('two restore_tracker calls in flight restore the same steps without duplicates', async ($, on) => {
   const ledger = atomStore<Held>(on, 'ledger', EMPTY as Held, { holdReads: 2 })
   atomStore(on, 'scroll', { questions: null, steps: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, { [`s:${OLD_SESSION}`]: { v: 1, savedAt: 1, ledger: { ...EMPTY, steps: [plan(1), plan(2)] } } })
 
   const results = await Promise.all([
@@ -80,6 +82,7 @@ test('restored steps keep no Task link, so a new Task with the same id leaves th
   ]
   const ledger = atomStore<Held>(on, 'ledger', EMPTY as Held)
   atomStore(on, 'scroll', { questions: null, steps: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, { [`s:${OLD_SESSION}`]: { v: 1, savedAt: 1, ledger: { ...EMPTY, steps: old } } })
   on('tool.call', { tool: 'TaskCreate' }, () => ({ result: { task: { id: '3', subject: 'new task' } } }))
   on('tool.call', { tool: 'TaskUpdate' }, (_, e) => ({ result: { success: true, taskId: e.taskId, updatedFields: ['status'] } }))
@@ -142,6 +145,7 @@ test('UI-1 a replacement retry preserves work inserted after its first read', as
   })
   ledger = atomStore<Held>(on, 'ledger', { ...EMPTY, steps: [plan(1, 'completed')] })
   atomStore(on, 'scroll', { questions: null, steps: null })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   const result = await call($, { tool: 'mcp__track__track_steps', steps: ['Replacement'] })

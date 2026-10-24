@@ -558,6 +558,23 @@ class NamespaceTests(TransactionFixture):
         self.assertEqual(marker.resolve().parent, actual / "state" / "track" / "locks" / "tx")
         self.assertFalse((self.home / ".claude").exists())
 
+    def test_symlink_config_request_completes_in_the_realpath_namespace(self):
+        # P1b1 coverage: a client writes its request under the same symlinked config
+        # string it passed to the helper; the helper consumes it under the realpath.
+        actual = self.root / "actual-config"
+        actual.mkdir(mode=0o700)
+        self.config.symlink_to(actual, target_is_directory=True)
+        writer, grant, transaction = self.start_transaction()
+        marker, request = self.transaction_paths(transaction)
+        resolved = actual / "state" / "track" / "locks" / "tx"
+        self.assertTrue((resolved / marker.name).is_file())
+        self.write_request(transaction)
+        self.assert_completed(writer, grant)
+        self.assertFalse((resolved / marker.name).exists())
+        self.assertFalse((resolved / request.name).exists())
+        self.assertTrue(self.config.is_symlink())
+        self.assertFalse((self.home / ".claude").exists())
+
     def test_symlink_descendants_cannot_redirect_namespace_writes(self):
         for component in ("state", "track", "locks", "tx"):
             with self.subTest(component=component):

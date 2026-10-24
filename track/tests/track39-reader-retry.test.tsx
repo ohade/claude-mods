@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-39 U2. Whole-record replacements model a queued saver and safe
 // old-blob eviction. They do not prove live host locking or sweep correctness.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, atomStore, blobPool, pluginStore } from './kit'
+import { EMPTY, TX_REQUEST, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import { describeCheckpoint } from '../hooks/checkpoint'
 import type { Checkpoint } from '../hooks/checkpoint'
@@ -77,7 +77,12 @@ const setup = (on: On, destination: string, records: Record<string, unknown>, fi
     const text = files.get(e.path)
     return text === undefined ? { deny: `ENOENT: no such file or directory, open '${e.path}'` } : { value: text }
   })
-  on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
+  // Writer-lock completion requests belong to the kit's lock fixture beneath.
+  on('fs.write', (_, e, next) => {
+    if (TX_REQUEST.test(e.path)) return next(e)
+    files.set(e.path, String(e.text))
+    return { value: undefined }
+  })
   // This differs from blobPool's helper-path matcher; never register it twice.
   on('process.run', { argv: /^publish$/ }, async (_, e, next) => {
     publications.push(e.argv[4] ?? '')

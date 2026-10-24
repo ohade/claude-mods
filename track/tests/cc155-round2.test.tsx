@@ -36,6 +36,7 @@ test('a question tracked while a restored row is open is shown', async ($, on) =
   const qs = [restored(1), ...ids(6).slice(1).map(native)]
   const ledger = atomStore(on, 'ledger', ledgerOf(qs, [{ by: BY, from: OLD, steps: 0, questions: [qs[0]], display: 'user' }]))
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on)
   on('session.id', () => ({ value: SESSION }))
   on('session.append', (_, e, next) => next(e))

@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-35 own-save contracts, frozen before product S. The real blobPool and
 // pluginStore providers run beneath SDK middleware. This is not host atomicity or LIVE proof.
 import { expect, test } from 'claude-code/testing'
-import { EMPTY, atomStore, blobPool, logs, pluginStore } from './kit'
+import { EMPTY, TX_REQUEST, atomStore, blobPool, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import { describeCheckpoint } from '../hooks/checkpoint'
 import type { Ledger } from '../types'
@@ -77,7 +77,12 @@ const setup = (on: On, id: string, expected: Ledger, records: Record<string, unk
     if (controls.mode === 'readback' && e.path === controls.lastPath) return { value: `${text.slice(0, -1)}!` }
     return { value: text }
   })
-  on('fs.write', (_, e) => { files.set(e.path, String(e.text)); return { value: undefined } })
+  // Writer-lock completion requests belong to the kit's lock fixture beneath.
+  on('fs.write', (_, e, next) => {
+    if (TX_REQUEST.test(e.path)) return next(e)
+    files.set(e.path, String(e.text))
+    return { value: undefined }
+  })
   const pool = blobPool(on, { configDir: CONFIG, files, readProviders: 'external' })
   on('store.delete', { key: /^(?:s:|h:|saved$)/ }, async (_, e, next) => {
     storeAttempts.push(`delete:${e.key}`)
@@ -171,6 +176,24 @@ const expectRecords = async (fixture: ReturnType<typeof setup>, records: Record<
     expect(await fingerprint(fixture.store.held.get(key))).toEqual(await fingerprint(value))
   }
 }
+// TRACK-39 P1b (2026-10-24): with neither CLAUDE_CONFIG_DIR nor HOME there is no lock config, so a
+// save refuses before any helper or store call; it no longer saves inline or checks capacity.
+const LOCK_CONFIG = 'writer lock configuration unavailable'
+const storeSnapshot = async (fixture: ReturnType<typeof setup>) =>
+  ({ keys: [...fixture.store.held.keys()], entries: await fingerprint([...fixture.store.held]) })
+const expectRefusedBeforeLock = async (fixture: ReturnType<typeof setup>, receipt: any, before: Awaited<ReturnType<typeof storeSnapshot>>, originalFiles: Map<string, string>, expected: Ledger) => {
+  expect(receipt.ok).toBe(false)
+  expect(receipt.reason).toContain(LOCK_CONFIG)
+  expectUnsaved(fixture, LOCK_CONFIG)
+  expect(fixture.store.locks.spawns).toEqual([])
+  expect(fixture.store.locks.requests).toEqual([])
+  expect(fixture.store.locks.timeline.filter(event => /^(?:set|delete):/.test(event))).toEqual([])
+  expect(fixture.storeAttempts).toEqual([])
+  expect(fixture.observed).toEqual([])
+  expect(await storeSnapshot(fixture)).toEqual(before)
+  await expectRows(fixture.memory.value, expected)
+  await expectFiles(fixture.files, originalFiles)
+}
 
 const middlewarePin = { plugins: [{ name: 'fixture-pin', register(on: On) {
   on('tool.call', { tool: /^fixture__track35_blob_pin$/ }, async capability => {
@@ -238,7 +261,7 @@ for (const [family, kind] of [[201, 'empty'], [202, 'small Unicode'], [203, 'ove
   })
 }
 
-for (const family of [204, 205, 206] as const) {
+for (const family of [204, 206] as const) {
   test(`FIXTURE own-save ${family}: unavailable helper or directory saves inline without pruning and retries v:2`, async ($, on) => {
     const id = idOf(family)
     const expected = family === 206 ? ledgerFor(id) : { ...EMPTY, session_id: id }
@@ -246,9 +269,8 @@ for (const family of [204, 205, 206] as const) {
     const seeded = family === 206 ? await seedPointer(id, expected, files) : undefined
     const originalFiles = new Map(files)
     const fixture = setup(on, id, expected, seeded?.records, files)
-    fixture.controls.mode = family === 205 ? 'ok' : 'unavailable'
-    fixture.controls.config = family !== 205
-    const cause = family === 205 ? 'blob directory unavailable' : 'blob helper unavailable'
+    fixture.controls.mode = 'unavailable'
+    const cause = 'blob helper unavailable'
     const receipt = await checkpoint($, id)
     expect(receipt.ok).toBe(true)
     expect(receipt).toMatchObject({ v: 1, source_session: id, counts: { questions: expected.questions.length, answers: 0, steps: expected.steps.length } })
@@ -263,7 +285,6 @@ for (const family of [204, 205, 206] as const) {
     expect(fixture.pool.publishes).toBe(0)
     await expectFiles(files, originalFiles)
     fixture.controls.mode = 'ok'
-    fixture.controls.config = true
     const retryStart = fixture.lines.length
     const candidate = await expectOwnV2(fixture, id, expected, await checkpoint($, id))
     expect(fixture.pool.publishes).toBe(1)
@@ -271,6 +292,25 @@ for (const family of [204, 205, 206] as const) {
     await expectFiles(files, new Map([...originalFiles, [candidate.path, candidate.text]]))
   })
 }
+
+test('FIXTURE own-save 205: missing lock config preserves memory and store until a valid-config v:2 retry', async ($, on) => {
+  const id = idOf(205)
+  const expected = { ...EMPTY, session_id: id }
+  const files = new Map<string, string>()
+  const originalFiles = new Map(files)
+  const fixture = setup(on, id, expected, undefined, files)
+  fixture.controls.config = false
+  const before = await storeSnapshot(fixture)
+  await expectRefusedBeforeLock(fixture, await checkpoint($, id), before, originalFiles, expected)
+  expectNoOwn(fixture, id)
+  expect(fixture.pool.publishes).toBe(0)
+  fixture.controls.config = true
+  const retryStart = fixture.lines.length
+  const candidate = await expectOwnV2(fixture, id, expected, await checkpoint($, id))
+  expect(fixture.pool.publishes).toBe(1)
+  expect(fixture.lines.slice(retryStart).some(line => line.includes('unsaved'))).toBe(false)
+  await expectFiles(files, new Map([...originalFiles, [candidate.path, candidate.text]]))
+})
 
 const expiredHistory = async (family: number) => {
   const pads = [950000, 800000, 750000, 700000]
@@ -291,7 +331,7 @@ const expiredHistory = async (family: number) => {
   return { records, sessions, guardStates: Object.fromEntries(sessions.map(id => [id, 'closed' as const])) }
 }
 
-for (const family of [208, 209] as const) {
+for (const family of [208] as const) {
   test(`FIXTURE own-save ${family}: over-budget unavailable fallback keeps expired foreign history until real publication works`, async ($, on) => {
     const id = idOf(family)
     const expected = ledgerFor(id)
@@ -301,9 +341,8 @@ for (const family of [208, 209] as const) {
     expect(initialBytes).toBeLessThan(4 * 1024 * 1024)
     const files = new Map([[SENTINEL, SENTINEL_TEXT]])
     const fixture = setup(on, id, expected, history.records, files, history.guardStates)
-    fixture.controls.mode = family === 208 ? 'unavailable' : 'ok'
-    fixture.controls.config = family !== 209
-    const cause = family === 208 ? 'blob helper unavailable' : 'blob directory unavailable'
+    fixture.controls.mode = 'unavailable'
+    const cause = 'blob helper unavailable'
     const failed = await checkpoint($, id)
     expect(failed.ok).toBe(false)
     expect(failed.reason).toContain(cause)
@@ -316,13 +355,36 @@ for (const family of [208, 209] as const) {
     await expectRows(fixture.memory.value, expected)
     await expectFiles(files, new Map([[SENTINEL, SENTINEL_TEXT]]))
     fixture.controls.mode = 'ok'
-    fixture.controls.config = true
     const candidate = await expectOwnV2(fixture, id, expected, await checkpoint($, id))
     expect(fixture.pool.publishes).toBeGreaterThan(0)
     expect(files.get(SENTINEL)).toBe(SENTINEL_TEXT)
     expect(files.get(candidate.path)).toBe(candidate.text)
   })
 }
+
+test('FIXTURE own-save 209: missing lock config preserves over-budget expired history until a valid-config retry', async ($, on) => {
+  const id = idOf(209)
+  const expected = ledgerFor(id)
+  const history = await expiredHistory(209)
+  const initialBytes = utf8(JSON.stringify(history.records))
+  expect(initialBytes).toBeGreaterThan(3 * 1024 * 1024)
+  expect(initialBytes).toBeLessThan(4 * 1024 * 1024)
+  const files = new Map([[SENTINEL, SENTINEL_TEXT]])
+  const fixture = setup(on, id, expected, history.records, files, history.guardStates)
+  fixture.controls.config = false
+  const before = await storeSnapshot(fixture)
+  await expectRefusedBeforeLock(fixture, await checkpoint($, id), before, new Map([[SENTINEL, SENTINEL_TEXT]]), expected)
+  await expectRecords(fixture, history.records)
+  expectNoOwn(fixture, id)
+  for (const foreign of history.sessions) expect(fixture.store.held.has(`cleanup:${foreign}`)).toBe(false)
+  expect(fixture.lines.filter(line => /was evicted|deleted|deletion|\bexpired\b/.test(line))).toEqual([])
+  expect(fixture.pool.publishes).toBe(0)
+  fixture.controls.config = true
+  const candidate = await expectOwnV2(fixture, id, expected, await checkpoint($, id))
+  expect(fixture.pool.publishes).toBeGreaterThan(0)
+  expect(files.get(SENTINEL)).toBe(SENTINEL_TEXT)
+  expect(files.get(candidate.path)).toBe(candidate.text)
+})
 
 const quietHistory = (family: number) => {
   const id = foreignOf(family, 1)
@@ -595,21 +657,19 @@ const inlineHistory = async (family: number) => {
   return { foreign, entry, records }
 }
 
-for (const family of [207, 217] as const) {
+for (const family of [207] as const) {
   test(`FIXTURE own-save ${family}: under-budget inline fallback preserves expired foreign history until a real v:2 retry expires it`, async ($, on) => {
     const id = idOf(family)
-    const expected = family === 207 ? ledgerFor(id) : { ...EMPTY, session_id: id }
+    const expected = ledgerFor(id)
     const history = await inlineHistory(family)
     const { foreign } = history
     const files = new Map([[SENTINEL, SENTINEL_TEXT]])
-    const seeded = family === 207 ? await seedPointer(id, expected, files) : undefined
-    const records = { ...history.records, ...seeded?.records,
-      saved: { [foreign]: history.entry, ...(seeded === undefined ? {} : { [id]: seeded.entry }) } }
+    const seeded = await seedPointer(id, expected, files)
+    const records = { ...history.records, ...seeded.records, saved: { [foreign]: history.entry, [id]: seeded.entry } }
     const originalFiles = new Map(files)
     const fixture = setup(on, id, expected, records, files, { [foreign]: 'closed' })
-    fixture.controls.mode = family === 207 ? 'unavailable' : 'ok'
-    fixture.controls.config = family === 207
-    const cause = family === 207 ? 'blob helper unavailable' : 'blob directory unavailable'
+    fixture.controls.mode = 'unavailable'
+    const cause = 'blob helper unavailable'
     const now = Date.now()
     expect(now).toBeGreaterThan(7 * 24 * 60 * 60 * 1000)
     for (const key of [`s:${foreign}`, `h:${foreign}`, `r:${foreign}:kept`]) {
@@ -652,7 +712,6 @@ for (const family of [207, 217] as const) {
     await expectFiles(files, originalFiles)
 
     fixture.controls.mode = 'ok'
-    fixture.controls.config = true
     const retryStart = fixture.lines.length
     const candidate = await expectOwnV2(fixture, id, expected, await checkpoint($, id))
     expect(fixture.pool.publishes).toBe(1)
@@ -665,6 +724,43 @@ for (const family of [207, 217] as const) {
     await expectFiles(files, new Map([...originalFiles, [candidate.path, candidate.text]]))
   })
 }
+
+test('FIXTURE own-save 217: missing lock config preserves under-budget expired history until a valid-config retry', async ($, on) => {
+  const id = idOf(217)
+  const expected = { ...EMPTY, session_id: id }
+  const history = await inlineHistory(217)
+  const { foreign } = history
+  const files = new Map([[SENTINEL, SENTINEL_TEXT]])
+  const originalFiles = new Map(files)
+  const fixture = setup(on, id, expected, history.records, files, { [foreign]: 'closed' })
+  fixture.controls.config = false
+  expect(Date.now()).toBeGreaterThan(7 * 24 * 60 * 60 * 1000)
+  for (const key of [`s:${foreign}`, `h:${foreign}`, `r:${foreign}:kept`]) {
+    expect(history.records[key]).toMatchObject({ closedAt: 0 })
+  }
+  expect(history.records.cleanup).toEqual({ v: 1, lastAttempt: 0, cursor: '' })
+  const before = await storeSnapshot(fixture)
+  await expectRefusedBeforeLock(fixture, await checkpoint($, id), before, originalFiles, expected)
+  for (const key of [`s:${foreign}`, `h:${foreign}`, `r:${foreign}:kept`, 'cleanup']) {
+    expect(fixture.store.held.get(key)).toEqual(history.records[key])
+  }
+  expect((fixture.store.held.get('saved') as Record<string, unknown>)[foreign]).toEqual(history.entry)
+  expect(fixture.store.held.has(`cleanup:${foreign}`)).toBe(false)
+  expectNoOwn(fixture, id)
+  expect(fixture.pool.publishes).toBe(0)
+
+  fixture.controls.config = true
+  const retryStart = fixture.lines.length
+  const candidate = await expectOwnV2(fixture, id, expected, await checkpoint($, id))
+  expect(fixture.pool.publishes).toBe(1)
+  expect(fixture.lines.slice(retryStart).some(line => line.includes('unsaved'))).toBe(false)
+  for (const key of [`s:${foreign}`, `h:${foreign}`, `r:${foreign}:kept`, `cleanup:${foreign}`]) {
+    expect(fixture.store.held.has(key)).toBe(false)
+  }
+  const retryIndex = fixture.store.held.get('saved') as Record<string, unknown>
+  expect(retryIndex[foreign]).toBeUndefined()
+  await expectFiles(files, new Map([...originalFiles, [candidate.path, candidate.text]]))
+})
 
 // TRACK-35 (2026-10-23): reload changed object key order and duplicated an unchanged full ledger.
 for (const [family, change] of [

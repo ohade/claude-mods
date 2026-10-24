@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { atomStore, pane, pluginStore, SESSION } from './kit'
+import { atomStore, pane, pluginStore, SESSION, writerLocks } from './kit'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -406,6 +406,7 @@ test('the pane opens by itself outside a git repository too', async ($, on) => {
 
 test('a resumed session gets its saved questions back', async ($, on) => {
   const saved = { v: 1, savedAt: 1, ledger: OPEN_ONE }
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
   pluginStore(on, { [`s:${SESSION}`]: saved })
   const { writes } = atomStore(on, 'ledger', { v: 1, nextQuestionId: 1, questions: [] as QuestionRow[], steps: [], prompts: [] })
   on('session.id', () => ({ value: SESSION }))
@@ -418,9 +419,10 @@ test('a resumed session gets its saved questions back', async ($, on) => {
 })
 
 test('a finished turn saves the ledger under the session id', async ($, on) => {
-  on('process.spawn', async function* (_, e) {
-    yield { stream: 'stdout' as const, text: JSON.stringify({ ok: true, mode: e.argv[2], token: e.argv[4] }) }
-    return { value: { code: 0, signal: null } }
+  mock.env(on, { CLAUDE_CONFIG_DIR: '/fixture/config' })
+  const locks = writerLocks(on)
+  on('process.spawn', async function* (_, e, next) {
+    return yield* locks.serve(e, next.signal)
   })
   const sets: Array<{ key: string; value: unknown }> = []
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: OPEN_ONE, version: 1 } }))

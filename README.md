@@ -338,6 +338,9 @@ fallback stays **Unsaved** and reports both the unavailable cause and capacity f
 not prune history to hide the failed helper. A rejected publication, invalid receipt, damaged
 blob or failed read-back refuses the save even if an inline body would fit. When publication
 works again, the next normal save writes a v2 pointer and resumes the existing maintenance policy.
+The fallback still needs a usable lock configuration (see protocol 2 below). An unresolved or
+relative config path refuses the save before saved history or blob files change; it never saves
+inline.
 
 One-time migration of every old body, a disk retention policy and an orphan sweep remain
 pending. Blob files are retained, including candidates left after a later store
@@ -395,12 +398,20 @@ Import receipts include `evicted`, the IDs of sessions removed to make room. If 
 write fails, the failure receipt still lists completed evictions; the source bundle is kept.
 Do not retire a legacy store until its original values and the added metadata have been verified.
 
-### Writer-lock protocol 2 (helper only, not active)
+### Writer-lock protocol 2
 
-`hooks/writer-lock.py` also offers an opt-in protocol for later crash-safe blob cleanup. Track
-does not use it yet: saves still call the helper without `TRACK_LOCK_PROTOCOL`, and that legacy
-path keeps its receipts. Malformed calls now exit 2, `-h`/`--help` prints usage, and an
-unexpected error reports `lock operation failed`, with its error type and errno on stderr.
+Protocol 2 prepares crash-safe blob cleanup; that cleanup is not active. Track now calls
+`hooks/writer-lock.py` with protocol 2 for every lease, write and guard. Each spawn sets
+`TRACK_LOCK_PROTOCOL=2` and `CLAUDE_CONFIG_DIR` to the config directory Track resolved:
+`CLAUDE_CONFIG_DIR`, or `$HOME/.claude` when that is unset or empty. When that path is
+unresolved or relative, Track refuses the lock before it starts the helper. Saved history and
+blob files do not change; the in-memory Unsaved state still can. A config folder that does not
+exist yet is not a refusal: the helper creates it.
+The helper keeps its legacy path, used when `TRACK_LOCK_PROTOCOL` is unset, for Track instances
+that loaded before the update. They keep working until they reload. When `TRACK_LOCK_DIR` is
+unset, both paths use the same lock directory and the same store lock. Malformed calls exit 2,
+`-h`/`--help` prints usage, and an unexpected error reports `lock operation failed`, with its
+error type and errno on stderr.
 
 With `TRACK_LOCK_PROTOCOL=2`, the helper takes the same `lease|write|guard <session>
 <module-token>` arguments and adds `protocol: 2` to each successful receipt; any other value is
@@ -408,7 +419,16 @@ refused. The config directory is `CLAUDE_CONFIG_DIR`, or `$HOME/.claude` when th
 empty, and it must be absolute. `TRACK_LOCK_DIR` is refused. Below the resolved config directory,
 each component of `state/track/locks/tx` must be owned by the user and must not be a symlink;
 `locks` and `tx` must be mode 0700. Lock and record files must be owned, single-link regular
-files. A protocol 2 write needs the same token's live protocol 2 lease.
+files. A protocol 2 write needs the same token's live protocol 2 lease. Track accepts a receipt
+only with `protocol: 2`, its own token and the requested mode. A write grant must also name a
+UUID v4 `id` and a 64-character lowercase hex `nonce`. Any other receipt refuses the operation
+before durable work.
+
+The helper ends a grant when its owner goes away: the parent process exits, the stdout reader
+closes, or the output reports POLLERR or POLLNVAL. An error from the output monitor counts as a
+lost owner too. A Unix-socket stdout whose peer only stopped writing reports POLLHUP on macOS;
+the helper does not treat that as a lost owner. This was observed with Bun 1.3.6. The engine's
+own Bun has not been checked live.
 
 Before granting a write, the helper writes a durable transaction record, `locks/tx/<id>.json`,
 with the session, the token and the owning process's identity. The grant names its `id` and a
@@ -418,6 +438,26 @@ and the unchanged record. It removes the record, then the request, and reports `
 If the helper or its owner ends before verified completion, the record stays as evidence;
 there is no automatic retirement. A crash between the removals can leave only the request.
 If the acknowledgement is lost after durable removal, the record may already be absent.
+
+Four queued operations take a write grant: a ledger save, a classifier change, a resume and an
+export or import. Each carries its grant in its own transaction context. Any failed or uncertain
+step taints the transaction: a caught store, blob or guard error, a failed rollback, or a failed
+operation. Rolling back after a failure does not clear the taint. After all awaited writes, read-backs
+and guard releases, a clean transaction writes its completion request once. Track awaits that
+write, then allows 2000 ms for the `completed` acknowledgement and a normal helper exit. A tainted
+transaction never requests completion; closing the lock leaves its record as evidence. If the
+request write fails, or the acknowledgement or exit is wrong or late, Track logs
+`track: completion-unconfirmed` to its debug log. The operation's public result does not change.
+Track never retries that transaction or removes leftover evidence. A lost acknowledgement does
+not prove that the record remains: the helper may already have removed both files.
+
+Limits: awaited writes and read-backs show what the store and files hold; they do not prove the
+data survives a power loss. The helper fsyncs only its own records. There is no automatic
+retirement of leftover records, no v3 body format, no blob collector and no reset. A strict
+helper that refuses legacy clients needs positive admission first: every loaded host runs a
+protocol 2 client and no legacy helper or SDK work is still outstanding, or the hosts are shown
+to be quiescent. A census of leases or processes alone is not enough. Writer exclusion after a
+helper dies unexpectedly is still unresolved.
 
 ### Local checkpoint/restore contract v1
 
