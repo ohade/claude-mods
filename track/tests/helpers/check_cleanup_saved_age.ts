@@ -101,12 +101,15 @@ check('an import with closedAt 1 day old and savedAt 30 days old is kept untouch
   await cleanupRecords(store, caller, closed)
   for (const [key, value] of Object.entries(initial)) assert.deepEqual(values.get(key), value, key)
 })
-check('an old-save import is still migrated by compact and never expires by savedAt', async () => {
-  const handle = makeStore(withHead(imported(now - 30 * DAY), now - DAY))
+check('an old-save import is neither compacted by the hourly path nor expired by savedAt', async () => {
+  const initial = withHead(imported(now - 30 * DAY), now - DAY)
+  const handle = makeStore(initial)
   const calls: Call[] = []
   await cleanupRecords(handle.store, caller, closed, { compact: converting(calls, 'compacted', handle) })
-  assert.deepEqual(calls.map(call => call.session), [id(1)])
-  assert.equal((handle.values.get(`s:${id(1)}`) as any).v, 2)
+  assert.deepEqual(calls, [])
+  for (const [key, value] of Object.entries(initial)) assert.deepEqual(handle.values.get(key), value, key)
+  assert.deepEqual(keysOf(handle.values, 1).sort(), Object.keys(initial).sort())
+  assert.equal((handle.values.get(`s:${id(1)}`) as any).v, 1)
   assert.deepEqual((handle.values.get(`s:${id(1)}`) as any).import_provenance, provenance)
 })
 for (const [label, savedAt] of [['future', now + 1], ['string', 'yesterday'], ['null', null], ['NaN', Number.NaN], ['negative', -5]] as const) {
@@ -233,6 +236,116 @@ check('the hourly due rule still gates migration', async () => {
   await cleanupRecords(handle.store, caller, closed, { compact: converting(calls, 'kept') })
   assert.equal(calls.length, 0)
 })
+
+// TRACK-43 wiring cases (2026-10-24): F1 refused expiry, F2 shape, F3 lastCleanup, F5 clocks.
+const HOUR_MS = 3600000
+const switchArchive = (n: number, source: unknown) => ({ [`r:${id(n)}:switch`]: { v: 1, session_id: id(n), kind: 'session-switch', value: { source_session: source, ledger: { session_id: source } } } })
+// Counts guards taken and released, so a refusal that leaks one shows up.
+const counting = (states: Record<string, 'live' | 'closed'> = {}) => {
+  const tally = { taken: 0, released: 0 }
+  const probe = async (session: string): Promise<Guard> => {
+    tally.taken++
+    return { state: states[session] ?? 'closed', release: async () => { tally.released++ } }
+  }
+  return { tally, probe }
+}
+for (const [label, source, states] of [
+  ['a LIVE switch source', id(2), { [id(2)]: 'live' as const }],
+  ['an ambiguous switch source', 'not-a-session-id', {}],
+] as const) {
+  check(`F1: a savedAt expiry refused by ${label} stamps the missing clock, keeps every row and does not compact`, async () => {
+    const initial = { ...records(1, v1(1, now - 30 * DAY)), ...switchArchive(1, source) }
+    const handle = makeStore(initial)
+    const { tally, probe } = counting(states)
+    const calls: Call[] = []
+    await cleanupRecords(handle.store, caller, probe, { compact: converting(calls, 'compacted', handle) })
+    assert.equal(logs.some(line => line.includes(`expiry keeps ${id(1)}`)), true, 'the refusal was reached')
+    for (const [key, value] of Object.entries(initial)) {
+      if (key === `h:${id(1)}`) assert.deepEqual(handle.values.get(key), { ...(value as object), closedAt: now }, 'only the missing closing clock is added')
+      else assert.deepEqual(handle.values.get(key), value, key)
+    }
+    assert.equal(handle.values.has(`cleanup:${id(1)}`), false, 'no journal remains')
+    assert.deepEqual(calls.map(call => call.session).filter(session => session === id(1)), [], 'that candidate is not compacted in the same visit')
+    assert.equal(tally.released, tally.taken, 'every guard is released')
+    assert.equal((handle.values.get('cleanup') as any).lastCleanup, now)
+  })
+}
+check('F1: a refused expiry whose closing clock already exists adds no stamp', async () => {
+  const initial = { ...withHead(v1(1, now - 30 * DAY), now - DAY), ...switchArchive(1, id(2)) }
+  const handle = makeStore(initial)
+  const { tally, probe } = counting({ [id(2)]: 'live' })
+  await cleanupRecords(handle.store, caller, probe)
+  for (const [key, value] of Object.entries(initial)) assert.deepEqual(handle.values.get(key), value, key)
+  assert.equal(tally.released, tally.taken)
+})
+check('F1: a refused expiry is retried and succeeds once the source is CLOSED', async () => {
+  const initial = { ...records(1, v1(1, now - 30 * DAY)), ...switchArchive(1, id(2)) }
+  const handle = makeStore(initial)
+  await cleanupRecords(handle.store, caller, counting({ [id(2)]: 'live' }).probe)
+  assert.equal(handle.values.has(`s:${id(1)}`), true)
+  now += HOUR_MS
+  try { await cleanupRecords(handle.store, caller, counting().probe) } finally { now -= HOUR_MS }
+  assert.deepEqual(keysOf(handle.values, 1), [], 'the session is deleted once nothing blocks it')
+})
+check('F2: a v:2 body with an inline ledger and no ledger_blob is never compacted', async () => {
+  const calls: Call[] = []
+  const body = { v: 2, session_id: id(1), savedAt: now - DAY, ledger: { question: 'inline under v2' } }
+  const handle = makeStore(withHead(body, now - DAY))
+  await cleanupRecords(handle.store, caller, closed, { compact: converting(calls, 'compacted', handle) })
+  assert.deepEqual(calls, [])
+  assert.deepEqual(handle.values.get(`s:${id(1)}`), body)
+})
+for (const [label, ledger] of [['null', null], ['an array', [1, 2]], ['a string', 'text'], ['a number', 7]] as const) {
+  check(`F6: a v:1 body whose ledger is ${label} is never compacted`, async () => {
+    const calls: Call[] = []
+    const body = { v: 1, session_id: id(1), savedAt: now - DAY, ledger }
+    const handle = makeStore(withHead(body, now - DAY))
+    await cleanupRecords(handle.store, caller, closed, { compact: converting(calls, 'compacted', handle) })
+    assert.deepEqual(calls, [])
+    assert.deepEqual(handle.values.get(`s:${id(1)}`), body)
+  })
+}
+check('F3: a compaction-only run with an existing closing clock records lastCleanup; a kept one does not', async () => {
+  for (const [outcome, completed] of [['compacted', true], ['kept', false]] as const) {
+    const handle = makeStore(withHead(v1(1, now - DAY), now - DAY))
+    await cleanupRecords(handle.store, caller, closed, { compact: converting([], outcome, handle) })
+    const state = handle.values.get('cleanup') as any
+    assert.equal(state.lastAttempt, now, outcome)
+    assert.equal(state.lastCleanup, completed ? now : undefined, outcome)
+    assert.deepEqual(handle.values.get(`h:${id(1)}`), { v: 1, session_id: id(1), closedAt: now - DAY }, 'no stamp supplied the count')
+  }
+})
+// F5: each clock case is one head closedAt, one body savedAt, an import flag and whether the session is deleted.
+const CLOCK_CASES: Array<[string, unknown, unknown, boolean, 'deleted' | 'kept']> = [
+  ['NaN closedAt is unusable, an expired savedAt decides', Number.NaN, now - 30 * DAY, false, 'deleted'],
+  ['future closedAt is unusable, an expired savedAt decides', now + 1, now - 30 * DAY, false, 'deleted'],
+  ['string closedAt is unusable, an expired savedAt decides', 'yesterday', now - 30 * DAY, false, 'deleted'],
+  ['NaN closedAt with a recent savedAt is stamped and kept', Number.NaN, now - DAY, false, 'kept'],
+  ['future closedAt with a recent savedAt is stamped and kept', now + 1, now - DAY, false, 'kept'],
+  ['string closedAt with a recent savedAt is stamped and kept', 'yesterday', now - DAY, false, 'kept'],
+  ['zero closedAt is a valid, expired clock', 0, now - DAY, false, 'deleted'],
+  ['zero closedAt expires an import', 0, now - DAY, true, 'deleted'],
+  ['zero savedAt is a valid, expired save', now - DAY, 0, false, 'deleted'],
+  ['zero savedAt never expires an import', now - DAY, 0, true, 'kept'],
+  ['NaN savedAt with a recent closedAt is kept', now - DAY, Number.NaN, false, 'kept'],
+  ['future savedAt with a recent closedAt is kept', now - DAY, now + 1, false, 'kept'],
+  ['string savedAt with a recent closedAt is kept', now - DAY, 'yesterday', false, 'kept'],
+  ['NaN savedAt with an expired closedAt is deleted', now - 30 * DAY, Number.NaN, false, 'deleted'],
+  ['future savedAt with an expired closedAt is deleted', now - 30 * DAY, now + 1, false, 'deleted'],
+  ['string savedAt with an expired closedAt is deleted', now - 30 * DAY, 'yesterday', false, 'deleted'],
+]
+for (const [label, closedAt, savedAt, isImport, expected] of CLOCK_CASES) {
+  check(`F5: ${label}`, async () => {
+    const body = v1(1, savedAt, isImport ? { import_provenance: provenance } : {})
+    const handle = makeStore({ ...records(1, body), [`h:${id(1)}`]: { v: 1, session_id: id(1), closedAt } })
+    await cleanupRecords(handle.store, caller, closed)
+    if (expected === 'deleted') assert.deepEqual(keysOf(handle.values, 1), [])
+    else {
+      assert.deepEqual(keysOf(handle.values, 1).sort(), [`h:${id(1)}`, `r:${id(1)}:old`, `s:${id(1)}`])
+      assert.deepEqual(handle.values.get(`s:${id(1)}`), body)
+    }
+  })
+}
 
 let failures = 0
 try {
