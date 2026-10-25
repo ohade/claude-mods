@@ -1359,10 +1359,15 @@ test('FIXTURE TRACK34 session switch 33 CONTROL: one identity outage still recor
   })
 })
 
-for (const switchToB of [true, false]) {
-  const name = switchToB
-    ? '34: an A prompt held at the classifier-setting read cannot add pending input to B'
-    : '35 CONTROL: an A question held at the classifier-setting read enters A pending without a switch'
+// Cases 36/37 admit the prompt through one failed identity read, so the provisional epoch fence decides.
+for (const [switchToB, outage] of [[true, false], [false, false], [true, true], [false, true]] as const) {
+  const name = outage
+    ? switchToB
+      ? '36: an identity-outage A prompt held at the classifier-setting read cannot add pending input to B'
+      : '37 CONTROL: an identity-outage A question held at the classifier-setting read enters A pending without a switch'
+    : switchToB
+      ? '34: an A prompt held at the classifier-setting read cannot add pending input to B'
+      : '35 CONTROL: an A question held at the classifier-setting read enters A pending without a switch'
   test(`FIXTURE TRACK34 session switch ${name}`, async ($, on) => {
     const held = latch()
     let armed = false
@@ -1388,6 +1393,10 @@ for (const switchToB of [true, false]) {
     fixture.store.held.set('classifier', { isOn: false })
     const identityStart = fixture.identityReads.length
     const text = 'Why is A still pending after its classifier-setting read?'
+    if (outage) {
+      fixture.controls.identityFailure = IDENTITY_FAILURE
+      fixture.controls.identityFailOnce = true
+    }
     armed = true
     const request = outcome(submit($, text))
     try {
@@ -1398,7 +1407,7 @@ for (const switchToB of [true, false]) {
         throw new Error(`INVALID FIXTURE: A prompt returned before its classifier-setting read; store.get keys=${JSON.stringify(storeGetKeys)}; prompt outcome=${JSON.stringify(await request)}`)
       }
       try {
-        expect(fixture.identityReads.slice(identityStart)).toEqual([A])
+        expect(fixture.identityReads.slice(identityStart)).toEqual(outage ? [IDENTITY_FAILURE] : [A])
         expect(fixture.controls.session).toBe(A)
         expect(await unchangedState(fixture)).toEqual(expectedStillA(fixture))
         expect(fixture.pending.value).toEqual({ inputs: [], nextId: 1 })
@@ -1436,6 +1445,10 @@ for (const switchToB of [true, false]) {
         // survive, including its next id, without the admitted A question.
         expect({ postClassifierPromptCrossOwnerBPending: fixture.pending.value }).toEqual({
           postClassifierPromptCrossOwnerBPending: expectedB.pending,
+        })
+        // The prompt reaches the model with exactly Track's owner-changed line.
+        expect({ postClassifierPromptCrossOwnerContext: fixture.promptCalls.map(call => call.context) }).toEqual({
+          postClassifierPromptCrossOwnerContext: [['track: session owner changed during the call; Track did not record this prompt.']],
         })
         expect({ postClassifierPromptCrossOwnerBState: await unchangedState(fixture),
           pending: fixture.pending.value, turn: fixture.turn.value, activity: fixture.activity.value }).toEqual({
