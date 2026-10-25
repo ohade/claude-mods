@@ -3080,12 +3080,18 @@ export const register: Register = on => {
   // Then the per-turn reminder: a short row beside the prompt, only while something is open.
   // One handler: the loader takes one prompt.submit hook without a matcher.
   on('prompt.submit', async ($, e, next) => {
+    // The pending write runs after several awaits, so it checks the admitted owner inside its atom.
+    const admissionEpoch = ownership.epoch
+    let token: OwnerToken | undefined
+    let provisional = false
     if ((e as { agentId?: string }).agentId === undefined) {
       const owned = await ensureOwner($)
       if (!owned.ok && !owned.isIdentity) {
         // Keep the prompt available when Track cannot select its session's rows.
         return next({ ...e, context: [...(e.context ?? []), `track: ${owned.reason}; Track did not record this prompt.`] })
       }
+      token = owned.ok ? owned.token : undefined
+      provisional = !owned.ok
     }
     const trimmed = (e as { agentId?: string }).agentId === undefined ? gateable(String(e.text ?? ''), e.origin?.kind) : undefined
     const wording = trimmed !== undefined && looksLikeQuestion(trimmed)
@@ -3099,27 +3105,36 @@ export const register: Register = on => {
       // The prompt row may already be recorded: the newest with these words, not yet taken.
       const prompts = (await read($, ledger)).prompts
       let full = false
-      await update($, pending, p => {
-        added = undefined
-        full = false
-        // The same full text again in the same turn is a redelivery, not a new question. An
-        // unbound input is the running turn's when this one arrives inside a turn.
-        if (p.inputs.some(i => i.textHash === textHash && (i.turnId === turnId || (i.turnId === null && turnId !== null)))) return p
-        let inputs = p.inputs
-        if (inputs.length >= MAX_INPUTS) {
-          // A covered input leaves first, then one Haiku called not_question.
-          const done = inputs.find(i => i.covered !== undefined) ?? inputs.find(i => i.label === 'not_question')
-          if (done === undefined) {
-            full = true
-            return p
+      try {
+        await update($, pending, p => {
+          assertOwner(token)
+          if (provisional && !isOwnerCurrent({ owner: undefined, epoch: admissionEpoch })) throw new OwnerChanged()
+          added = undefined
+          full = false
+          // The same full text again in the same turn is a redelivery, not a new question. An
+          // unbound input is the running turn's when this one arrives inside a turn.
+          if (p.inputs.some(i => i.textHash === textHash && (i.turnId === turnId || (i.turnId === null && turnId !== null)))) return p
+          let inputs = p.inputs
+          if (inputs.length >= MAX_INPUTS) {
+            // A covered input leaves first, then one Haiku called not_question.
+            const done = inputs.find(i => i.covered !== undefined) ?? inputs.find(i => i.label === 'not_question')
+            if (done === undefined) {
+              full = true
+              return p
+            }
+            inputs = inputs.filter(i => i.id !== done.id)
           }
-          inputs = inputs.filter(i => i.id !== done.id)
-        }
-        const taken = new Set(inputs.map(i => i.rowKey))
-        const row = [...prompts].reverse().find(r => r.turnId === null && norm(r.head) === norm(head) && !taken.has(r.rowKey))?.rowKey
-        added = p.nextId
-        return { inputs: [...inputs, { id: p.nextId, head, excerpt, textHash, turnId, ...(row !== undefined && { rowKey: row }), ...(!wording && { wording: false as const }) }], nextId: p.nextId + 1 }
-      })
+          const taken = new Set(inputs.map(i => i.rowKey))
+          const row = [...prompts].reverse().find(r => r.turnId === null && norm(r.head) === norm(head) && !taken.has(r.rowKey))?.rowKey
+          added = p.nextId
+          return { inputs: [...inputs, { id: p.nextId, head, excerpt, textHash, turnId, ...(row !== undefined && { rowKey: row }), ...(!wording && { wording: false as const }) }], nextId: p.nextId + 1 }
+        })
+      } catch (error) {
+        if (!(error instanceof OwnerChanged)) throw error
+        // Another session owns the rows now: pass the prompt through and leave its state alone.
+        $.ui.log('track: prompt input not recorded: session owner changed during the call.', { to: 'debug' })
+        return next({ ...e, context: [...(e.context ?? []), 'track: session owner changed during the call; Track did not record this prompt.'] })
+      }
       if (full) $.ui.toast(`track: ${MAX_INPUTS} prompts still wait for a Track row; this one was not recorded.`)
       // Started, not awaited: the label is read at Stop. A managed timer stops on a reload.
       if (added !== undefined && classify) {
