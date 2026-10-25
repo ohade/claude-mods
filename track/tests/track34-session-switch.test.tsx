@@ -1370,7 +1370,8 @@ for (const switchToB of [true, false]) {
     const storeGetKeys: string[] = []
     // Relay before setup's store provider. This read occurs only after the
     // composer prompt's ensureOwner admission and before its pending write.
-    on('store.get', async (_, e, next) => {
+    // The match-all key matcher keeps it apart from the kit's unmatched provider.
+    on('store.get', { key: /^.+$/ }, async (_, e, next) => {
       storeGetKeys.push(e.key)
       if (e.key === 'classifier' && armed && !heldOnce) {
         armed = false
