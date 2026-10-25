@@ -257,6 +257,8 @@ def discard_stage(created, sdk_fd, stage, identity):
     """Remove only entries this run created, deepest first, then its own stage directory.
 
     The stage's identity is checked first: on a mismatch or any error reading it, nothing is removed.
+    The stage rmdir is refused when a second identity check just before it fails; that check narrows
+    the window but is not atomic with the rmdir.
     """
     try:
         info = os.stat(stage, dir_fd=sdk_fd, follow_symlinks=False)
@@ -275,6 +277,16 @@ def discard_stage(created, sdk_fd, stage, identity):
                 os.unlink(name, dir_fd=parent_fd)
         except OSError as error:
             print(f'land: sdk-promote: could not remove stage entry {name}: {error}', file=sys.stderr)
+    # Re-check just before the rmdir: the name may have been swapped during the loop. This narrows
+    # the window but is not atomic with the rmdir; the land lock remains the exclusion contract.
+    try:
+        info = os.stat(stage, dir_fd=sdk_fd, follow_symlinks=False)
+        if (info.st_dev, info.st_ino) != identity:
+            raise ValueError('stage identity changed')
+    except (OSError, ValueError) as error:
+        print(f'land: sdk-promote: left stage {stage}: identity not confirmed before its removal: {error}',
+              file=sys.stderr)
+        return
     try:
         os.rmdir(stage, dir_fd=sdk_fd)
     except OSError as error:

@@ -502,6 +502,169 @@ class SdkLandingTest(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.default_root))
         self.assertFalse(os.path.lexists(self.state / 'claude-mods-land.lock'))
 
+    def test_c1c_cleanup_keeps_midloop_replacement(self):
+        # plan:125 L1: the stage is swapped for an empty directory after the initial identity
+        # check, during the run's last owned-entry removal; the final stage rmdir must spare it.
+        module, seen = self.load_helper(), {'removals': 0}
+        real_rmdir, real_unlink = os.rmdir, os.unlink
+
+        def arm():
+            stage = self.own_stage(set())
+            seen.update(stage=stage, owned=len(list(stage.rglob('*'))), armed=True)
+
+        def after_removal():
+            if not seen.get('armed'):
+                return
+            seen['removals'] += 1
+            if seen['removals'] == seen['owned']:
+                seen['armed'] = False
+                side = self.root / 'moved-original-stage'
+                os.rename(seen['stage'], side)
+                os.mkdir(seen['stage'])
+                info = os.lstat(seen['stage'])
+                seen.update(side=side, replacement=(info.st_ino, info.st_mode))
+
+        def rmdir(*args, **kwargs):
+            result = real_rmdir(*args, **kwargs)
+            after_removal()
+            return result
+
+        def unlink(*args, **kwargs):
+            result = real_unlink(*args, **kwargs)
+            after_removal()
+            return result
+
+        with mock.patch.object(module.os, 'fsync', self.failing_fsync(2, arm)), \
+                mock.patch.object(module.os, 'rmdir', rmdir), mock.patch.object(module.os, 'unlink', unlink):
+            error, stderr = self.promote_in_process(module)
+        self.assertIsInstance(error, OSError, stderr)
+        self.assertGreater(seen['owned'], 2, 'fixture: the run must have created entries')
+        self.assertIn('replacement', seen, 'fixture: the swap must fire on the last owned-entry removal')
+        after = os.lstat(seen['stage']) if os.path.lexists(seen['stage']) else None
+        self.assertEqual(None if after is None else (after.st_ino, after.st_mode), seen['replacement'],
+                         'C1c: the replacement at the stage name survives with its inode and mode')
+        self.assertIn('identity', stderr)
+        self.assertFalse(os.path.lexists(self.default_root))
+        self.assertFalse(os.path.lexists(self.state / 'claude-mods-land.lock'))
+
+    def test_c1d_missing_stage_identity_preserves_created_entries(self):
+        # plan:125 L2: nothing exists at the stage name, so the initial identity read fails.
+        module, seen = self.load_helper(), {}
+
+        def move():
+            stage = self.own_stage(set())
+            side = self.root / 'moved-original-stage'
+            os.rename(stage, side)
+            seen.update(stage=stage, side=side, created=self.snapshot(side))
+
+        with mock.patch.object(module.os, 'fsync', self.failing_fsync(2, move)):
+            error, stderr = self.promote_in_process(module)
+        self.assertIsInstance(error, OSError, stderr)
+        self.assertGreater(len(seen['created']), 2, 'fixture: the run must have created entries')
+        self.assertEqual(self.snapshot(seen['side']), seen['created'],
+                         'C1d: created entries preserved when the stage identity cannot be read')
+        self.assertIn('left stage', stderr)
+        self.assertFalse(os.path.lexists(self.default_root))
+        self.assertFalse(os.path.lexists(self.state / 'claude-mods-land.lock'))
+
+    def test_c1e_cleanup_refuses_rmdir_when_stage_identity_unreadable(self):
+        # plan:125 r2: the stage is moved away during the run's last owned-entry removal and
+        # nothing is left at its name; the pre-rmdir identity read fails and the original error stays.
+        module, seen = self.load_helper(), {'removals': 0}
+        real_rmdir, real_unlink = os.rmdir, os.unlink
+
+        def arm():
+            stage = self.own_stage(set())
+            seen.update(stage=stage, owned=len(list(stage.rglob('*'))), armed=True)
+
+        def after_removal():
+            if not seen.get('armed'):
+                return
+            seen['removals'] += 1
+            if seen['removals'] == seen['owned']:
+                seen['armed'] = False
+                side = self.root / 'moved-original-stage'
+                os.rename(seen['stage'], side)
+                seen['side'] = side
+
+        def rmdir(*args, **kwargs):
+            result = real_rmdir(*args, **kwargs)
+            after_removal()
+            return result
+
+        def unlink(*args, **kwargs):
+            result = real_unlink(*args, **kwargs)
+            after_removal()
+            return result
+
+        with mock.patch.object(module.os, 'fsync', self.failing_fsync(2, arm)), \
+                mock.patch.object(module.os, 'rmdir', rmdir), mock.patch.object(module.os, 'unlink', unlink):
+            error, stderr = self.promote_in_process(module)
+        self.assertGreater(seen['owned'], 2, 'fixture: the run must have created entries')
+        self.assertIn('side', seen, 'fixture: the move must fire on the last owned-entry removal')
+        self.assertIsInstance(error, OSError, stderr)
+        self.assertEqual(error.errno, errno.EIO, f'C1e: the original EIO survives, not replaced: {error!r}')
+        self.assertFalse(os.path.lexists(seen['stage']), 'C1e: nothing exists at the stage name')
+        self.assertTrue(os.path.lexists(seen['side']), 'C1e: the moved stage still exists at the side path')
+        self.assertIn('identity', stderr)
+        self.assertFalse(os.path.lexists(self.default_root))
+        self.assertFalse(os.path.lexists(self.state / 'claude-mods-land.lock'))
+
+    def test_c1f_cleanup_refuses_rmdir_on_device_mismatch(self):
+        # plan:125 r2: after the run's last owned-entry removal, one stat of the stage name reports
+        # the same inode on a different device; the stage rmdir must be refused.
+        module, seen = self.load_helper(), {'removals': 0}
+        real_rmdir, real_unlink, real_stat = os.rmdir, os.unlink, os.stat
+
+        def arm():
+            stage = self.own_stage(set())
+            seen.update(stage=stage, owned=len(list(stage.rglob('*'))), armed=True)
+
+        def after_removal():
+            if not seen.get('armed'):
+                return
+            seen['removals'] += 1
+            if seen['removals'] == seen['owned']:
+                seen.update(armed=False, stat_armed=True)
+
+        def rmdir(*args, **kwargs):
+            result = real_rmdir(*args, **kwargs)
+            after_removal()
+            return result
+
+        def unlink(*args, **kwargs):
+            result = real_unlink(*args, **kwargs)
+            after_removal()
+            return result
+
+        def fake_stat(*args, **kwargs):
+            result = real_stat(*args, **kwargs)
+            if not (seen.get('stat_armed') and args and args[0] == seen['stage'].name):
+                return result
+            seen['stat_armed'] = False
+            values = list(result)
+            values[2] = result.st_dev + 1
+            visible = ('st_mode', 'st_ino', 'st_dev', 'st_nlink', 'st_uid', 'st_gid', 'st_size')
+            extra = {name: getattr(result, name) for name in dir(result)
+                     if name.startswith('st_') and name not in visible}
+            seen.update(real=result, fake=os.stat_result(values, extra))
+            return seen['fake']
+
+        with mock.patch.object(module.os, 'fsync', self.failing_fsync(2, arm)), \
+                mock.patch.object(module.os, 'rmdir', rmdir), mock.patch.object(module.os, 'unlink', unlink), \
+                mock.patch.object(module.os, 'stat', fake_stat):
+            error, stderr = self.promote_in_process(module)
+        self.assertTrue(os.path.isdir(seen['stage']) and not os.path.islink(seen['stage']),
+                        'C1f: the stage directory still exists at its name after a device mismatch')
+        self.assertIn('identity', stderr)
+        self.assertIsInstance(error, OSError, stderr)
+        self.assertEqual(error.errno, errno.EIO, f'C1f: the original EIO survives: {error!r}')
+        self.assertFalse(os.path.lexists(self.default_root))
+        self.assertFalse(os.path.lexists(self.state / 'claude-mods-land.lock'))
+        self.assertIn('fake', seen, 'fixture: the one-shot stage stat must fire after the last removal')
+        self.assertEqual(seen['fake'].st_ino, seen['real'].st_ino, 'fixture: the injected stat keeps the inode')
+        self.assertNotEqual(seen['fake'].st_dev, seen['real'].st_dev, 'fixture: the injected stat changes the device')
+
     def test_c2_publish_race_never_replaces_a_new_root(self):
         module, seen = self.load_helper(), {}
         real = module.no_replace_rename()
