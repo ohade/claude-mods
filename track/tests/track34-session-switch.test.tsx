@@ -1358,3 +1358,105 @@ test('FIXTURE TRACK34 session switch 33 CONTROL: one identity outage still recor
     outagePromptNoSwitchAState: { ...expectedStillA(fixture), memory: expectedMemory },
   })
 })
+
+for (const switchToB of [true, false]) {
+  const name = switchToB
+    ? '34: an A prompt held at the classifier-setting read cannot add pending input to B'
+    : '35 CONTROL: an A question held at the classifier-setting read enters A pending without a switch'
+  test(`FIXTURE TRACK34 session switch ${name}`, async ($, on) => {
+    const held = latch()
+    let armed = false
+    let heldOnce = false
+    const storeGetKeys: string[] = []
+    // Relay before setup's store provider. This read occurs only after the
+    // composer prompt's ensureOwner admission and before its pending write.
+    on('store.get', async (_, e, next) => {
+      storeGetKeys.push(e.key)
+      if (e.key === 'classifier' && armed && !heldOnce) {
+        armed = false
+        heldOnce = true
+        held.enter()
+        await held.released
+      }
+      return next(e)
+    })
+    const fixture = await setup(on)
+    await beginA($, fixture)
+    // Question wording must still be recorded with classification disabled;
+    // no background model call can account for the pending mutation here.
+    fixture.store.held.set('classifier', { isOn: false })
+    const identityStart = fixture.identityReads.length
+    const text = 'Why is A still pending after its classifier-setting read?'
+    armed = true
+    const request = outcome(submit($, text))
+    try {
+      const phase = await fixtureWait(Promise.race([
+        held.entered.then(() => 'held'), request.then(() => 'returned'),
+      ]), 'prompt.submit classifier-setting read')
+      if (phase !== 'held') {
+        throw new Error(`INVALID FIXTURE: A prompt returned before its classifier-setting read; store.get keys=${JSON.stringify(storeGetKeys)}; prompt outcome=${JSON.stringify(await request)}`)
+      }
+      try {
+        expect(fixture.identityReads.slice(identityStart)).toEqual([A])
+        expect(fixture.controls.session).toBe(A)
+        expect(await unchangedState(fixture)).toEqual(expectedStillA(fixture))
+        expect(fixture.pending.value).toEqual({ inputs: [], nextId: 1 })
+        expect(fixture.promptCalls).toEqual([])
+        expect(fixture.modelCalls).toEqual([])
+      } catch (error) {
+        throw new Error(`INVALID FIXTURE: classifier-setting hold did not follow successful A ownership admission: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      let expectedB: Awaited<ReturnType<typeof installBTransient>> | undefined
+      if (switchToB) {
+        fixture.controls.session = B
+        const lookup = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never),
+          'classifier-setting prompt B selection before release')
+        try {
+          expect(lookup.deny).toBeUndefined()
+          expect(lookup.isError).not.toBe(true)
+          expect(JSON.parse(String(lookup.result)).ok).toBe(true)
+          expect(await unchangedState(fixture)).toEqual(expectedSelectedB(fixture, fixture.b.rows))
+          expectedB = await installBTransient(fixture)
+          expect({ pending: fixture.pending.value, turn: fixture.turn.value, activity: fixture.activity.value })
+            .toEqual({ ...expectedB, activity: idle() })
+        } catch (error) {
+          throw new Error(`INVALID FIXTURE: B selection and independent pending seed before prompt release failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      held.release()
+      const result = await fixtureWait(request, 'classifier-setting prompt completion')
+      expect(result.error).toBeUndefined()
+      expect(result.value?.drop).toBeUndefined()
+      expect(result.value?.text).toBe(text)
+      expect(fixture.promptCalls.map(call => call.text)).toEqual([text])
+      expect(fixture.modelCalls).toEqual([])
+      if (expectedB !== undefined) {
+        // Named behavioral RED: the complete independent B pending seed must
+        // survive, including its next id, without the admitted A question.
+        expect({ postClassifierPromptCrossOwnerBPending: fixture.pending.value }).toEqual({
+          postClassifierPromptCrossOwnerBPending: expectedB.pending,
+        })
+        expect({ postClassifierPromptCrossOwnerBState: await unchangedState(fixture),
+          pending: fixture.pending.value, turn: fixture.turn.value, activity: fixture.activity.value }).toEqual({
+          postClassifierPromptCrossOwnerBState: expectedSelectedB(fixture, fixture.b.rows),
+          ...expectedB, activity: idle(),
+        })
+        expect(fixture.promptCalls.map(call => ({ ledger: call.ledger, pending: call.pending,
+          turn: call.turn, activity: call.activity }))).toEqual([{
+          ledger: fixture.b.rows, ...expectedB, activity: idle(),
+        }])
+      } else {
+        expect({ classifierPromptNoSwitchAPending: fixture.pending.value }).toEqual({
+          classifierPromptNoSwitchAPending: { ...await pendingQuestion(text), nextId: 2 },
+        })
+        expect(fixture.pending.value.inputs.map(input => input.id)).toEqual([1])
+        expect(await unchangedState(fixture)).toEqual(expectedStillA(fixture))
+        expect(fixture.promptCalls.map(call => ({ ledger: call.ledger, pending: call.pending })))
+          .toEqual([{ ledger: fixture.a.rows, pending: { ...await pendingQuestion(text), nextId: 2 } }])
+      }
+    } finally {
+      held.release()
+      await fixtureWait(request, 'classifier-setting prompt cleanup')
+    }
+  })
+}
