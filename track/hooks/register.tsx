@@ -2352,20 +2352,35 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   if (head === '' || head.startsWith('/')) {
     return
   }
+  const admissionEpoch = ownership.epoch
   const owned = await ensureOwner($)
   if (!owned.ok && !owned.isIdentity) {
     $.ui.log(`track: prompt row not recorded: ${owned.reason}`, { to: 'debug' })
     return
   }
+  const token = owned.ok ? owned.token : undefined
+  const assertProvisionalOwner = (): void => {
+    if (!owned.ok && !isOwnerCurrent({ owner: undefined, epoch: admissionEpoch })) throw new OwnerChanged()
+  }
   const session = await captureMintOwner($)
   const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
-  await update($, ledger, l => ({ ...l, session_id: l.session_id ?? session, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
-  // The newest input with these words and no row yet takes this row: its identity for a
-  // source_request_id.
-  await update($, pending, p => {
-    const target = [...p.inputs].reverse().find(i => i.rowKey === undefined && norm(i.head) === norm(head))
-    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target.id ? { ...i, rowKey: prompt.rowKey } : i)) }
-  })
+  try {
+    await updateOwnedLedger($, token, l => {
+      assertProvisionalOwner()
+      return { ...l, session_id: l.session_id ?? session, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }
+    })
+    // The newest input with these words and no row yet takes this row: its identity for a
+    // source_request_id.
+    await update($, pending, p => {
+      assertOwner(token)
+      assertProvisionalOwner()
+      const target = [...p.inputs].reverse().find(i => i.rowKey === undefined && norm(i.head) === norm(head))
+      return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target.id ? { ...i, rowKey: prompt.rowKey } : i)) }
+    })
+  } catch (error) {
+    if (!(error instanceof OwnerChanged)) throw error
+    $.ui.log('track: prompt tracking stopped: session owner changed during the call.', { to: 'debug' })
+  }
 }
 
 // The inputs of the turn: bound to it, or not yet bound to any turn.

@@ -83,7 +83,7 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
   const b = await seed(B, await rows(B, 'B'), files)
   const c = await seed(C, await rows(C, 'C'), files)
   const saved = { [A]: a.entry, [B]: b.entry, [C]: c.entry }
-  const controls = { session: A, identityFailure: '', readFailure: '', resumeHold: undefined as Latch | undefined,
+  const controls = { session: A, identityFailure: '', identityFailOnce: false, readFailure: '', resumeHold: undefined as Latch | undefined,
     taskHold: undefined as Latch | undefined,
     todoHold: undefined as Latch | undefined, updateHold: undefined as Latch | undefined,
     workHold: undefined as Latch | undefined, updateSuccess: true,
@@ -119,8 +119,15 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
   // One provider is registered once. Every transition changes only its captured
   // session value; its throwing branch is the native fault control, not a deny.
   on('session.id', () => {
-    identityReads.push(controls.identityFailure || controls.session)
-    if (controls.identityFailure !== '') throw new Error(controls.identityFailure)
+    const failure = controls.identityFailure
+    identityReads.push(failure || controls.session)
+    if (failure !== '') {
+      if (controls.identityFailOnce) {
+        controls.identityFailure = ''
+        controls.identityFailOnce = false
+      }
+      throw new Error(failure)
+    }
     return { value: controls.session }
   }).catch((_, _e, next) => ({ deny: next.error.message ?? 'TRACK34 session.id fixture failed without a reason' }))
   on('store.get', { key: /^s:/ }, (_, e, next) => {
@@ -1200,4 +1207,154 @@ test('FIXTURE TRACK34 session switch 30: inner post-apply restore failure does n
     held.release()
     await fixtureWait(request, 'inner post-apply restore cleanup')
   }
+})
+
+test('FIXTURE TRACK34 session switch 31: an admitted A prompt append never adds its row to B after the owner changes', async ($, on) => {
+  const held = latch()
+  let armed = false
+  let heldOnce = false
+  const stateGetPayloads: Array<{ plugin: unknown; key: unknown }> = []
+  // Register before setup's atom providers so the durability read reaches this
+  // relay after captureMintOwner reads A's identity and before it can return.
+  on('state.get', async (_, e, next) => {
+    stateGetPayloads.push({ plugin: e.plugin, key: e.key })
+    if (e.plugin === 'track' && e.key === 'durability' && armed && !heldOnce) {
+      armed = false
+      heldOnce = true
+      held.enter()
+      await held.released
+    }
+    return next(e)
+  })
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  armed = true
+  const request = outcome($.session.append(appendB('prompt', 'A late prompt must not enter B') as never))
+  try {
+    const phase = await fixtureWait(Promise.race([
+      held.entered.then(() => 'held'), request.then(() => 'returned'),
+    ]), 'post-admission prompt durability read')
+    if (phase !== 'held') {
+      throw new Error(`INVALID FIXTURE: A prompt append returned before its post-admission durability read; state.get payloads=${JSON.stringify(stateGetPayloads)}; append outcome=${JSON.stringify(await request)}`)
+    }
+    if (fixture.memory.value.session_id !== A || fixture.controls.session !== A || fixture.identityReads.at(-1) !== A) {
+      throw new Error('INVALID FIXTURE: prompt durability hold did not follow A ownership admission and identity read')
+    }
+    fixture.controls.session = B
+    const lookup = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never),
+      'post-admission prompt B selection before release')
+    try {
+      expect(lookup.deny).toBeUndefined()
+      expect(lookup.isError).not.toBe(true)
+      expect(JSON.parse(String(lookup.result)).ok).toBe(true)
+      expect(await unchangedState(fixture)).toEqual(expectedSelectedB(fixture, fixture.b.rows))
+    } catch (error) {
+      throw new Error(`INVALID FIXTURE: B selection before prompt release failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    held.release()
+    const result = await fixtureWait(request, 'post-admission prompt completion')
+    expect(result.error).toBeUndefined()
+    expect(result.value?.deny).toBeUndefined()
+    expect({ postAdmissionPromptCrossOwnerBPrompts: fixture.memory.value.prompts }).toEqual({
+      postAdmissionPromptCrossOwnerBPrompts: fixture.b.rows.prompts,
+    })
+    expect({ postAdmissionPromptCrossOwnerBState: await unchangedState(fixture) }).toEqual({
+      postAdmissionPromptCrossOwnerBState: expectedSelectedB(fixture, fixture.b.rows),
+    })
+  } finally {
+    held.release()
+    await fixtureWait(request, 'post-admission prompt cleanup')
+  }
+})
+
+test('FIXTURE TRACK34 session switch 32: a prompt admitted during an identity outage never adds its row to B after recovery', async ($, on) => {
+  const held = latch()
+  let armed = false
+  let heldOnce = false
+  const stateGetPayloads: Array<{ plugin: unknown; key: unknown }> = []
+  // The unfiltered relay must precede setup's atom providers. Hold only the
+  // durability read after ensureOwner fails and captureMintOwner reads A.
+  on('state.get', async (_, e, next) => {
+    stateGetPayloads.push({ plugin: e.plugin, key: e.key })
+    if (e.plugin === 'track' && e.key === 'durability' && armed && !heldOnce) {
+      armed = false
+      heldOnce = true
+      held.enter()
+      await held.released
+    }
+    return next(e)
+  })
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  const identityStart = fixture.identityReads.length
+  fixture.controls.session = A
+  fixture.controls.identityFailure = IDENTITY_FAILURE
+  fixture.controls.identityFailOnce = true
+  armed = true
+  const event = appendB('prompt', 'A outage prompt must not enter B after identity recovers')
+  const request = outcome($.session.append(event as never))
+  try {
+    const phase = await fixtureWait(Promise.race([
+      held.entered.then(() => 'held'), request.then(() => 'returned'),
+    ]), 'identity-outage prompt durability read')
+    if (phase !== 'held') {
+      throw new Error(`INVALID FIXTURE: outage prompt append returned before its durability read; state.get payloads=${JSON.stringify(stateGetPayloads)}; append outcome=${JSON.stringify(await request)}`)
+    }
+    try {
+      expect(fixture.identityReads.slice(identityStart)).toEqual([IDENTITY_FAILURE, A])
+      expect({ selected: fixture.controls.session, failure: fixture.controls.identityFailure,
+        failOnce: fixture.controls.identityFailOnce }).toEqual({ selected: A, failure: '', failOnce: false })
+      expect(await unchangedState(fixture)).toEqual(expectedStillA(fixture))
+    } catch (error) {
+      throw new Error(`INVALID FIXTURE: outage prompt hold did not follow one failed identity read and recovered A capture: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    fixture.controls.session = B
+    const lookup = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never),
+      'identity-outage prompt B selection before release')
+    try {
+      expect(lookup.deny).toBeUndefined()
+      expect(lookup.isError).not.toBe(true)
+      expect(JSON.parse(String(lookup.result)).ok).toBe(true)
+      expect(await unchangedState(fixture)).toEqual(expectedSelectedB(fixture, fixture.b.rows))
+    } catch (error) {
+      throw new Error(`INVALID FIXTURE: B selection before outage prompt release failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    held.release()
+    const result = await fixtureWait(request, 'identity-outage prompt completion')
+    expect(result.error).toBeUndefined()
+    expect(result.value?.deny).toBeUndefined()
+    expect(result.value).toEqual({ message: event.message, uuid: event.uuid })
+    expect({ outagePromptCrossOwnerBPrompts: fixture.memory.value.prompts }).toEqual({
+      outagePromptCrossOwnerBPrompts: fixture.b.rows.prompts,
+    })
+    expect({ outagePromptCrossOwnerBState: await unchangedState(fixture) }).toEqual({
+      outagePromptCrossOwnerBState: expectedSelectedB(fixture, fixture.b.rows),
+    })
+  } finally {
+    held.release()
+    await fixtureWait(request, 'identity-outage prompt cleanup')
+  }
+})
+
+test('FIXTURE TRACK34 session switch 33 CONTROL: one identity outage still records a provisional prompt in A without a switch', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  const identityStart = fixture.identityReads.length
+  fixture.controls.identityFailure = IDENTITY_FAILURE
+  fixture.controls.identityFailOnce = true
+  const text = 'A provisional prompt survives one identity outage without switching'
+  const event = appendB('prompt', text)
+  const result = await fixtureWait(outcome($.session.append(event as never)), 'no-switch outage prompt completion')
+  expect(result.error).toBeUndefined()
+  expect(result.value?.deny).toBeUndefined()
+  expect(result.value).toEqual({ message: event.message, uuid: event.uuid })
+  expect(fixture.session.appended()).toEqual([event])
+  expect(fixture.identityReads.slice(identityStart, identityStart + 2)).toEqual([IDENTITY_FAILURE, A])
+  expect({ failure: fixture.controls.identityFailure, failOnce: fixture.controls.identityFailOnce })
+    .toEqual({ failure: '', failOnce: false })
+  const expectedMemory = { ...fixture.a.rows, prompts: [...fixture.a.rows.prompts,
+    { rowKey: 'eeeeeeee-0000-4000-8000', head: text, turnId: null, at: expect.any(Number) }] }
+  expect({ outagePromptNoSwitchAState: await unchangedState(fixture) }).toEqual({
+    outagePromptNoSwitchAState: { ...expectedStillA(fixture), memory: expectedMemory },
+  })
 })
