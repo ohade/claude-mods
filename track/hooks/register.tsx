@@ -569,22 +569,23 @@ const ownerTasksForStep = (a: Activity, step: Step): string[] => {
       : identities.some(row => row.id === step.id && row.subject === subject)
   })
 }
-const dropFinishedOwners = async ($: EngineInterface): Promise<void> => {
+const dropFinishedOwners = async ($: EngineInterface, token?: OwnerToken): Promise<void> => {
   const steps = (await read($, ledger)).steps
   await update($, activity, a => {
+    assertOwner(token)
     if (a.owners === undefined) return a
     const owners = ownersForLiveSteps(a.owners, steps)
     return JSON.stringify(owners) === JSON.stringify(a.owners) ? a : { ...a, owners }
   })
 }
-const applyCancel = async ($: EngineInterface, owners: string[], ran: { result?: unknown; deny?: unknown; text?: unknown; isError?: boolean }): Promise<void> => {
+const applyCancel = async ($: EngineInterface, owners: string[], ran: { result?: unknown; deny?: unknown; text?: unknown; isError?: boolean }, token?: OwnerToken): Promise<void> => {
   const reasonNote = cancelReasonOf(ran)
   if (reasonNote === undefined || owners.length === 0) return
   const currentId = (await read($, turn)).currentId
   const now = await $.clock.now()
   const owned = new Set(owners)
   let changed = false
-  await update<Ledger>($, ledger, cur => {
+  await updateOwnedLedger($, token, cur => {
     changed = false
     const steps = cur.steps.map(s => {
       if (!owned.has(s.id) || s.cleared === true || s.status !== 'in_progress' || s.activeTurnId !== currentId) return s
@@ -594,8 +595,8 @@ const applyCancel = async ($: EngineInterface, owners: string[], ran: { result?:
     return changed ? { ...cur, steps } : cur
   })
   if (!changed) return
-  await saveLedger($)
-  await dropFinishedOwners($)
+  await saveLedger($, token)
+  await dropFinishedOwners($, token)
 }
 // A background task Stop lists that is an agent: a subagent or a workflow of them. The rest (a
 // shell, a monitor) is a task, so a hung shell never reads as an agent the person waits on.
@@ -1013,7 +1014,7 @@ const stepReceiptIds = (tool: string, input: Record<string, unknown>, result: un
   return []
 }
 
-const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId: unknown, touched: string[], before: Ledger, after: Ledger, beforeActivity: Activity): Promise<boolean> => {
+const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId: unknown, touched: string[], before: Ledger, after: Ledger, beforeActivity: Activity, token?: OwnerToken): Promise<boolean> => {
   if (typeof start.currentId !== 'string' || start.currentId === '') return false
   const edit = EDIT_TOOLS.has(tool) && typeof callId === 'string' && callId !== ''
   const bash = tool === 'Bash' && typeof callId === 'string' && callId !== ''
@@ -1024,6 +1025,7 @@ const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId:
       return { id: step.id, owner_task_ids: ownerTasksForStep(beforeActivity, previous ?? step) }
     })
   await update($, turn, current => {
+    assertOwner(token)
     if (current.currentId !== start.currentId) return current
     const fresh = current.freshness?.turnId === current.currentId ? current.freshness : freshTurn(start.currentId!)
     return { ...current, freshness: { ...fresh,
@@ -1216,8 +1218,9 @@ const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidat
   return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
 }
 
-const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined> => {
+const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<GateSnapshot | undefined> => {
   const run = gateWrites.queue.then(async () => {
+    assertOwner(token)
     const t = await read($, turn)
     const l = await read($, ledger)
     const open = l.questions.filter(q => q.cleared !== true && q.status === 'open' && q.turnId === t.currentId)
@@ -1231,6 +1234,8 @@ const publishGate = async ($: EngineInterface): Promise<GateSnapshot | undefined
       snapshot.truncated = true
     }
     if (utf8Bytes(snapshot) > 16 * 1024) throw new Error('bounded Stop snapshot exceeded')
+    assertOwner(token, l)
+    if (token?.owner !== undefined && snapshot.session_id !== token.owner) throw new OwnerChanged()
     await $.env.set('TRACK_GATE_SNAPSHOT', JSON.stringify(snapshot))
     return snapshot
   })
@@ -1700,15 +1705,18 @@ const cleanupOwned = async ($: EngineInterface, context: WriteContext, id: strin
 }
 
 // A save acknowledges body, durable head and index only after exact read-back.
-const saveLedger = async ($: EngineInterface): Promise<boolean> => {
+const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boolean> => {
   let saved = false
   const run = persistence.queue.then(async () => {
   let lock: LockStream | undefined
   let context: WriteContext | undefined
   let id: string | undefined
   try {
+    assertOwner(token)
     const intent = await read($, durability)
     id = await $.session.id()
+    assertOwner(token)
+    if (token?.owner !== undefined && id !== token.owner) throw new OwnerChanged()
     const declaredOwner = (await read($, ledger)).session_id
     // Ownership survives even when the first lease or save is refused.
     await update($, durability, current => current.memorySession === undefined || declaredOwner === id ? { ...current, memorySession: id } : current)
@@ -1831,6 +1839,8 @@ const saveLedger = async ($: EngineInterface): Promise<boolean> => {
       : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
     if (fallbackCause !== undefined) $.ui.toast(`track: saved inline because blob storage is unavailable: ${fallbackCause}`)
   } catch (error) {
+    // A stale caller did not attempt a save and cannot mark the new owner's ledger unsaved.
+    if (error instanceof OwnerChanged) throw error
     if (context !== undefined) context.tainted = true
     persistence.failure = reason(error)
     if (context !== undefined && id !== undefined) {
@@ -1895,11 +1905,12 @@ const resumeLedger = async ($: EngineInterface, context: WriteContext, id: strin
       let memory = await read($, ledger)
       const memoryOwner = memory.session_id ?? (await read($, durability)).memorySession
       if (memoryOwner !== undefined && memoryOwner !== id) {
-        await preserveVersion($, context, id, 'session-switch', { source_session: memoryOwner, ledger: memory })
+        const pristine = sameValue(memory, EMPTY_LEDGER)
+        if (!pristine) await preserveVersion($, context, id, 'session-switch', { source_session: memoryOwner, ledger: memory })
         const stale = memory
         await update($, ledger, current => {
-          if (!sameValue(current, stale)) throw new Error('ledger changed during session switch; archived snapshot was kept')
-          return { ...EMPTY_LEDGER, session_id: id }
+          if (!sameValue(current, stale)) throw new Error('ledger changed during session switch; current ledger was kept')
+          return pristine ? current : { ...EMPTY_LEDGER, session_id: id }
         })
         await update($, durability, () => ({ isUnsaved: false, reason: '', memorySession: id }))
         memory = await read($, ledger)
@@ -2341,6 +2352,11 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
   if (head === '' || head.startsWith('/')) {
     return
   }
+  const owned = await ensureOwner($)
+  if (!owned.ok && !owned.isIdentity) {
+    $.ui.log(`track: prompt row not recorded: ${owned.reason}`, { to: 'debug' })
+    return
+  }
   const session = await captureMintOwner($)
   const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
   await update($, ledger, l => ({ ...l, session_id: l.session_id ?? session, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }))
@@ -2367,13 +2383,14 @@ const classifying = new Map<number, Promise<void>>()
 // input shares it: one candidate alone is no evidence. Steps need a source. One question row
 // covers one input: reusing an open row that already covers one covers no second.
 // Steps, new or reused after saving, never cover a prompt Haiku called a question.
-const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown; summary?: string; questionId?: number } = {}): Promise<void> => {
+const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown; summary?: string; questionId?: number } = {}, token?: OwnerToken): Promise<void> => {
   const currentId = (await read($, turn)).currentId
   if (currentId === null) return
   const row = typeof source.source_request_id === 'string' ? rowKey(source.source_request_id) : undefined
   const text = row === undefined && typeof source.source_text === 'string' ? headOf(source.source_text) : undefined
   if (text === undefined && row === undefined && kind === 'steps') return
   await update($, pending, p => {
+    assertOwner(token)
     if (source.questionId !== undefined && p.inputs.some(i => i.questionId === source.questionId)) return p
     const fits = (i: PendingInput) => i.covered === undefined && (kind === 'question' || i.label !== 'question')
     let target: PendingInput | undefined
@@ -2421,7 +2438,7 @@ const classifierOn = async ($: EngineInterface): Promise<boolean> => {
 
 // One Haiku label for one input, written only while that input is still pending and unlabelled:
 // an input an earlier turn left, or one a reload replaced, takes no late label.
-const classifyInput = async ($: EngineInterface, id: number, text: string): Promise<void> => {
+const classifyInput = async ($: EngineInterface, id: number, text: string, epoch: number): Promise<void> => {
   let label: NonNullable<PendingInput['label']> = 'unknown'
   if (text.length <= CLASSIFIER_MAX_CHARS) {
     try {
@@ -2432,6 +2449,10 @@ const classifyInput = async ($: EngineInterface, id: number, text: string): Prom
     } catch (error) {
       $.ui.log(`track: the classifier failed: ${reason(error)}`, { to: 'debug' })
     }
+  }
+  if (epoch !== ownership.epoch) {
+    $.ui.log('track: a classifier label from a previous session was dropped', { to: 'debug' })
+    return
   }
   // A question label undoes coverage by new steps: steps never cover a question.
   await update($, pending, p => (p.inputs.some(i => i.id === id && i.label === undefined)
@@ -2489,13 +2510,18 @@ const checkDeployDrift = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-const reorderTrackedSteps = async ($: EngineInterface, ids: unknown): Promise<{ result: string }> => {
+const reorderTrackedSteps = async ($: EngineInterface, ids: unknown, token?: OwnerToken): Promise<{ result: string }> => {
   const failure = (reason: string) => ({ result: JSON.stringify({ ok: false, reason }) })
   if (reorderVisibleSteps((await read($, ledger)).steps, ids) === undefined) return failure('ids must list every visible step exactly once; use permanent ids from lookup_rows')
-  const session = await captureMintOwner($)
+  if (token === undefined) {
+    const owned = await ensureOwner($)
+    if (!owned.ok) return failure(owned.reason)
+    token = owned.token
+  }
+  const session = token.owner
   if (session === undefined) return failure('current session identity is unavailable; order was kept')
   let refusal: string | undefined
-  await update<Ledger>($, ledger, current => {
+  await updateOwnedLedger($, token, current => {
     refusal = undefined
     if (current.session_id !== undefined && current.session_id !== session) {
       refusal = 'ledger belongs to another session; order was kept'
@@ -2509,8 +2535,8 @@ const reorderTrackedSteps = async ($: EngineInterface, ids: unknown): Promise<{ 
     return { ...current, session_id: current.session_id ?? session, steps }
   })
   if (refusal !== undefined) return failure(refusal)
-  await publishGate($)
-  if (!(await saveLedger($))) return failure(`order is unsaved — ${persistence.failure}`)
+  await publishGate($, token)
+  if (!(await saveLedger($, token))) return failure(`order is unsaved — ${persistence.failure}`)
   const saved = (await read($, durability)).baseline
   if (saved?.session_id !== session) return failure('saved order could not be verified')
   const order = visibleSteps(saved.ledger.steps).map(step => step.id)
@@ -2518,10 +2544,102 @@ const reorderTrackedSteps = async ($: EngineInterface, ids: unknown): Promise<{ 
   return { result: JSON.stringify({ ok: true, order }) }
 }
 
+// TRACK-34: a /resume or switch inside one process raises no start event, so the new session's first
+// event would read or change the old session's rows. Covered entrypoints select the current session's
+// rows first, through one awaited transition that concurrent callers share.
+const ownership = { epoch: 0, running: undefined as { id: string; run: Promise<void> } | undefined }
+
+type OwnerToken = { owner: string | undefined; epoch: number }
+type Owned = { ok: true; token: OwnerToken } | { ok: false; isIdentity: boolean; reason: string; destination?: string }
+
+class OwnerChanged extends Error {
+  constructor() { super('session owner changed during the call; Track did not finish recording it') }
+}
+
+// Native hooks must return a refusal themselves: a thrown error is skipped by the host.
+// Keep the completed tool's outcome visible even when Track cannot acknowledge it.
+const ownerChangedResult = (tool: string, ran?: { result?: unknown; context?: readonly string[] }) => {
+  const message = ran === undefined
+    ? `track: ${tool} was not recorded: session owner changed during the call.`
+    : `${tool} returned, but Track could not finish recording it: session owner changed during the call. Any native action already completed was not undone.`
+  return { ...ran, isError: true as const,
+    result: ran === undefined ? message : `${message}\nReturned result: ${typeof ran.result === 'string' ? ran.result : JSON.stringify(ran.result)}`,
+    context: [...(ran?.context ?? []), message] }
+}
+
+const isFailedCheckpointResult = (result: unknown): boolean => {
+  if (typeof result !== 'string') return false
+  try {
+    const receipt = JSON.parse(result) as Partial<Checkpoint> | null
+    return receipt?.v === 1 && receipt.ok === false
+  } catch {
+    // A non-JSON result is not a checkpoint refusal to preserve.
+    return false
+  }
+}
+
+const restoreOwnerChangedResult = (from: string, destination: string | undefined, ran?: { result?: unknown; context?: readonly string[] }) => {
+  const message = ran === undefined
+    ? 'track: session owner changed during the restore call. If changes were already applied to the original session, they were not undone. Check that session before retrying.'
+    : 'track: restore returned, but Track could not finish recording it: session owner changed during the call. Any native action already completed was not undone.'
+  return { ...ran, isError: true as const,
+    result: JSON.stringify(checkpointFailure(from, message, destination)),
+    context: [...(ran?.context ?? []), message,
+      ...(ran === undefined ? [] : [`Returned result: ${typeof ran.result === 'string' ? ran.result : JSON.stringify(ran.result)}`])] }
+}
+
+const isOwnerCurrent = (token: OwnerToken): boolean => ownership.running === undefined && ownership.epoch === token.epoch
+
+const assertOwner = (token: OwnerToken | undefined, current?: Ledger): void => {
+  if (token !== undefined && (!isOwnerCurrent(token) || current?.session_id !== undefined && current.session_id !== token.owner)) throw new OwnerChanged()
+}
+
+// Check inside the atom's synchronous decision, including every compare-and-set retry.
+// No lock spans engine execution: nested events can still select their own session.
+const updateOwnedLedger = ($: EngineInterface, token: OwnerToken | undefined, change: (current: Ledger) => Ledger): Promise<Ledger> =>
+  update($, ledger, current => {
+    assertOwner(token, current)
+    return change(current)
+  })
+
+const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
+  if (ownership.running?.id === id) return ownership.running.run
+  // A transition for another session finishes first, so A->B->C runs in order and never interleaves.
+  const prior = ownership.running?.run.catch(() => undefined) ?? Promise.resolve()
+  const run = prior.then(async () => {
+    ownership.epoch++
+    // The previous session's turn, activity and pending inputs are not this session's.
+    // resumeLedger archives its ledger.
+    await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
+    await update($, activity, () => IDLE)
+    await update($, pending, p => ({ inputs: [], nextId: p.nextId }))
+    await resumeOwned($, id)
+  })
+  const flight = { id, run }
+  ownership.running = flight
+  void run.catch(() => undefined).finally(() => { if (ownership.running === flight) ownership.running = undefined })
+  return run
+}
+
+const ensureOwner = async ($: EngineInterface): Promise<Owned> => {
+  const identity = (error: unknown): Owned => ({ ok: false, isIdentity: true, reason: `session identity unavailable: ${reason(error)}; this request did not run` })
+  let id: string
+  try { id = await $.session.id() } catch (error) { return identity(error) }
+  const owner = (await read($, ledger)).session_id ?? (await read($, durability)).memorySession
+  if (ownership.running === undefined && (owner === undefined || owner === id)) return { ok: true, token: { owner: id, epoch: ownership.epoch } }
+  try { await switchOwner($, id) }
+  catch (error) { return { ok: false, isIdentity: false, destination: id, reason: `session switch to ${id} failed: ${reason(error)}; this request did not run` } }
+  let now: string
+  try { now = await $.session.id() } catch (error) { return identity(error) }
+  if (now !== id) return { ok: false, isIdentity: false, destination: now, reason: `session changed from ${id} to ${now} during the ownership transition; this request did not run. Track holds ${id}'s saved rows, and the next event loads ${now}'s` }
+  return { ok: true, token: { owner: id, epoch: ownership.epoch } }
+}
+
 export const register: Register = on => {
   // Per-call eligibility crosses the handler/save boundary, then leaves memory.
   // It is decided inside the atom update, whose retries see concurrent marks.
   const reuseCalls = new Map<string, { step?: Step }>()
+  const ownedCalls = new Map<string, OwnerToken>()
   // One restore owns its visible receipt and save through acknowledgement.
   // Other ledger writers still use atom compare-and-set; a changed ledger
   // during a mechanical receipt is refused instead of overwriting their work.
@@ -2535,17 +2653,39 @@ export const register: Register = on => {
   // Persist acknowledged tracking changes before their callers receive success.
   // This hook never runs from a redraw; UI mutations save in their own handlers.
   const mutationTools = new Set([TRACK_QUESTION, MARK_ANSWERED, TRACK_STEPS, MARK_STEP, RESTORE_TRACKER, 'TaskCreate', 'TaskUpdate', 'TodoWrite'])
+  // Track-state tools refuse before their handler runs when the current session's rows are not selected.
+  const ownedTools = new Set([...mutationTools, LOOKUP_ROWS, REORDER_STEPS])
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
+    let token: OwnerToken = { owner: undefined, epoch: ownership.epoch }
+    if (ownedTools.has(e.tool)) {
+      const owned = await ensureOwner($)
+      if (!owned.ok && !owned.isIdentity) {
+        const text = `track: ${owned.reason}`
+        return e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined
+          ? { result: JSON.stringify(checkpointFailure(String(e.from_session ?? ''), text, owned.destination)) }
+          : { deny: text }
+      }
+      if (owned.ok) token = owned.token
+    }
     const current = await read($, turn)
     const beforeLedger = await read($, ledger)
     const beforeActivity = await read($, activity)
+    if (token.owner === undefined) token = { ...token, owner: beforeLedger.session_id ?? (await read($, durability)).memorySession ?? undefined }
+    // Keep outage rows provisional, but never acquire a different owner after native execution.
+    if ([TRACK_QUESTION, TRACK_STEPS, 'TaskCreate', 'TodoWrite'].includes(e.tool) && token.owner === undefined) await captureMintOwner($)
+    let completed: Awaited<ReturnType<typeof next>> | undefined
+    ownedCalls.set(e.tool_use_id, token)
+    try {
+    if (ownedTools.has(e.tool)) assertOwner(token, beforeLedger)
     const owner = cancelOwner(beforeLedger.steps, e.tool, current.currentId)
     const owners = owner === undefined ? [] : [owner]
     if (!mutationTools.has(e.tool)) {
       const ran = await next(e)
-      await applyCancel($, owners, ran)
-      if (ran.deny === undefined && ran.isError !== true && await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeActivity)) await publishGate($)
+      completed = ran
+      if (!isOwnerCurrent(token)) return ran
+      await applyCancel($, owners, ran, token)
+      if (ran.deny === undefined && ran.isError !== true && await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeActivity, token)) await publishGate($, token)
       return ran
     }
     const before = JSON.stringify(beforeLedger)
@@ -2560,19 +2700,27 @@ export const register: Register = on => {
     const ran = await next(e).finally(() => {
       if (reuse !== undefined && reuseCalls.get(e.tool_use_id) === reuse) reuseCalls.delete(e.tool_use_id)
     })
+    completed = ran
+    if (!isOwnerCurrent(token)) {
+      if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined) {
+        return isFailedCheckpointResult(ran.result) ? ran : restoreOwnerChangedResult(String(e.from_session ?? ''), token.owner, ran)
+      }
+      return ran.deny !== undefined || ran.isError === true || (ran.result as { success?: unknown } | undefined)?.success === false ? ran : ownerChangedResult(e.tool, ran)
+    }
     const reusedStep = reuse?.step
-    await applyCancel($, owners, ran)
+    await applyCancel($, owners, ran, token)
     if (ran.deny !== undefined || ran.isError === true) return ran
     const afterLedger = await read($, ledger)
     const touched = stepReceiptIds(e.tool, e, ran.result, beforeLedger, afterLedger)
-    const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeActivity)
+    const recorded = await recordWork($, current, e.tool, e.tool_use_id, touched, beforeLedger, afterLedger, beforeActivity, token)
     if (before === JSON.stringify(afterLedger) && reusedStep === undefined) {
-      if (recorded) await publishGate($)
+      if (recorded) await publishGate($, token)
       return ran
     }
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string' && (JSON.parse(ran.result) as Checkpoint).ok !== true) return ran
-    await publishGate($)
-    if (await saveLedger($)) {
+    await publishGate($, token)
+    assertOwner(token)
+    if (await saveLedger($, token)) {
       if (e.tool === MARK_STEP && typeof ran.result === 'string') {
         // TRACK-23: copy the acknowledged row, not the caller's proposed note
         // or an atom that may already contain a later, unsaved edit.
@@ -2586,7 +2734,7 @@ export const register: Register = on => {
           if (reusedStep !== undefined && saved?.session_id === reuseSession && row.cleared !== true && row.status === e.status &&
               row.source === reusedStep.source && row.sourceId === reusedStep.sourceId && row.subject === reusedStep.subject &&
               row.taskId === reusedStep.taskId && row.createdRequestId === reusedStep.createdRequestId) {
-            await coverInput($, 'steps', { source_text: e.source_text, source_request_id: e.source_request_id })
+            await coverInput($, 'steps', { source_text: e.source_text, source_request_id: e.source_request_id }, token)
           }
           const { id, subject, status, note } = row
           return { ...ran, result: `${ran.result}\nSaved row: ${JSON.stringify({ id, subject, status, ...(note !== undefined && { note }) })}` }
@@ -2600,6 +2748,16 @@ export const register: Register = on => {
       return { ...ran, result: JSON.stringify({ ...receipt, ok: false, reason: warning }), context: [...(ran.context ?? []), warning] }
     }
     return { ...ran, ...(typeof ran.result === 'string' && { result: `${ran.result}\n${warning}` }), context: [...(ran.context ?? []), warning] }
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined) {
+        if (completed !== undefined && isFailedCheckpointResult(completed.result)) return completed
+        return restoreOwnerChangedResult(String(e.from_session ?? ''), token.owner, completed)
+      }
+      return ownerChangedResult(e.tool, completed)
+    } finally {
+      if (ownedCalls.get(e.tool_use_id) === token) ownedCalls.delete(e.tool_use_id)
+    }
   })
 
   on('session.start', async ($, e, next) => {
@@ -2756,7 +2914,12 @@ export const register: Register = on => {
 
   on('tool.call', { tool: REORDER_STEPS }, async ($, e) => {
     if (e.agentId !== undefined) return { deny: 'track: a subagent cannot reorder the session steps.' }
-    return reorderTrackedSteps($, e.ids)
+    try {
+      return await reorderTrackedSteps($, e.ids, ownedCalls.get(e.tool_use_id))
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool)
+    }
   })
 
   on('session.append', { door: 'prompt' }, async ($, e, next) => {
@@ -2902,6 +3065,13 @@ export const register: Register = on => {
   // Then the per-turn reminder: a short row beside the prompt, only while something is open.
   // One handler: the loader takes one prompt.submit hook without a matcher.
   on('prompt.submit', async ($, e, next) => {
+    if ((e as { agentId?: string }).agentId === undefined) {
+      const owned = await ensureOwner($)
+      if (!owned.ok && !owned.isIdentity) {
+        // Keep the prompt available when Track cannot select its session's rows.
+        return next({ ...e, context: [...(e.context ?? []), `track: ${owned.reason}; Track did not record this prompt.`] })
+      }
+    }
     const trimmed = (e as { agentId?: string }).agentId === undefined ? gateable(String(e.text ?? ''), e.origin?.kind) : undefined
     const wording = trimmed !== undefined && looksLikeQuestion(trimmed)
     const classify = trimmed !== undefined && (await classifierOn($))
@@ -2940,8 +3110,9 @@ export const register: Register = on => {
       if (added !== undefined && classify) {
         const id = added
         const text = String(e.text)
+        const epoch = ownership.epoch
         $.clock.after(0, () => {
-          const run = classifyInput($, id, text).finally(() => classifying.delete(id))
+          const run = classifyInput($, id, text, epoch).finally(() => classifying.delete(id))
           classifying.set(id, run)
           return run
         })
@@ -3179,6 +3350,8 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: TRACK_QUESTION }, async ($, e) => {
+    const token = ownedCalls.get(e.tool_use_id)
+    try {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot track questions for the user.' }
     }
@@ -3189,14 +3362,15 @@ export const register: Register = on => {
     const before = await read($, ledger)
     const existing = before.questions.find(q => q.cleared !== true && q.status !== 'answered' && norm(q.head) === norm(summary))
     if (existing !== undefined) {
-      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: existing.id })
+      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: existing.id }, token)
       return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
     }
     if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
-    const session = await captureMintOwner($)
+    const session = token?.owner
     let trackedOrder = 0
     let trackedTurnId: string | null = null
     await update($, turn, cur => {
+      assertOwner(token)
       trackedOrder = (cur.eventOrder ?? 0) + 1
       trackedTurnId = cur.currentId
 
@@ -3204,7 +3378,7 @@ export const register: Register = on => {
     })
     let minted: Question | undefined
     let capacityExceeded = false
-    await update($, ledger, l => {
+    await updateOwnedLedger($, token, l => {
       const textSources = typeof e.source_text === 'string' ? l.prompts.filter(p => p.turnId === trackedTurnId && p.head === headOf(e.source_text as string)) : []
       const source = typeof e.source_request_id === 'string' ? l.prompts.find(p => p.requestId === e.source_request_id || p.rowKey === rowKey(e.source_request_id as string)) : textSources.length === 1 ? textSources[0] : undefined
       minted = {
@@ -3229,19 +3403,31 @@ export const register: Register = on => {
     })
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
-    await update($, scrollAt, cur => ({ ...cur, questions: null }))
+    await update($, scrollAt, cur => {
+      assertOwner(token)
+      return { ...cur, questions: null }
+    })
     if (minted !== undefined) {
       const created = minted
-      await update($, durability, cur => cur.baseline !== undefined ? cur : { ...cur,
-        unverifiedQuestions: [...(cur.unverifiedQuestions ?? []), { id: created.id, at: created.at, head: created.head }] })
-      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: minted.id })
+      await update($, durability, cur => {
+        assertOwner(token)
+        return cur.baseline !== undefined ? cur : { ...cur,
+          unverifiedQuestions: [...(cur.unverifiedQuestions ?? []), { id: created.id, at: created.at, head: created.head }] }
+      })
+      await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: minted.id }, token)
     }
 
     // A plugin tool's result is text (or content blocks), never a bare object.
     return { result: `Tracked as Q${minted?.id}: ${summary}. ${ANSWER.replaceAll('{id}', String(minted?.id))}. For deferral, use mcp__track__mark_answered with a note.` }
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool)
+    }
   })
 
   on('tool.call', { tool: MARK_ANSWERED }, async ($, e) => {
+    const token = ownedCalls.get(e.tool_use_id)
+    try {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the user\'s questions.' }
     }
@@ -3285,7 +3471,7 @@ export const register: Register = on => {
       return { deny: 'track: the answer has no verified response or tracking-call identity; nothing changed.' }
     }
     const answerOrder = t.eventOrder ?? 0
-    await update<Ledger>($, ledger, cur => ({
+    await updateOwnedLedger($, token, cur => ({
       ...cur,
       questions: cur.questions.map(q => {
         if (q.id !== id) return q
@@ -3310,24 +3496,33 @@ export const register: Register = on => {
     }))
     // [A] is now the native answer row. A pane reveal of the saved text would stay stuck beside it.
     if (status === 'answered' && answerKey !== undefined) {
-      await update($, reveal, cur => (cur[String(id)] === 'a' ? { ...cur, [String(id)]: undefined } : cur))
+      await update($, reveal, cur => {
+        assertOwner(token)
+        return cur[String(id)] === 'a' ? { ...cur, [String(id)]: undefined } : cur
+      })
     }
 
     return { result: `Q${id} marked ${status}.` }
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool)
+    }
   })
 
   // Steps come from the model's own tools, read after each call succeeds. A subagent's
   // calls are its own work, not the session's steps.
   on('tool.call', { tool: 'TaskCreate' }, async ($, e, next) => {
+    const token = ownedCalls.get(e.tool_use_id)
     const ran = await next(e)
     const task = (ran.result as { task?: { id?: unknown } } | undefined)?.task
     if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || task?.id === undefined) {
       return ran
     }
+    try {
     const taskId = String(task.id)
     const subject = headOf(String(e.subject ?? ''))
-    const session = await captureMintOwner($)
-    await update<Ledger>($, ledger, cur => {
+    const session = token?.owner
+    await updateOwnedLedger($, token, cur => {
       const plan = cur.steps.find(s => s.source === 'plan' && s.taskId === undefined && norm(s.subject) === norm(subject))
       if (plan !== undefined) {
         return { ...cur, steps: cur.steps.map(s => (s.id === plan.id ? { ...s, taskId } : s)) }
@@ -3345,9 +3540,14 @@ export const register: Register = on => {
     })
 
     return ran
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool, ran)
+    }
   })
 
   on('tool.call', { tool: 'TaskUpdate' }, async ($, e, next) => {
+    const token = ownedCalls.get(e.tool_use_id)
     const currentId = e.agentId === undefined ? (await read($, turn)).currentId : null
     const ran = await next(e)
     const status = e.status
@@ -3355,9 +3555,10 @@ export const register: Register = on => {
     if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || failed || status === undefined) {
       return ran
     }
+    try {
     const taskId = String(e.taskId)
     const now = await $.clock.now()
-    await update<Ledger>($, ledger, cur => ({
+    await updateOwnedLedger($, token, cur => ({
       ...cur,
       steps:
         status === 'deleted'
@@ -3372,23 +3573,29 @@ export const register: Register = on => {
               })
           : cur.steps.map(s => (s.taskId === taskId ? withStatus(s, status, now, currentId) : s)),
     }))
-    await dropFinishedOwners($)
+    await dropFinishedOwners($, token)
 
     return ran
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool, ran)
+    }
   })
 
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
+    const token = ownedCalls.get(e.tool_use_id)
     const currentId = e.agentId === undefined ? (await read($, turn)).currentId : null
     const ran = await next(e)
     const todos = (ran.result as { newTodos?: Array<{ content: string; status: Step['status'] }> } | undefined)?.newTodos
     if (e.agentId !== undefined || ran.deny !== undefined || ran.isError === true || todos === undefined) {
       return ran
     }
+    try {
     // Two todos whose titles normalize alike get #2, #3 after the id, so mark_step reaches each.
     // A todo written again keeps its clock.
-    const session = await captureMintOwner($)
+    const session = token?.owner
     const now = await $.clock.now()
-    await update<Ledger>($, ledger, cur => {
+    await updateOwnedLedger($, token, cur => {
       const before = new Map(cur.steps.filter(s => s.source === 'todo').map(s => [s.id, s]))
       const seen = new Map<string, number>()
       const rows: Step[] = todos.map(t => {
@@ -3404,9 +3611,13 @@ export const register: Register = on => {
 
       return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }
     })
-    await dropFinishedOwners($)
+    await dropFinishedOwners($, token)
 
     return ran
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool, ran)
+    }
   })
 
   on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
@@ -3456,12 +3667,16 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const token = ownedCalls.get(e.tool_use_id)
     const ran = await next(e)
     const taskId = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
-    if (e.agentId === undefined && typeof taskId === 'string') {
+    if (e.agentId === undefined && typeof taskId === 'string' && (token === undefined || isOwnerCurrent(token))) {
       const steps = (await read($, ledger)).steps
       const ids = launchOwner(steps, (await read($, turn)).currentId)
-      await update($, activity, a => ({ ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids, steps) }))
+      await update($, activity, a => {
+        assertOwner(token)
+        return { ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids, steps) }
+      })
     }
 
     return ran
@@ -3469,15 +3684,20 @@ export const register: Register = on => {
 
   // Explicit tracking creates plan rows; approving a plan never imports its text.
   on('tool.call', { tool: TRACK_STEPS }, async ($, e) => {
+    const token = ownedCalls.get(e.tool_use_id)
+    try {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot set the session\'s steps.' }
     }
-    await update($, scrollAt, cur => ({ ...cur, steps: null }))
+    await update($, scrollAt, cur => {
+      assertOwner(token)
+      return { ...cur, steps: null }
+    })
     const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
     if (titles.length === 0) {
       return { result: 'No steps given: pass steps as an array of one-line titles.' }
     }
-    const session = await captureMintOwner($)
+    const session = token?.owner
     if (e.after !== undefined && (typeof e.after !== 'string' || e.after.trim() === '')) {
       return { result: 'after must be a non-blank step id; no plan rows changed. Omit after only for replacement.' }
     }
@@ -3490,7 +3710,7 @@ export const register: Register = on => {
         return { result: `No step ${after}. Known steps: ${l.steps.map(s => s.id).join(', ') || 'none'}.` }
       }
       let added: Step[] = []
-      await update<Ledger>($, ledger, cur => {
+      await updateOwnedLedger($, token, cur => {
         const top = Math.max(0, ...cur.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
         added = titles.map((subject, k) => newPlanStep(`plan:${top + k + 1}`, subject))
         const i = cur.steps.findIndex(s => s.id === after)
@@ -3498,7 +3718,7 @@ export const register: Register = on => {
 
         return { ...cur, session_id: cur.session_id ?? session, steps: capSteps(steps) }
       })
-      await coverInput($, 'steps', { source_text: e.source_text })
+      await coverInput($, 'steps', { source_text: e.source_text }, token)
 
       return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
@@ -3506,16 +3726,20 @@ export const register: Register = on => {
     if (beforeReplacement.length > 0) return refusePlanReplacement(beforeReplacement)
     const steps: Step[] = titles.map((subject, i) => newPlanStep(`plan:${i + 1}`, subject))
     let unfinished: ReturnType<typeof openPlanSteps> = []
-    await update<Ledger>($, ledger, cur => {
+    await updateOwnedLedger($, token, cur => {
       // UI-1 (2026-10-20): validate inside the atomic update so concurrent additions cannot be lost.
       unfinished = e.replace === true ? [] : openPlanSteps(cur.steps)
       if (unfinished.length > 0) return cur
       return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }
     })
     if (unfinished.length > 0) return refusePlanReplacement(unfinished)
-    await coverInput($, 'steps', { source_text: e.source_text })
+    await coverInput($, 'steps', { source_text: e.source_text }, token)
 
     return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool)
+    }
   })
 
   // A handoff seeds a fresh session, whose pane starts empty. One call copies the old session's
@@ -3529,6 +3753,7 @@ export const register: Register = on => {
   // row as it was. A second call from the same session replaces those questions, never adds them
   // again.
   on('tool.call', { tool: RESTORE_TRACKER }, async ($, e, next) => {
+    const token = ownedCalls.get(e.tool_use_id)
     // Only an engine-origin model call has a displayed ToolUse row. A plugin
     // call needs an acknowledged plugin user note; its generated tool id is not a
     // transcript target. Origin comes from the host, never from the arguments.
@@ -3658,7 +3883,7 @@ export const register: Register = on => {
         personNotice = restoreNotice({ by: notice.uuid, from, steps: steps.length, visibleSteps: visibleStepCount, questions: displayed })
       }
     }
-    await update<Ledger>($, ledger, cur => {
+    await updateOwnedLedger($, token, cur => {
       if (mechanical && !sameValue(cur, before)) {
         refusal = 'track: ledger changed while the restore receipt was pending; nothing was restored. Retry against the current ledger.'
         return cur
@@ -3676,7 +3901,10 @@ export const register: Register = on => {
         $.ui.log(`track: person restore notice failed: ${reason(error)}`, { to: 'debug' })
       }
     }
-    await update($, scrollAt, cur => ({ steps: steps.length > 0 ? null : cur.steps, questions: restored.length > 0 ? null : cur.questions }))
+    await update($, scrollAt, cur => {
+      assertOwner(token)
+      return { steps: steps.length > 0 ? null : cur.steps, questions: restored.length > 0 ? null : cur.questions }
+    })
     const shown = visibleSteps(steps)
     const at = shown.findIndex(s => s.status === 'in_progress')
     const where = at < 0 ? 'None in progress.' : `In progress: S${at + 1} ${shown[at]?.subject}.`
@@ -3687,11 +3915,14 @@ export const register: Register = on => {
     const openSteps = openStepsOf(applied.steps)
     return { result: checkpoint === undefined ? `Restored ${restoreStepCount({ by: '', from, steps: steps.length, visibleSteps: visibleStepCount, questions: restored })} and ${counted(restored.length, 'question')} from session ${from}. ${where}${listed}\nOpen steps: ${JSON.stringify(openSteps)}` : JSON.stringify({ ...checkpoint, destination_session: destination, applied_checksum: await appliedChecksum(source!, applied, from, destination!), open_steps: openSteps }) }
     } catch (error) {
+      if (error instanceof OwnerChanged) return expected === undefined ? ownerChangedResult(e.tool) : restoreOwnerChangedResult(from, destination)
       return failed(`track: restoration failed — ${reason(error)}`)
     }
   })
 
   on('tool.call', { tool: MARK_STEP }, async ($, e) => {
+    const token = ownedCalls.get(e.tool_use_id)
+    try {
     if (e.agentId !== undefined) {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
     }
@@ -3712,7 +3943,7 @@ export const register: Register = on => {
       ...(typeof currentId === 'string' && { resultTurnId: currentId }),
     }
     const reuse = reuseCalls.get(e.tool_use_id)
-    await update<Ledger>($, ledger, cur => {
+    await updateOwnedLedger($, token, cur => {
       // A compare-and-set retry must discard eligibility from the old snapshot.
       if (reuse !== undefined) reuse.step = undefined
       return { ...cur, steps: cur.steps.map(s => {
@@ -3722,9 +3953,13 @@ export const register: Register = on => {
         return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }), ...result }
       }) }
     })
-    await dropFinishedOwners($)
+    await dropFinishedOwners($, token)
 
     return { result: `Step ${id} "${l.steps.find(s => s.id === id)?.subject}" marked ${status}.` }
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return ownerChangedResult(e.tool)
+    }
   })
 
   on('command.run', { command: 'track' }, async ($, e) => {
