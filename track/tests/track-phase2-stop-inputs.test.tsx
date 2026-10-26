@@ -30,6 +30,7 @@ const prepare = (on: On, options: { inputs?: PendingInput[]; classifier?: boolea
   const env = new Map<string, string>([['CLAUDE_CONFIG_DIR', '/fixture/config']])
   if (options.root !== false) env.set('CLAUDE_PLUGIN_ROOT', '/fixture/track')
   const helper = { mode: 'block' as Mode }
+  const classifier = { reply: (_text: string): Promise<string> => Promise.resolve('not_question') }
   const calls: Array<{ snapshot: Snapshot; argv: readonly string[]; timeout?: number }> = []
   const publications: string[] = []
   on('session.id', () => ({ value: SESSION }))
@@ -43,7 +44,7 @@ const prepare = (on: On, options: { inputs?: PendingInput[]; classifier?: boolea
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => options.below === undefined ? {} : { block: options.below })
   on('tool.call', { tool: 'Bash' }, () => ({ result: 'fixture command finished' }))
-  on('model.complete', async () => ({ value: { isAnswered: true, text: 'not_question', usage: USAGE } }) as never)
+  on('model.complete', async (_, e) => ({ value: { isAnswered: true, text: await classifier.reply(e.prompt), usage: USAGE } }) as never)
   on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
     calls.push({ snapshot: JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}'), argv: e.argv, timeout: e.init?.timeoutMs })
     if (helper.mode === 'throw') throw new Error('fixture helper unavailable')
@@ -52,7 +53,7 @@ const prepare = (on: On, options: { inputs?: PendingInput[]; classifier?: boolea
       stderr: helper.mode === 'unknown' ? 'track: pending input repair receipt unavailable' : '',
       isStdoutTruncated: helper.mode === 'truncated', isStderrTruncated: false } }
   })
-  return { clock, ledger, pending, turn, lines, helper, calls, publications,
+  return { clock, ledger, pending, turn, lines, helper, classifier, calls, publications,
     snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') as Snapshot }
 }
 
@@ -91,14 +92,14 @@ test('R1 producer ignores held marks, excludes covered and negative inputs, and 
 for (const label of ['question', 'not_question'] as const) {
   test(`R2 a delayed ${label} label republishes the input snapshot`, async ($, on) => {
     const fixture = prepare(on, { classifier: true })
-    let release = (_: unknown) => {}
-    on('model.complete', () => new Promise(resolve => { release = resolve }) as never)
+    let release = (_text: string) => {}
+    fixture.classifier.reply = () => new Promise<string>(resolve => { release = resolve })
     const text = label === 'question' ? 'Explain the retry mechanism' : FIRST
     await ask($, text)
     await start($)
     await fixture.clock.advance(1)
     const before = fixture.publications.length
-    release({ value: { isAnswered: true, text: label, usage: USAGE } })
+    release(label)
     await fixture.clock.advance(1)
     expect(fixture.snapshot().inputs).toEqual(label === 'question' ? [{ id: 1, reason: labelled(text) }] : [])
     expect(fixture.publications.length).toBeGreaterThan(before)
