@@ -62,6 +62,14 @@ class HistoryError(RuntimeError):
     """A refusal whose phase is determined by the root rename boundary."""
 
 
+class CollectInterrupted(HistoryError):
+    """A collect refusal after its first change, carrying the rows already done."""
+
+    def __init__(self, reason, rows):
+        super().__init__(reason)
+        self.rows = rows
+
+
 def encode(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"),
                       allow_nan=False).encode("utf-8")
@@ -721,7 +729,7 @@ def age_reason(saved_at, now):
 
 def run_collect(request, config, directories, locks, mutation):
     """Moves expired roots to trash, then purges old trash and unnamed objects."""
-    key, dry_run, protected = request["store"], request["dry_run"], set(request["protected"])
+    protected = set(request["protected"])
     with ExitStack() as handles:
         trash = trash_directory(handles, directories, create=False)
         roots, entries, objects = namespace_entries(directories, trash)
@@ -739,71 +747,90 @@ def run_collect(request, config, directories, locks, mutation):
         require(response_bound(request, roots, entries, objects, candidates) + 1 <= MAX_RESPONSE,
                 "collect response too large")
         preflight_locks(locks, candidates)
-        trashed, more = [], False
-        for session in candidates:
-            if len(trashed) == request["limit"]:
-                more = True
-                break
-            found = roots[session]
-            with session_guard(locks, session) as free:
-                if not free:
-                    kept.append({"session_id": session, "reason": "live"})
-                    continue
-                # A refusal here could follow an earlier rename, so any failed
-                # recheck keeps the root instead.
+        done = {"trashed": [], "purged_trash": [], "purged_objects": []}
+        try:
+            response = collect_changes(request, config, directories, locks, handles, mutation,
+                                       (trash, roots, entries, objects, candidates, kept, now), done)
+        except (HistoryError, transactions.TransactionError, OSError, ValueError) as error:
+            # Only a refusal after a change is postcommit; it names every row already done.
+            if mutation["committed"]:
+                raise CollectInterrupted(str(error), done) from error
+            raise
+    return response
+
+
+def collect_changes(request, config, directories, locks, handles, mutation, listing, done):
+    """The guarded renames and purges of one collect; appends each finished row to done."""
+    key, dry_run = request["store"], request["dry_run"]
+    trash, roots, entries, objects, candidates, kept, now = listing
+    trashed, more = done["trashed"], False
+    for session in candidates:
+        if len(trashed) == request["limit"]:
+            more = True
+            break
+        found = roots[session]
+        with session_guard(locks, session) as free:
+            if not free:
+                kept.append({"session_id": session, "reason": "live"})
+                continue
+            # A refusal here could follow an earlier rename, so any failed
+            # recheck keeps the root instead.
+            try:
+                unchanged = hashlib.sha256(read_leaf(directories["roots"], found["name"], MAX_ROOT)).hexdigest() == found["digest"]
+            except (HistoryError, transactions.TransactionError, OSError, ValueError):
+                unchanged = False
+            if not unchanged:
+                kept.append({"session_id": session, "reason": "changed"})
+                continue
+            if not dry_run:
+                if trash is None:
+                    trash = trash_directory(handles, directories, create=True)
+                verify_trash(config, key, directories, trash)
+                name = "%s.%d.%s.%d.json" % (session, found["root"]["seq"], found["digest"], now_ms())
                 try:
-                    unchanged = hashlib.sha256(read_leaf(directories["roots"], found["name"], MAX_ROOT)).hexdigest() == found["digest"]
-                except (HistoryError, transactions.TransactionError, OSError, ValueError):
-                    unchanged = False
-                if not unchanged:
+                    os.stat(name, dir_fd=trash, follow_symlinks=False)
                     kept.append({"session_id": session, "reason": "changed"})
                     continue
-                if not dry_run:
-                    if trash is None:
-                        trash = trash_directory(handles, directories, create=True)
-                    verify_trash(config, key, directories, trash)
-                    name = "%s.%d.%s.%d.json" % (session, found["root"]["seq"], found["digest"], now_ms())
-                    try:
-                        os.stat(name, dir_fd=trash, follow_symlinks=False)
-                        kept.append({"session_id": session, "reason": "changed"})
-                        continue
-                    except FileNotFoundError:
-                        pass
-                    try:
-                        os.rename(found["name"], name, src_dir_fd=directories["roots"], dst_dir_fd=trash)
-                    except OSError:
-                        # A rename either happens or not; a failed one left the root in place.
-                        kept.append({"session_id": session, "reason": "changed"})
-                        continue
-                    mutation["committed"] = True
-                    os.fsync(trash)
-                    os.fsync(directories["roots"])
-                    entries[name] = {"root": found["root"], "trashed_at": now}
-                trashed.append({"session_id": session, "seq": found["root"]["seq"],
-                                "root_sha256": found["digest"]})
-        kept.sort(key=lambda entry: entry["session_id"])
-        purged_trash = sorted(name for name, entry in entries.items()
-                              if now - entry["trashed_at"] >= TRASH_GRACE_MS)
-        if purged_trash and not dry_run:
-            verify_trash(config, key, directories, trash)
-            for name in purged_trash:
-                os.unlink(name, dir_fd=trash)
+                except FileNotFoundError:
+                    pass
+                try:
+                    os.rename(found["name"], name, src_dir_fd=directories["roots"], dst_dir_fd=trash)
+                except OSError:
+                    # A rename either happens or not; a failed one left the root in place.
+                    kept.append({"session_id": session, "reason": "changed"})
+                    continue
                 mutation["committed"] = True
-            os.fsync(trash)
-        # A root changed outside history.py may name an object this run never
-        # saw, so a run that kept any root as "changed" purges no object.
-        changed = any(entry["reason"] == "changed" for entry in kept)
-        named = {found["root"]["object"]["checksum"] for found in roots.values() if found["root"]["object"] is not None}
-        purged = set(purged_trash)
-        named |= {entry["root"]["object"]["checksum"] for name, entry in entries.items()
-                  if name not in purged and entry["root"]["object"] is not None}
-        purged_objects = [] if changed else sorted(objects - named)
-        if purged_objects and not dry_run:
-            verify_directories(config, key, directories)
-            for checksum in purged_objects:
-                os.unlink(checksum + ".json", dir_fd=directories["objects"])
-                mutation["committed"] = True
-            os.fsync(directories["objects"])
+                trashed.append({"session_id": session, "seq": found["root"]["seq"], "root_sha256": found["digest"]})
+                entries[name] = {"root": found["root"], "trashed_at": now}
+                os.fsync(trash)
+                os.fsync(directories["roots"])
+            else:
+                trashed.append({"session_id": session, "seq": found["root"]["seq"], "root_sha256": found["digest"]})
+    kept.sort(key=lambda entry: entry["session_id"])
+    purged_trash = sorted(name for name, entry in entries.items()
+                          if now - entry["trashed_at"] >= TRASH_GRACE_MS)
+    if purged_trash and not dry_run:
+        verify_trash(config, key, directories, trash)
+        for name in purged_trash:
+            os.unlink(name, dir_fd=trash)
+            mutation["committed"] = True
+            done["purged_trash"].append(name)
+        os.fsync(trash)
+    # A root changed outside history.py may name an object this run never
+    # saw, so a run that kept any root as "changed" purges no object.
+    changed = any(entry["reason"] == "changed" for entry in kept)
+    named = {found["root"]["object"]["checksum"] for found in roots.values() if found["root"]["object"] is not None}
+    purged = set(purged_trash)
+    named |= {entry["root"]["object"]["checksum"] for name, entry in entries.items()
+              if name not in purged and entry["root"]["object"] is not None}
+    purged_objects = [] if changed else sorted(objects - named)
+    if purged_objects and not dry_run:
+        verify_directories(config, key, directories)
+        for checksum in purged_objects:
+            os.unlink(checksum + ".json", dir_fd=directories["objects"])
+            mutation["committed"] = True
+            done["purged_objects"].append(checksum)
+        os.fsync(directories["objects"])
     return {"ok": True, "protocol": 3, "op": "collect", "dry_run": dry_run, "trashed": trashed,
             "purged_trash": purged_trash, "purged_objects": purged_objects, "kept": kept, "more": more}
 
@@ -901,6 +928,8 @@ def main(argv):
                     "reason": str(error)}
         if operation in ("save", "resolve") and isinstance(request, dict) and "request_id" in request:
             response["request_id"] = request["request_id"]
+        if isinstance(error, CollectInterrupted):
+            response.update(error.rows)
         emit(response)
         return 1
     finally:
