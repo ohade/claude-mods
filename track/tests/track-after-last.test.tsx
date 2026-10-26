@@ -14,8 +14,8 @@ type Held = { steps: StepRow[] }
 const call = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never)
 
 const plan = (n: number, status = 'pending', extra: Partial<StepRow> = {}): StepRow => ({ id: `plan:${n}`, source: 'plan', subject: `step ${n}`, status, ...extra })
-const task: StepRow = { id: 'task:7', source: 'task', subject: 'native task', status: 'in_progress' }
-const todo: StepRow = { id: 'todo:ship it', source: 'todo', subject: 'Ship it', status: 'pending' }
+const task = { id: 'task:7', source: 'task', subject: 'native task', status: 'in_progress', session_id: SESSION }
+const todo = { id: 'todo:ship it', source: 'todo', subject: 'Ship it', status: 'pending', session_id: SESSION }
 
 const prepare = (on: On, steps: StepRow[]) => {
   mock.clock(on)
