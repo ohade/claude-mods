@@ -10,7 +10,7 @@ import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuest
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
-import { assertLedgerOwner, identifyLedger, reconcileLedger, reconcileQuestionIdentity, sameLedgerContent } from './reconcile'
+import { assertLedgerOwner, identifyLedger, legacySourceId, questionHighWater, reconcileLedger, reconcileQuestionIdentity, sameLedgerContent } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
@@ -2651,7 +2651,7 @@ const asRestored = (q: Question, id: number, from: string, by: string | undefine
   ...(q.answerText !== undefined && { answerText: q.answerText }),
   ...(q.answeredAt !== undefined && { answeredAt: q.answeredAt }),
   restoredFrom: from,
-  sourceId: q.sourceId ?? `${from}:Q${q.id}`,
+  sourceId: legacySourceId(from, q),
   ...(by !== undefined && { restoredBy: by }),
 })
 
@@ -2769,12 +2769,11 @@ const savedLedger = (raw: unknown, owner?: string): Ledger | undefined => {
   const withdrawn = rows(l.withdrawn).filter(
     (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
   )
-  const top = Math.max(0, ...questions.map(q => q.id), ...withdrawn.map(w => w.id))
   const restores = keepRestores(rows(l.restores).map(savedRestore).filter(isDefined), questions)
 
   return {
     v: 1,
-    nextQuestionId: Math.max(top + 1, typeof l.nextQuestionId === 'number' ? l.nextQuestionId : 1),
+    nextQuestionId: questionHighWater({ nextQuestionId: Math.max(1, typeof l.nextQuestionId === 'number' ? l.nextQuestionId : 1), questions, withdrawn }),
     prompts: rows(l.prompts).map(savedPrompt).filter(isDefined).slice(-MAX_PROMPTS),
     questions,
     steps: capSteps(rows(l.steps).map(savedStep).filter(isDefined)),
@@ -3107,6 +3106,8 @@ const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
     ownership.epoch++
     // Decide after queued transitions finish: A->B->A must clear B's atoms.
     // A same-target direct resume fences old tokens while keeping its own atoms.
+    // An unowned ledger with no known memorySession (undefined or null) is a
+    // different target: clear the atoms to fail toward the safe side.
     const owner = (await read($, ledger)).session_id ?? (await read($, durability)).memorySession
     if (owner !== id) {
       await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
@@ -4403,18 +4404,20 @@ export const register: Register = on => {
         return cur
       }
       const identity = reconcileQuestionIdentity(cur.questions, cur.restoredIds, cur.restores)
-      let nextId = Math.max(cur.nextQuestionId, ...cur.questions.map(q => q.id + 1), ...(cur.withdrawn ?? []).map(q => q.id + 1))
+      let nextId = questionHighWater(cur)
       const occupied = new Set([...cur.questions.map(q => q.id), ...(cur.withdrawn ?? []).map(q => q.id)])
       const ids = new Map(Object.entries(identity.restoredIds ?? {}))
       for (const r of identity.restores ?? []) for (const q of r.questions) {
-        const sourceId = q.sourceId ?? `${r.from}:Q${q.id}`
+        const sourceId = legacySourceId(r.from, q)
         if (!ids.has(sourceId)) ids.set(sourceId, q.id)
       }
       restored = questions.map(q => {
-        const sourceId = q.sourceId ?? `${from}:Q${q.id}`
+        const sourceId = legacySourceId(from, q)
         const local = cur.questions.find(one => one.sourceId === sourceId && one.cleared !== true)
           ?? cur.questions.find(one => one.sourceId === sourceId)
         const cached = ids.get(sourceId)
+        // Unresolved legacy-only limit: a stale hint below nextQuestionId can name
+        // an already withdrawn question's number after its transient record clears.
         const id = local?.id ?? (cached !== undefined && Number.isSafeInteger(cached) && cached > 0 && !occupied.has(cached) ? cached : nextId++)
         occupied.add(id)
         nextId = Math.max(nextId, id + 1)
