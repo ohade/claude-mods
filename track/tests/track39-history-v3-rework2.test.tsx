@@ -85,7 +85,7 @@ const fixture = (on: On, options: Options = {}) => {
     }
     if (op === 'resolve') {
       return { value: committed.has(String(request.request_id))
-        ? reply({ ok: true, protocol: 3, op, request_id: request.request_id, outcome: 'committed' })
+        ? reply({ ok: true, protocol: 3, op, request_id: request.request_id, outcome: 'committed', seq: roots.get(String(request.session_id))!.seq, root_sha256: roots.get(String(request.session_id))!.hash })
         : reply({ ok: false, protocol: 3, op, request_id: request.request_id, phase: 'postcommit', reason: 'fixture outcome unknown' }, 1) }
     }
     return { value: reply({ ok: false, protocol: 3, op, phase: 'precommit', reason: 'fixture op unsupported' }, 1) }
