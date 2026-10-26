@@ -2307,6 +2307,7 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
       const saved = await commitHistorySave($, store, id, view, current)
       await acknowledgeHistorySave($, id, memory, current, saved, intended)
     }
+    // At most once an hour this reply waits for the collect, bounded by its 8000 ms timeout.
     await collectHistory($, store, id, pendingSession).catch(error => $.ui.log(`track: history collect skipped: ${reason(error)}`, { to: 'debug' }))
     return true
   } catch (error) {

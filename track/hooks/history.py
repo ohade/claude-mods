@@ -659,12 +659,16 @@ def namespace_entries(directories, trash):
 # between the recheck and the rename.
 @contextmanager
 def session_guard(locks, session):
-    """Yields False while a live owner holds the session lease, else True with it held."""
+    """Yields False while a live owner may hold the session lease, else True with it held."""
     with ExitStack() as handles:
         try:
             descriptor = handles.enter_context(transactions.open_leaf(locks["locks"], session + ".lock"))
         except FileNotFoundError:
             descriptor = None  # No lock file means no live owner.
+        except (transactions.TransactionError, OSError):
+            # The lock changed shape after the preflight; its owner is unknown.
+            yield False
+            return
         if descriptor is not None:
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -745,9 +749,11 @@ def run_collect(request, config, directories, locks, mutation):
                 if not free:
                     kept.append({"session_id": session, "reason": "live"})
                     continue
+                # A refusal here could follow an earlier rename, so any failed
+                # recheck keeps the root instead.
                 try:
                     unchanged = hashlib.sha256(read_leaf(directories["roots"], found["name"], MAX_ROOT)).hexdigest() == found["digest"]
-                except FileNotFoundError:
+                except (HistoryError, transactions.TransactionError, OSError, ValueError):
                     unchanged = False
                 if not unchanged:
                     kept.append({"session_id": session, "reason": "changed"})
@@ -759,10 +765,16 @@ def run_collect(request, config, directories, locks, mutation):
                     name = "%s.%d.%s.%d.json" % (session, found["root"]["seq"], found["digest"], now_ms())
                     try:
                         os.stat(name, dir_fd=trash, follow_symlinks=False)
-                        raise HistoryError("trash entry exists: " + name)
+                        kept.append({"session_id": session, "reason": "changed"})
+                        continue
                     except FileNotFoundError:
                         pass
-                    os.rename(found["name"], name, src_dir_fd=directories["roots"], dst_dir_fd=trash)
+                    try:
+                        os.rename(found["name"], name, src_dir_fd=directories["roots"], dst_dir_fd=trash)
+                    except OSError:
+                        # A rename either happens or not; a failed one left the root in place.
+                        kept.append({"session_id": session, "reason": "changed"})
+                        continue
                     mutation["committed"] = True
                     os.fsync(trash)
                     os.fsync(directories["roots"])
@@ -782,8 +794,9 @@ def run_collect(request, config, directories, locks, mutation):
         # saw, so a run that kept any root as "changed" purges no object.
         changed = any(entry["reason"] == "changed" for entry in kept)
         named = {found["root"]["object"]["checksum"] for found in roots.values() if found["root"]["object"] is not None}
+        purged = set(purged_trash)
         named |= {entry["root"]["object"]["checksum"] for name, entry in entries.items()
-                  if name not in purged_trash and entry["root"]["object"] is not None}
+                  if name not in purged and entry["root"]["object"] is not None}
         purged_objects = [] if changed else sorted(objects - named)
         if purged_objects and not dry_run:
             verify_directories(config, key, directories)
