@@ -1,4 +1,4 @@
-"""FIXTURE: post-create metadata errors must not consume an input or another inode."""
+"""FIXTURE: claim metadata errors must not consume an input, leak a descriptor or touch another inode."""
 import os
 from pathlib import Path
 import tempfile
@@ -18,16 +18,16 @@ class InputMetadataFailureTests(unittest.TestCase):
                 "open": [], "candidates": [], "held": [],
                 "inputs": [{"id": 1, "reason": inputs_fixture.REASON}]}
 
-    def test_fstat_failure_removes_the_claim_and_allows_the_same_input_to_retry(self):
+    def test_metadata_failure_before_publication_leaves_no_file_and_allows_retry(self):
         with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
-            with patch.object(stop.os, "fstat", side_effect=PermissionError("FIXTURE: fstat denied")):
+            with patch.object(stop.os, "fchmod", side_effect=PermissionError("FIXTURE: claim mode denied")):
                 self.assertEqual(stop.decision({"session_id": inputs_fixture.SESSION}, self.snapshot()), {})
             self.assertEqual([path for path in Path(config).rglob("*") if path.is_file()], [],
-                             "failed metadata lookup left a permanent input claim")
+                             "failed metadata write left a permanent input claim or a temp")
             self.assertEqual(stop.decision({"session_id": inputs_fixture.SESSION}, self.snapshot()),
                              {"decision": "block", "reason": inputs_fixture.REASON})
 
-    def test_fstat_failure_closes_the_exclusively_created_descriptor(self):
+    def test_metadata_failure_closes_the_created_descriptor(self):
         original_open, original_fstat = os.open, os.fstat
         descriptors = []
 
@@ -38,11 +38,11 @@ class InputMetadataFailureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
             with patch.object(stop.os, "open", side_effect=capture_open), \
-                 patch.object(stop.os, "fstat", side_effect=PermissionError("FIXTURE: fstat denied")):
+                 patch.object(stop.os, "fchmod", side_effect=PermissionError("FIXTURE: claim mode denied")):
                 self.assertEqual(stop.decision({"session_id": inputs_fixture.SESSION}, self.snapshot()), {})
             self.assertEqual(len(descriptors), 1)
             try:
-                with self.assertRaises(OSError, msg="failed metadata lookup leaked the claim descriptor"):
+                with self.assertRaises(OSError, msg="failed metadata write leaked the claim descriptor"):
                     original_fstat(descriptors[0])
             finally:
                 try:
@@ -50,18 +50,20 @@ class InputMetadataFailureTests(unittest.TestCase):
                 except OSError:
                     pass  # Expected when the helper already closed the descriptor.
 
-    def test_recovery_preserves_a_replacement_at_the_claim_path(self):
+    def test_failure_after_publication_keeps_a_replacement_and_reports_held(self):
         with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
             name = stop.claim_name(inputs_fixture.SESSION, "input:1", "uncovered_input")
             claim = Path(config) / "state" / "track" / "stop-holds" / "inputs" / name
 
-            def replace_then_deny(_descriptor):
+            def replace_then_deny(_path):
+                # Runs at the creator's temp cleanup, after the claim was published.
                 claim.rename(claim.with_suffix(".original"))
                 claim.write_text("foreign replacement", encoding="utf-8")
-                raise PermissionError("FIXTURE: metadata failed after replacement")
+                raise PermissionError("FIXTURE: cleanup failed after replacement")
 
-            with patch.object(stop.os, "fstat", side_effect=replace_then_deny):
-                self.assertEqual(stop.decision({"session_id": inputs_fixture.SESSION}, self.snapshot()), {})
+            with patch.object(stop.os, "unlink", side_effect=replace_then_deny):
+                self.assertEqual(stop.decision({"session_id": inputs_fixture.SESSION}, self.snapshot()),
+                                 {"decision": "block", "reason": inputs_fixture.REASON})
             self.assertEqual(claim.read_text(encoding="utf-8"), "foreign replacement")
 
 

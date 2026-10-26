@@ -37,7 +37,8 @@ class InputClaimFailureTests(unittest.TestCase):
         original_open = os.open
 
         def fail_second_claim(path, flags, *args, **kwargs):
-            if Path(path).name == denied:
+            # The second input's first storage write: its claim file, or the creator's temp for it.
+            if Path(path).name.startswith(denied):
                 raise PermissionError("FIXTURE: second input claim denied")
             return original_open(path, flags, *args, **kwargs)
 
