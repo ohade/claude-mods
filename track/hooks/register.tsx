@@ -3093,6 +3093,16 @@ export const register: Register = on => {
       token = owned.ok ? owned.token : undefined
       provisional = !owned.ok
     }
+    // Every write after an await checks the admitted owner, inside its atom where there is one.
+    const assertAdmitted = (): void => {
+      assertOwner(token)
+      if (provisional && !isOwnerCurrent({ owner: undefined, epoch: admissionEpoch })) throw new OwnerChanged()
+    }
+    const passThrough = () => {
+      // Another session owns the rows now: pass the prompt through and leave its state alone.
+      $.ui.log('track: prompt input not recorded: session owner changed during the call.', { to: 'debug' })
+      return next({ ...e, context: [...(e.context ?? []), 'track: session owner changed during the call; Track did not record this prompt.'] })
+    }
     const trimmed = (e as { agentId?: string }).agentId === undefined ? gateable(String(e.text ?? ''), e.origin?.kind) : undefined
     const wording = trimmed !== undefined && looksLikeQuestion(trimmed)
     const classify = trimmed !== undefined && (await classifierOn($))
@@ -3107,8 +3117,7 @@ export const register: Register = on => {
       let full = false
       try {
         await update($, pending, p => {
-          assertOwner(token)
-          if (provisional && !isOwnerCurrent({ owner: undefined, epoch: admissionEpoch })) throw new OwnerChanged()
+          assertAdmitted()
           added = undefined
           full = false
           // The same full text again in the same turn is a redelivery, not a new question. An
@@ -3131,9 +3140,7 @@ export const register: Register = on => {
         })
       } catch (error) {
         if (!(error instanceof OwnerChanged)) throw error
-        // Another session owns the rows now: pass the prompt through and leave its state alone.
-        $.ui.log('track: prompt input not recorded: session owner changed during the call.', { to: 'debug' })
-        return next({ ...e, context: [...(e.context ?? []), 'track: session owner changed during the call; Track did not record this prompt.'] })
+        return passThrough()
       }
       if (full) $.ui.toast(`track: ${MAX_INPUTS} prompts still wait for a Track row; this one was not recorded.`)
       // Started, not awaited: the label is read at Stop. A managed timer stops on a reload.
@@ -3149,6 +3156,7 @@ export const register: Register = on => {
       }
     }
     const entered = await (async () => {
+      assertAdmitted()
       // A finished background task or agent says so in its notification: it leaves the banner.
       // Its step stays as it is and gains a visible flag, plus one nudge to update it.
       let followUpLine: string | undefined
@@ -3158,6 +3166,7 @@ export const register: Register = on => {
           const owners = (await read($, activity)).owners ?? {}
           const ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
           await update($, activity, a => {
+            assertAdmitted()
             const nextOwners = { ...(a.owners ?? {}) }
             for (const id of done) delete nextOwners[id]
             return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
@@ -3165,13 +3174,21 @@ export const register: Register = on => {
           const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
           if (targets.length > 0) {
             const wanted = new Set(targets.map(s => s.id))
-            await update<Ledger>($, ledger, cur => ({ ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }))
+            await update<Ledger>($, ledger, cur => {
+              assertAdmitted()
+              return { ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }
+            })
             followUpLine = `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
-            await saveLedger($)
+            assertAdmitted()
+            await saveLedger($, token)
           }
         }
       }
-      if (!(await dropRewound($))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
+      assertAdmitted()
+      const kept = await dropRewound($)
+      // A rewind check that ran after an owner change speaks for the new owner, not for this prompt.
+      assertAdmitted()
+      if (!kept) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
       const typed = e.origin?.kind === 'composer'
       // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
       const fromPlugin = e.origin?.kind === 'plugin'
@@ -3181,21 +3198,27 @@ export const register: Register = on => {
         // withdrawn question waits for a prompt the model reads. A skill's slash command reaches the
         // model and starts work, so it carries what a typed prompt carries.
         const name = /^\/([^\s]+)/.exec(e.text.trim())?.[1] ?? ''
-        if (name === 'track' || (await $.command.list()).some(c => c.name === name && c.source === 'builtin')) {
-          return next(e)
-        }
+        const isBuiltin = name === 'track' || (await $.command.list()).some(c => c.name === name && c.source === 'builtin')
+        assertAdmitted()
+        if (isBuiltin) return next(e)
       }
       const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
       const reminder = (await read($, turn)).stepReminder
       if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && reminder !== undefined) {
         lines.push(reminder)
-        await update($, turn, current => current.stepReminder === reminder ? { ...current, stepReminder: undefined } : current)
+        await update($, turn, current => {
+          assertAdmitted()
+          return current.stepReminder === reminder ? { ...current, stepReminder: undefined } : current
+        })
       }
       const resultReminder = (await read($, turn)).resultReminder
       if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && resultReminder !== undefined) {
         const text = missingResultText((await read($, ledger)).steps, resultReminder.ids)
         if (text !== undefined) lines.push(text)
-        await update($, turn, current => current.resultReminder?.turnId === resultReminder.turnId ? { ...current, resultReminder: undefined } : current)
+        await update($, turn, current => {
+          assertAdmitted()
+          return current.resultReminder?.turnId === resultReminder.turnId ? { ...current, resultReminder: undefined } : current
+        })
       }
       // A prompt Stop already asked about once and no row covers yet is named again here.
       const unresolved = (await read($, pending)).inputs.filter(i => i.held === true && i.covered === undefined && needsQuestion(i))
@@ -3204,6 +3227,7 @@ export const register: Register = on => {
         lines.push(`track: still unregistered: ${named}${unresolved.length > OPEN_LISTED ? ` (+${unresolved.length - OPEN_LISTED} more)` : ''}; register each with mcp__track__track_question, or mcp__track__track_steps for a request, source_text = its first line.`)
       }
       const l = await read($, ledger)
+      assertAdmitted()
       const references = paneReferenceContext(e.text, l)
       if (references !== undefined) lines.push(references)
       // A question the user withdrew with ✕ is told to the model once, on whatever prompt it reads next.
@@ -3211,7 +3235,10 @@ export const register: Register = on => {
       if (withdrawn.length > 0) {
         const named = withdrawn.map(w => `question:${w.id} "${truncate(w.head, 60)}"`).join(', ')
         lines.push(`track: the user withdrew ${named}; do not answer ${withdrawn.length > 1 ? 'them' : 'it'}.`)
-        await update<Ledger>($, ledger, cur => ({ ...cur, withdrawn: [] }))
+        await update<Ledger>($, ledger, cur => {
+          assertAdmitted()
+          return { ...cur, withdrawn: [] }
+        })
       }
       const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
       const steps = visibleSteps(l.steps)
@@ -3227,10 +3254,20 @@ export const register: Register = on => {
       const line = `track: open ${listed || 'none'}${open.length > OPEN_LISTED ? ` (+${open.length - OPEN_LISTED} more)` : ''}; steps ${done} of ${steps.length} done.${openStepsContext(l.steps)} ${ANSWER}.`
 
       return next({ ...e, context: [...(e.context ?? []), ...lines, line] })
-    })()
+    })().catch((error: unknown) => {
+      if (!(error instanceof OwnerChanged)) throw error
+      return passThrough()
+    })
     if (added !== undefined && 'drop' in entered) {
       const dropped = added
-      await update($, pending, p => ({ ...p, inputs: p.inputs.filter(i => i.id !== dropped) }))
+      // The drop removes this prompt's own input; after an owner change it is not in these rows.
+      await update($, pending, p => {
+        try { assertAdmitted() } catch (error) {
+          if (error instanceof OwnerChanged) return p
+          throw error
+        }
+        return { ...p, inputs: p.inputs.filter(i => i.id !== dropped) }
+      })
     }
 
     return entered
