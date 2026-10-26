@@ -1398,18 +1398,24 @@ const nudgeMissingResults = async ($: EngineInterface, observed: Turn): Promise<
   if (show) $.ui.toast(text)
 }
 
-// Phase 2 D1-D3 (R-S1, 2026-10-26): classic.Stop may not run on this host. The first main prompt
-// after the turn finished stores its reminders as a Stop would, without the toast, and the stored
-// lines below carry them once. A Stop that did run has already marked both, so nothing doubles.
+// The main turn that has finished and that no later turn.start has replaced yet.
+const finishedTurnId = (t: Turn, a: Activity): string | undefined =>
+  typeof t.currentId === 'string' && !a.isWorking && a.mainTurnId === t.currentId ? t.currentId : undefined
+
+// Phase 2 D1-D3 (R-S1, R-S5, 2026-10-26): classic.Stop may not run on this host. Each main typed,
+// plugin or task-notification prompt between turn.complete and the next turn.start stores the
+// finished turn's reminders as a Stop would, without the toast. Only a typed or plugin prompt
+// shows the stored lines, once; a notification turn keeps them for the next one. A Stop that did
+// run has already marked both, so nothing doubles.
 const remindFinishedTurn = async ($: EngineInterface, assertAdmitted: () => void): Promise<void> => {
   const a = await read($, activity)
   const steps = (await read($, ledger)).steps
   await update($, turn, current => {
     assertAdmitted()
-    const id = current.currentId
+    const id = finishedTurnId(current, a)
     const fresh = current.freshness
     // A new turn.start replaces the turn first, so a stale activity read cannot match it.
-    if (typeof id !== 'string' || fresh?.turnId !== id || a.isWorking || a.mainTurnId !== id) return current
+    if (id === undefined || fresh?.turnId !== id) return current
     let next = current
     const ids = fresh.completed.map(row => row.id)
     if (current.resultNudgedTurnId !== id && missingResultText(steps, ids) !== undefined) {
@@ -1427,9 +1433,8 @@ type StopInventory = { turnId: string; launchSeq: number; taskIds: Set<string> }
 
 // The inventory counts only for the turn that just finished, in this session, written whole.
 const readStopInventory = async ($: EngineInterface, session: string): Promise<StopInventory | undefined> => {
-  const t = await read($, turn)
-  const a = await read($, activity)
-  if (typeof t.currentId !== 'string' || a.isWorking || a.mainTurnId !== t.currentId) return undefined
+  const turnId = finishedTurnId(await read($, turn), await read($, activity))
+  if (turnId === undefined) return undefined
   const config = await configDir($)
   if (!config?.startsWith('/')) return undefined
   let row: { owner?: unknown; session_id?: unknown; turn_id?: unknown; launch_seq?: unknown; task_ids?: unknown; complete?: unknown }
@@ -1439,11 +1444,11 @@ const readStopInventory = async ($: EngineInterface, session: string): Promise<S
     return undefined // missing or unreadable: nothing is known, so nothing leaves the banner
   }
   if (row === null || typeof row !== 'object' || row.owner !== STOP_INVENTORY_OWNER || row.complete !== true) return undefined
-  if (row.session_id !== session || row.turn_id !== t.currentId) return undefined
+  if (row.session_id !== session || row.turn_id !== turnId) return undefined
   const seq = row.launch_seq
   if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) return undefined
   if (!Array.isArray(row.task_ids) || !row.task_ids.every(id => typeof id === 'string')) return undefined
-  return { turnId: t.currentId, launchSeq: seq, taskIds: new Set(row.task_ids as string[]) }
+  return { turnId, launchSeq: seq, taskIds: new Set(row.task_ids as string[]) }
 }
 
 // Ids absent from the inventory that were launched at or before its snapshot. A later launch,
@@ -3754,16 +3759,6 @@ export const register: Register = on => {
         const done = [...e.text.matchAll(new RegExp(TASK_ID.source, 'g'))].map(m => m[1] ?? '')
         if (done.length > 0) followUpLine = await finishTasks($, () => done, assertAdmitted, token)
       }
-      // Phase 2 D6: classic.Stop may not run on this host, so the command hook's inventory of the
-      // finished turn's live tasks retires the rest at the next main prompt. Ids launched later stay.
-      const origin = e.origin?.kind
-      if ((e as { agentId?: string }).agentId === undefined && typeof token?.owner === 'string' && (origin === 'composer' || origin === 'plugin' || origin === 'task-notification')) {
-        const live = await readStopInventory($, token.owner)
-        if (live !== undefined) {
-          const line = await finishTasks($, a => inventoryDrops(a, live), assertAdmitted, token)
-          if (line !== undefined) followUpLine = followUpLine === undefined ? line : `${followUpLine} ${line}`
-        }
-      }
       assertAdmitted()
       const kept = await dropRewound($, String(e.text ?? ''))
       // A rewind check that ran after an owner change speaks for the new owner, not for this prompt.
@@ -3782,8 +3777,19 @@ export const register: Register = on => {
         assertAdmitted()
         if (isBuiltin) return next(e)
       }
+      // Phase 2 D6: classic.Stop may not run on this host, so the command hook's inventory of the
+      // finished turn's live tasks retires the rest at the next main prompt. Ids launched later stay.
+      // After the builtin return: a builtin command reaches no model, so it would lose the line.
+      const origin = e.origin?.kind
+      if ((e as { agentId?: string }).agentId === undefined && typeof token?.owner === 'string' && (origin === 'composer' || origin === 'plugin' || origin === 'task-notification')) {
+        const live = await readStopInventory($, token.owner)
+        if (live !== undefined) {
+          const line = await finishTasks($, a => inventoryDrops(a, live), assertAdmitted, token)
+          if (line !== undefined) followUpLine = followUpLine === undefined ? line : `${followUpLine} ${line}`
+        }
+      }
       const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
-      if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined) await remindFinishedTurn($, assertAdmitted)
+      if ((typed || fromPlugin || e.origin?.kind === 'task-notification') && (e as { agentId?: string }).agentId === undefined) await remindFinishedTurn($, assertAdmitted)
       const reminder = (await read($, turn)).stepReminder
       if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && reminder !== undefined) {
         lines.push(reminder)

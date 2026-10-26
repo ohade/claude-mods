@@ -377,15 +377,15 @@ def main():
     except (ValueError, TypeError) as error:
         print(f"track: Stop snapshot unavailable ({type(error).__name__})", file=sys.stderr)
         answer = {}
+    # The decision goes out first: the inventory write never delays, changes or loses it.
+    print(json.dumps(answer, ensure_ascii=False), flush=True)
     if sys.argv[1:] == []:
-        # The inventory never changes the decision or the exit code.
         try:
             record = inventory_record(payload, gate)
             if record is not None:
                 write_inventory(record)
         except (OSError, ValueError) as error:
             print(f"track: background task inventory not written ({type(error).__name__})", file=sys.stderr)
-    print(json.dumps(answer, ensure_ascii=False))
 
 
 if __name__ == "__main__":
