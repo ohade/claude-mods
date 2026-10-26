@@ -27,7 +27,7 @@ const PANE_ROWS = 16
 // Module memory, not $.state: a reload only resets the debounce.
 const REWIND_CHECK_DELAY_MS = 1000
 const REWIND_CHECK_GAP_MS = 3000
-const rewindCheck = { isScheduled: false, lastAt: -Infinity, running: undefined as Promise<boolean> | undefined }
+const rewindCheck = { isScheduled: false, lastAt: -Infinity, running: undefined as { hasPrompt: boolean; run: Promise<boolean> } | undefined }
 // The built-in diff panel's rule, less its git condition (the tracker does not need git, and a
 // session often starts outside a repository): it opens by itself only from this width, in the
 // fullscreen layout, and never after the person closed it by hand.
@@ -838,7 +838,6 @@ const judgedResultStep = (s: Step, since: number): boolean => s.resultRequestId 
 const hasJudgedRows = (l: Ledger): boolean =>
   l.questions.some(q => judgedQuestion(q, l.compactedAt ?? 0)) || l.steps.some(s => judgedResultStep(s, l.compactedAt ?? 0))
 
-
 // /rewind raises no event, so detect it from the transcript: a question whose
 // track_question call is gone was asked in a rewound turn, and an answer whose
 // mark_answered call or complete marked text is gone was rewound. Only work since
@@ -848,7 +847,6 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
   const generation = baselineGeneration
   const l = await read($, ledger)
   const since = l.compactedAt ?? 0
-  const answerSource = answerSourceOf
   const judgedResult = (s: Step) => judgedResultStep(s, since)
   const missingResult = (s: Step) => judgedResult(s) && !present.has(s.resultRequestId!)
   const hasJudged = hasJudgedRows(l)
@@ -891,7 +889,7 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
   }
   if (!l.questions.some(q =>
     (q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)) ||
-    (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerSource(q)!))
+    (answerSourceOf(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerSourceOf(q)!))
   ) && !l.steps.some(missingResult)) return true
   // Capture the pre-rewind rows in memory. The save path verifies this
   // snapshot against the durable body under its locks before adopting it.
@@ -907,8 +905,8 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
       // answer, or compaction wins over the older transcript observation.
       if (old === undefined) return [q]
       if (q.trackedBy === old.trackedBy && q.at === old.at && q.trackedBy !== undefined && q.at > compactedAt && !present.has(q.trackedBy)) return []
-      const source = answerSource(q)
-      if (source === undefined || source !== answerSource(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(source)) return [q]
+      const source = answerSourceOf(q)
+      if (source === undefined || source !== answerSourceOf(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(source)) return [q]
       const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerText: _x, answerTextHash: _hash, ...rest } = q
 
       return [{ ...rest, status: 'open' as const }]
@@ -945,6 +943,8 @@ const recordTranscriptBaseline = async ($: EngineInterface): Promise<void> => {
     const messages = await $.session.messages()
     if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP || await $.session.id() !== session ||
       generation !== baselineGeneration) return
+    // A prompt may have established the baseline during either awaited read.
+    if (transcriptBaseline?.session === session) return
     transcriptBaseline = { session, prints: printsOf(messages) }
   } catch (error) {
     // No baseline: the next read behaves as it did before baselines existed.
@@ -953,11 +953,18 @@ const recordTranscriptBaseline = async ($: EngineInterface): Promise<void> => {
 }
 
 const dropRewound = async ($: EngineInterface, submitted?: string): Promise<boolean> => {
-  if (rewindCheck.running !== undefined) return rewindCheck.running
+  const running = rewindCheck.running
+  if (running !== undefined) {
+    if (submitted === undefined || running.hasPrompt) return running.run
+    // A viewport read lacks the prompt text needed to judge a rewind plus prompt.
+    if (!(await running.run)) return false
+    return dropRewound($, submitted)
+  }
   const run = observeRewind($, submitted)
-  rewindCheck.running = run
+  const flight = { hasPrompt: submitted !== undefined, run }
+  rewindCheck.running = flight
   try { return await run }
-  finally { if (rewindCheck.running === run) rewindCheck.running = undefined }
+  finally { if (rewindCheck.running === flight) rewindCheck.running = undefined }
 }
 
 // ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
@@ -1263,6 +1270,7 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
 type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 const GATE_SNAPSHOT_BYTES = 16 * 1024
+const MINIMAL_INPUT_BYTES = 100
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
 
@@ -1277,6 +1285,16 @@ const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidat
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
   return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
+}
+
+const minimalInputReason = (input: PendingInput): string => {
+  // 2026-10-26: internal input ids are not shown to the model. Keep an excerpt,
+  // bounded by serialized bytes as well as points so Unicode stays in the reserve.
+  for (let width = 20; width >= 1; width--) {
+    const reason = `track: "${truncate(input.excerpt, width)}" needs ${TRACK_QUESTION}.`
+    if (utf8Bytes({ id: input.id, reason }) < MINIMAL_INPUT_BYTES) return reason
+  }
+  throw new Error('bounded Stop input reason exceeded')
 }
 
 const fitInputReason = (snapshot: GateSnapshot, index: number, reason: string): boolean => {
@@ -1304,7 +1322,7 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
       // The helper's shared claim owns the hold; a module-only held mark must
       // not hide an input from the command hook when classic.Stop is skipped.
       // Reserve every id before budgeting freshness; longer repair wording is optional.
-      inputs: inputs.map(i => ({ id: i.id, reason: `track: Register input ${i.id} with ${TRACK_QUESTION}.` })),
+      inputs: inputs.map(i => ({ id: i.id, reason: minimalInputReason(i) })),
       inputs_complete: inputs.length === uncovered.length,
       candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [] }
     while (utf8Bytes(snapshot) > GATE_SNAPSHOT_BYTES && snapshot.candidates.length > 0) {
@@ -1376,7 +1394,7 @@ const configDir = async ($: EngineInterface): Promise<string | undefined> => {
 }
 
 const prepareStopClaim = async ($: EngineInterface) => {
-  const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
+  const root = $.plugin.root
   const config = await configDir($)
   if (!root?.startsWith('/') || !config?.startsWith('/')) return undefined
   return async (payload: { session_id?: string }, snapshot: StopClaimSnapshot) => {
@@ -1443,7 +1461,7 @@ const claimUncoveredInputs = async ($: EngineInterface, payload: { session_id?: 
         (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) throw new Error('Stop snapshot identity unavailable')
     if (claim === undefined) throw new Error('shared hold claim configuration unavailable')
     const ids = new Set(inputs.map(i => i.id))
-    const result = await claim(payload, { ...snapshot, candidates: [], inputs: snapshot.inputs.filter(i => ids.has(i.id)) })
+    const result = await claim(payload, { ...snapshot, candidates: [], inputs_complete: true, inputs: snapshot.inputs.filter(i => ids.has(i.id)) })
     const diagnostic = result.stderr.trim()
     if (diagnostic !== '') $.ui.log(diagnostic, { to: 'debug' })
     const receipt = JSON.parse(result.stdout) as { decision?: unknown; reason?: unknown } | null
