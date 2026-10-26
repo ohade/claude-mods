@@ -814,26 +814,65 @@ const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', k
 // absent though they are not, so the rewind check does nothing.
 const MESSAGES_CAP = 4096
 
+// The transcript last read for one session, as one cheap fingerprint per message. It lives only
+// in memory. A later read that starts with it grew; one that it starts with was rewound. A read
+// that is neither (allowing the prompt being sent after a rewound prefix) was compacted, even
+// when the host sent no compaction callback.
+let transcriptBaseline: { session: string; prints: string[] } | undefined
+const messagePrint = (role: string, text: string, ids: string[]): string => {
+  const s = `${role}\u0000${text}\u0000${ids.join(',')}`
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193)
+  return `${role}:${s.length}:${(h >>> 0).toString(16)}`
+}
+const startsWith = (whole: readonly string[], part: readonly string[]): boolean =>
+  part.length <= whole.length && part.every((p, i) => p === whole[i])
+const printsOf = (messages: readonly { role: string; text: string; toolUses: readonly { tool_use_id: string }[] }[]): string[] =>
+  messages.map(m => messagePrint(m.role, m.text, m.toolUses.map(u => u.tool_use_id)))
+// session.compact bumps this, so a read that started before the callback never writes after it.
+let baselineGeneration = 0
+
+// session.messages exposes no response UUID. Bind a marker answer to its
+// stable block id and full words; a different answer with that id is absent.
+const answerSourceOf = (q: Question) => {
+  const block = q.answeredBy === undefined ? /:A([1-9]\d*)$/.exec(q.answerKey ?? '') : null
+  return block !== null && q.answerTextHash !== undefined
+    ? `marker:A${block[1]}:${q.answerTextHash}`
+    : q.answeredBy ?? q.answerRequestId
+}
+const judgedQuestion = (q: Question, since: number): boolean =>
+  (q.trackedBy !== undefined && q.at > since) || (answerSourceOf(q) !== undefined && (q.answeredAt ?? 0) > since)
+const judgedResultStep = (s: Step, since: number): boolean => s.resultRequestId !== undefined && (s.resultAt ?? 0) > since
+// Rows the rewind check judges: transcript provenance newer than the last compaction.
+const hasJudgedRows = (l: Ledger): boolean =>
+  l.questions.some(q => judgedQuestion(q, l.compactedAt ?? 0)) || l.steps.some(s => judgedResultStep(s, l.compactedAt ?? 0))
+
+// What a read means against the baseline: judge it for rewound rows (no baseline, growth, a rewound
+// prefix, or that prefix plus exactly the prompt being sent), decide nothing (no prompt text to
+// tell a rewind plus its prompt apart), or a compaction that sent no callback.
+const classifyTranscriptChange = (base: readonly string[] | undefined, prints: readonly string[],
+  last: { role: string; text: string } | undefined, submitted: string | undefined): 'judge' | 'undecided' | 'compacted' => {
+  if (base === undefined || startsWith(prints, base) || startsWith(base, prints)) return 'judge'
+  if (submitted !== undefined && last?.role === 'user' && last.text.trim() === submitted.trim() &&
+    startsWith(base, prints.slice(0, -1))) return 'judge'
+  return submitted === undefined ? 'undecided' : 'compacted'
+}
+
 // /rewind raises no event, so detect it from the transcript: a question whose
 // track_question call is gone was asked in a rewound turn, and an answer whose
 // mark_answered call or complete marked text is gone was rewound. Only work since
 // the last compaction is judged, since compaction removes old messages as well.
-const observeRewind = async ($: EngineInterface): Promise<boolean> => {
+// `submitted` is the prompt being sent, which a rewind may already show after its prefix.
+const observeRewind = async ($: EngineInterface, submitted?: string): Promise<boolean> => {
+  const generation = baselineGeneration
   const l = await read($, ledger)
   const since = l.compactedAt ?? 0
-  // session.messages exposes no response UUID. Bind a marker answer to its
-  // stable block id and full words; a different answer with that id is absent.
-  const answerSource = (q: Question) => {
-    const block = q.answeredBy === undefined ? /:A([1-9]\d*)$/.exec(q.answerKey ?? '') : null
-    return block !== null && q.answerTextHash !== undefined
-      ? `marker:A${block[1]}:${q.answerTextHash}`
-      : q.answeredBy ?? q.answerRequestId
-  }
-  const judged = (q: Question) =>
-    (q.trackedBy !== undefined && q.at > since) || (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since)
-  const judgedResult = (s: Step) => s.resultRequestId !== undefined && (s.resultAt ?? 0) > since
+  const answerSource = answerSourceOf
+  const judgedResult = (s: Step) => judgedResultStep(s, since)
   const missingResult = (s: Step) => judgedResult(s) && !present.has(s.resultRequestId!)
-  const hasJudged = l.questions.some(judged) || l.steps.some(judgedResult)
+  const hasJudged = hasJudgedRows(l)
+  // With no judged row, a baseline would go stale while nothing refreshes it; drop it.
+  if (!hasJudged) transcriptBaseline = undefined
   const pending = (await read($, durability)).rewindSession
   // Empty registers and rows without transcript provenance need no session
   // lookup or transcript read before delivering their generic instruction.
@@ -856,7 +895,19 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   const present = new Set(messages.flatMap(m => m.toolUses.map(u => u.tool_use_id)))
   const blocks = messages.flatMap(m => m.role === 'assistant' ? answerBlocks(m.text) : [])
   for (const key of await Promise.all(blocks.map(async block => `marker:A${block.id}:${await checksumOf(block.text)}`))) present.add(key)
-  if (await $.session.id() !== session) return true
+  if (await $.session.id() !== session || generation !== baselineGeneration) return true
+  const prints = printsOf(messages)
+  const change = classifyTranscriptChange(transcriptBaseline?.session === session ? transcriptBaseline.prints : undefined,
+    prints, messages.at(-1), submitted)
+  // Undecided keeps the baseline for the next prompt's read.
+  if (change === 'undecided') return true
+  transcriptBaseline = { session, prints }
+  if (change === 'compacted') {
+    // Keep every row and judge only later work, as the session.compact handler does.
+    // Without an earlier read this cannot be told from a rewind.
+    await update<Ledger>($, ledger, cur => ({ ...cur, compactedAt: Date.now() }))
+    return true
+  }
   if (!l.questions.some(q =>
     (q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)) ||
     (answerSource(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerSource(q)!))
@@ -898,9 +949,31 @@ const observeRewind = async ($: EngineInterface): Promise<boolean> => {
   return true
 }
 
-const dropRewound = async ($: EngineInterface): Promise<boolean> => {
+// A main-loop turn end records the transcript only when the session has no baseline yet, so the
+// next prompt's read can compare even when it is the first read since the rows were saved. It never
+// judges a read: only a prompt's read classifies a change, against the baseline it last refreshed.
+const recordTranscriptBaseline = async ($: EngineInterface): Promise<void> => {
+  const generation = baselineGeneration
+  if (!hasJudgedRows(await read($, ledger))) {
+    transcriptBaseline = undefined
+    return
+  }
+  try {
+    const session = await $.session.id()
+    if (transcriptBaseline?.session === session) return
+    const messages = await $.session.messages()
+    if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP || await $.session.id() !== session ||
+      generation !== baselineGeneration) return
+    transcriptBaseline = { session, prints: printsOf(messages) }
+  } catch (error) {
+    // No baseline: the next read behaves as it did before baselines existed.
+    $.ui.log(`track: transcript baseline not recorded: ${reason(error)}`, { to: 'debug' })
+  }
+}
+
+const dropRewound = async ($: EngineInterface, submitted?: string): Promise<boolean> => {
   if (rewindCheck.running !== undefined) return rewindCheck.running
-  const run = observeRewind($)
+  const run = observeRewind($, submitted)
   rewindCheck.running = run
   try { return await run }
   finally { if (rewindCheck.running === run) rewindCheck.running = undefined }
@@ -3156,7 +3229,7 @@ export const register: Register = on => {
           }
         }
       }
-      if (!(await dropRewound($))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
+      if (!(await dropRewound($, String(e.text ?? '')))) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
       const typed = e.origin?.kind === 'composer'
       // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
       const fromPlugin = e.origin?.kind === 'plugin'
@@ -3294,6 +3367,9 @@ export const register: Register = on => {
     const compacted = await next(e)
     if (e.agentId === undefined && !('skip' in compacted)) {
       await update<Ledger>($, ledger, l => ({ ...l, compactedAt: Date.now() }))
+      // The transcript before compaction is no baseline for the one after it.
+      transcriptBaseline = undefined
+      baselineGeneration++
     }
 
     return compacted
@@ -3323,6 +3399,7 @@ export const register: Register = on => {
         }) }))
         await dropFinishedOwners($)
       }
+      await recordTranscriptBaseline($)
       await saveLedger($)
     }
 
