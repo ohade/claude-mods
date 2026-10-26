@@ -19,6 +19,7 @@ import time
 KINDS = ("premature_completion", "stale_in_progress", "missing_waiting_request", "untracked_edit")
 HOLD_OWNER = "track-stop-hold-v1"
 TTL_SECONDS = 7 * 24 * 60 * 60
+INPUT_KIND = "uncovered_input"
 
 
 def unavailable(what):
@@ -75,6 +76,9 @@ def claim_once(session, turn, kind):
     if directory.is_symlink():
         raise ValueError("claim directory")
     directory.chmod(0o700)
+    record = {"owner": HOLD_OWNER, "session_id": session, "turn_id": turn, "kind": kind}
+    if kind == INPUT_KIND:
+        return publish_input_claim(directory, claim_name(session, turn, kind), record)
     expire_holds(directory)
     path = directory / claim_name(session, turn, kind)
     try:
@@ -83,9 +87,56 @@ def claim_once(session, turn, kind):
         return False
     with os.fdopen(fd, "w") as handle:
         os.fchmod(handle.fileno(), 0o600)
-        json.dump({"owner": HOLD_OWNER, "session_id": session, "turn_id": turn, "kind": kind}, handle)
+        json.dump(record, handle)
         handle.flush()
     return True
+
+
+def publish_input_claim(holds, name, record):
+    # TRACK-34 (2026-10-26): an input claim is permanent: spent once per
+    # (session, input id) across turns and reloads, never expired or regranted.
+    # Bound: one small file per held input, nothing else, in its own directory,
+    # which is one entry for the freshness scan in expire_holds. Only an
+    # authoritative session retirement may reclaim these files.
+    # Race-free by construction: the claim appears only through one link from a
+    # temp name unique to this process. The only unlink is that temp, which no
+    # peer can own, so no identity check exists and no peer file is deleted.
+    directory = holds / "inputs"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError("input claim directory")
+    directory.chmod(0o700)
+    temp = directory / f"{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+            data = json.dumps(record).encode("utf-8")
+            if os.write(fd, data) != len(data):
+                raise OSError("short input claim write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.link(temp, directory / name)
+        except FileExistsError:
+            discard_temp(temp)
+            return False  # a peer's claim is already published: the input is held
+    except BaseException:
+        # Nothing was published: the input stays available for a retry.
+        discard_temp(temp)
+        raise
+    # Published. A later failure is reported, never rolled back: a retry meets
+    # this claim at link, so treating it as not held would lose the hold.
+    discard_temp(temp)
+    return True
+
+
+def discard_temp(temp):
+    try:
+        os.unlink(temp)
+    except OSError:
+        unavailable("input claim temp cleanup")
 
 
 def freshness_reason(candidate, payload, attributed):
@@ -163,6 +214,37 @@ def freshness_decision(payload, snapshot):
     return {}
 
 
+def uncovered_decision(snapshot):
+    # TRACK-34 (2026-10-25): classic.Stop can be skipped by the host. The
+    # module supplies its repair wording; this helper owns only shared claims.
+    # Input ids survive turns and mod reloads in the pending atom, unlike turn ids.
+    rows = snapshot.get("inputs")
+    if rows is None:
+        return {}  # Older v2 publishers did not include pending inputs.
+    if not isinstance(rows, list) or len(rows) > 50 or snapshot.get("truncated") is True:
+        unavailable("bounded pending input snapshot")
+        return {}
+    session, turn = snapshot.get("session_id"), snapshot.get("turn_id")
+    if not isinstance(session, str) or not session.strip() or not isinstance(turn, str) or not turn.strip():
+        unavailable("pending input identity")
+        return {}
+    # Validate the complete list before spending any hold on partial evidence.
+    if not all(isinstance(row, dict) and type(row.get("id")) is int and row["id"] > 0
+               and isinstance(row.get("reason"), str) and row["reason"].strip() for row in rows):
+        unavailable("pending input repair receipt")
+        return {}
+    reasons = []
+    try:
+        for row in rows:
+            if claim_once(session, f'input:{row["id"]}', INPUT_KIND):
+                reasons.append(row["reason"])
+    except (OSError, ValueError):
+        unavailable("shared pending input claim")
+        # Earlier claims already spent their holds: return those repair messages.
+        # The failed and remaining inputs were not published and stay retryable.
+    return {"decision": "block", "reason": " ".join(reasons)} if reasons else {}
+
+
 def decision(payload, snapshot, plugin=False):
     if not isinstance(payload, dict) or not isinstance(snapshot, dict):
         return {}
@@ -172,6 +254,10 @@ def decision(payload, snapshot, plugin=False):
         return {}
     if not isinstance(snapshot.get("turn_id"), str):
         return {}
+    if snapshot.get("v") == 2:
+        uncovered = uncovered_decision(snapshot)
+        if uncovered:
+            return uncovered
     rows = snapshot.get("open")
     # Ohad, 2026-10-18: a Stop after a block (stop_hook_active) still checks the freshness kinds,
     # each once per turn through the shared claim. The open-question gate keeps its bypass.
