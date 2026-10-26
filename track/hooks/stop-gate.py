@@ -223,7 +223,7 @@ def uncovered_decision(snapshot):
     rows = snapshot.get("inputs")
     if rows is None:
         return {}  # Older v2 publishers did not include pending inputs.
-    if not isinstance(rows, list) or len(rows) > 50 or snapshot.get("truncated") is True:
+    if not isinstance(rows, list) or len(rows) > 50 or snapshot.get("inputs_complete") is not True:
         unavailable("bounded pending input snapshot")
         return {}
     session, turn = snapshot.get("session_id"), snapshot.get("turn_id")

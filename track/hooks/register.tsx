@@ -1260,7 +1260,9 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 
 // `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
 // any step, so the helper reports unknown ownership instead of a stale step.
-type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
+type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
+type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
+const GATE_SNAPSHOT_BYTES = 16 * 1024
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
 
@@ -1277,6 +1279,15 @@ const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidat
   return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
 }
 
+const fitInputReason = (snapshot: GateSnapshot, index: number, reason: string): boolean => {
+  const row = snapshot.inputs[index]!
+  const previous = row.reason
+  row.reason = reason
+  if (utf8Bytes(snapshot) <= GATE_SNAPSHOT_BYTES) return true
+  row.reason = previous
+  return false
+}
+
 const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<GateSnapshot | undefined> => {
   const run = gateWrites.queue.then(async () => {
     assertOwner(token)
@@ -1286,22 +1297,29 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
     const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
     const a = await read($, activity)
     const p = await read($, pending)
+    const uncovered = p.inputs.filter(i => i.covered === undefined && needsQuestion(i)).sort((a, b) => a.id - b.id)
+    const inputs = uncovered.slice(0, MAX_INPUTS)
     const snapshot: GateSnapshot = { v: 2, session_id: await $.session.id(), turn_id: t.currentId,
       open: t.gatedTurnId === t.currentId ? [] : open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })),
       // The helper's shared claim owns the hold; a module-only held mark must
       // not hide an input from the command hook when classic.Stop is skipped.
-      inputs: p.inputs.filter(i => i.covered === undefined && needsQuestion(i)).sort((a, b) => a.id - b.id).slice(0, MAX_INPUTS)
-        .map(i => ({ id: i.id, reason: uncoveredBlock([i]) })),
+      // Reserve every id before budgeting freshness; longer repair wording is optional.
+      inputs: inputs.map(i => ({ id: i.id, reason: `track: Register input ${i.id} with ${TRACK_QUESTION}.` })),
+      inputs_complete: inputs.length === uncovered.length,
       candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [] }
-    while (utf8Bytes(snapshot) > 16 * 1024 && snapshot.candidates.length > 0) {
+    while (utf8Bytes(snapshot) > GATE_SNAPSHOT_BYTES && snapshot.candidates.length > 0) {
       snapshot.candidates.pop()
       snapshot.truncated = true
     }
-    while (utf8Bytes(snapshot) > 16 * 1024 && snapshot.inputs.length > 0) {
-      snapshot.inputs.pop()
-      snapshot.truncated = true
+    if (utf8Bytes(snapshot) > GATE_SNAPSHOT_BYTES) throw new Error('bounded Stop snapshot exceeded')
+    // Newest inputs get full wording first, then compact wording for the rest.
+    // Only candidate loss sets truncated; input completeness is a separate fact.
+    const compact: number[] = []
+    for (let index = inputs.length - 1; index >= 0; index--) {
+      if (!fitInputReason(snapshot, index, uncoveredBlock([inputs[index]!]))) compact.push(index)
     }
-    if (utf8Bytes(snapshot) > 16 * 1024) throw new Error('bounded Stop snapshot exceeded')
+    for (const index of compact) fitInputReason(snapshot, index,
+      `track: Register "${truncate(inputs[index]!.excerpt, 40)}" with ${TRACK_QUESTION}, source_text = its first line.`)
     assertOwner(token, l)
     if (token?.owner !== undefined && snapshot.session_id !== token.owner) throw new OwnerChanged()
     await $.env.set('TRACK_GATE_SNAPSHOT', JSON.stringify(snapshot))
@@ -1357,6 +1375,20 @@ const configDir = async ($: EngineInterface): Promise<string | undefined> => {
   return (await $.env.get('CLAUDE_CONFIG_DIR')) || (home?.startsWith('/') ? `${home}/.claude` : undefined)
 }
 
+const prepareStopClaim = async ($: EngineInterface) => {
+  const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
+  const config = await configDir($)
+  if (!root?.startsWith('/') || !config?.startsWith('/')) return undefined
+  return async (payload: { session_id?: string }, snapshot: StopClaimSnapshot) => {
+    const result = await $.process.run(['python3', `${root}/hooks/stop-gate.py`, '--claim'], {
+      stdin: JSON.stringify({ ...payload, session_id: snapshot.session_id }), timeoutMs: 2000,
+      env: { CLAUDE_CONFIG_DIR: config, TRACK_GATE_SNAPSHOT: JSON.stringify(snapshot) },
+    })
+    if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) throw new Error(`helper exit ${result.exitCode}`)
+    return result
+  }
+}
+
 const stepStop = async ($: EngineInterface, payload: { session_id?: string; background_tasks?: readonly { id: string; type: string }[] }): Promise<string | undefined> => {
   const snapshot = await publishGate($)
   if (snapshot === undefined || !snapshot.session_id || !snapshot.turn_id || (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) {
@@ -1367,9 +1399,8 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
   const fresh = t.freshness?.turnId === snapshot.turn_id ? t.freshness : undefined
   if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) await freshnessNudge($, 'bash', BASH_NUDGE, true)
   if (snapshot.candidates.length === 0) return undefined
-  const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
-  const config = await configDir($)
-  if (!root?.startsWith('/') || !config?.startsWith('/')) {
+  const claim = await prepareStopClaim($)
+  if (claim === undefined) {
     await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.')
     return undefined
   }
@@ -1378,12 +1409,8 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
     if (candidates.length === 0 || snapshot.held.includes(kind)) continue
     try {
       // An input hold belongs to the uncovered gate, never a freshness run.
-      const { inputs: _inputs, ...freshnessSnapshot } = snapshot
-      const result = await $.process.run(['python3', `${root}/hooks/stop-gate.py`, '--claim'], {
-        stdin: JSON.stringify({ ...payload, session_id: snapshot.session_id }), timeoutMs: 2000,
-        env: { CLAUDE_CONFIG_DIR: config, TRACK_GATE_SNAPSHOT: JSON.stringify({ ...freshnessSnapshot, candidates }) },
-      })
-      if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) throw new Error(`helper exit ${result.exitCode}`)
+      const { inputs: _inputs, inputs_complete: _complete, ...freshnessSnapshot } = snapshot
+      const result = await claim(payload, { ...freshnessSnapshot, candidates })
       if (result.stderr.trim() !== '') {
         $.ui.log(result.stderr.trim(), { to: 'debug' })
         await freshnessNudge($, `facts:${kind}`, result.stderr.trim())
@@ -1411,18 +1438,12 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
 const claimUncoveredInputs = async ($: EngineInterface, payload: { session_id?: string }, inputs: PendingInput[], currentId: string): Promise<{ held: boolean; block?: string }> => {
   try {
     const snapshot = await publishGate($)
-    const root = await $.env.get('CLAUDE_PLUGIN_ROOT')
-    const config = await configDir($)
+    const claim = await prepareStopClaim($)
     if (snapshot === undefined || snapshot.turn_id !== currentId || !snapshot.session_id ||
         (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) throw new Error('Stop snapshot identity unavailable')
-    if (!root?.startsWith('/') || !config?.startsWith('/')) throw new Error('shared hold claim configuration unavailable')
+    if (claim === undefined) throw new Error('shared hold claim configuration unavailable')
     const ids = new Set(inputs.map(i => i.id))
-    const result = await $.process.run(['python3', `${root}/hooks/stop-gate.py`, '--claim'], {
-      stdin: JSON.stringify({ ...payload, session_id: snapshot.session_id }), timeoutMs: 2000,
-      env: { CLAUDE_CONFIG_DIR: config, TRACK_GATE_SNAPSHOT: JSON.stringify({ ...snapshot, candidates: [],
-        inputs: snapshot.inputs.filter(i => ids.has(i.id)) }) },
-    })
-    if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) throw new Error(`helper exit ${result.exitCode}`)
+    const result = await claim(payload, { ...snapshot, candidates: [], inputs: snapshot.inputs.filter(i => ids.has(i.id)) })
     const diagnostic = result.stderr.trim()
     if (diagnostic !== '') $.ui.log(diagnostic, { to: 'debug' })
     const receipt = JSON.parse(result.stdout) as { decision?: unknown; reason?: unknown } | null
@@ -2918,7 +2939,10 @@ const classifyInput = async ($: EngineInterface, id: number, text: string, epoch
       return { ...i, label }
     }) }
     : p))
-  if (epoch === ownership.epoch) await publishGate($, { owner: undefined, epoch })
+  if (epoch === ownership.epoch) {
+    try { await publishGate($, { owner: await $.session.id(), epoch }) }
+    catch (error) { $.ui.log(`track: Stop snapshot unavailable: ${reason(error)}`, { to: 'debug' }) }
+  }
 }
 
 // Whether the drift status shows: while it does, each main turn's end checks
