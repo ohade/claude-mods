@@ -1,6 +1,6 @@
 // FIXTURE: deferred phase-1 baseline races and the SDK's missing-observation limit.
 import { expect, mock, test } from 'claude-code/testing'
-import type { EngineInterface, PluginState, SessionMessage } from 'claude-code'
+import type { PluginState, SessionMessage } from 'claude-code'
 import type { Ledger } from '../types'
 import type { Engine, On } from './kit'
 import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore, trackPrompt } from './kit'
@@ -41,13 +41,13 @@ const prepare = (on: On) => {
   const durability = atomStore<PluginState['track']['durability']>(on, 'durability', { isUnsaved: false, reason: '' })
   const pool = blobPool(on)
   const store = pluginStore(on, { [`s:${SESSION}`]: { v: 1, session_id: SESSION, savedAt: 1, ledger: initial } })
-  const reads = { messages: OLD, reply: undefined as ((engine: EngineInterface) => Promise<SessionMessage[]>) | undefined }
+  const reads = { messages: OLD, compactions: 0, reply: undefined as (() => Promise<SessionMessage[]>) | undefined }
   on('session.id', () => ({ value: SESSION }))
   on('session.usage', () => ({ value: { startedAt: 1, context: { window: 200000 }, rateLimits: [] } }))
-  on('session.messages', async $ => ({ value: reads.reply === undefined ? reads.messages : await reads.reply($) }))
+  on('session.messages', async () => ({ value: reads.reply === undefined ? reads.messages : await reads.reply() }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
-  on('session.compact', () => ({ messages: [SUMMARY] }))
+  on('session.compact', () => { reads.compactions++; return { messages: [SUMMARY] } })
   on('prompt.submit', (_, e) => ({ text: e.text, context: e.context }))
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: {} }))
@@ -56,7 +56,7 @@ const prepare = (on: On) => {
   const saved = async () => (await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger }).ledger
   return { clock, memory, durability, reads, saved }
 }
-const compact = ($: EngineInterface) => $.session.compact({ trigger: 'manual', messages: [SUMMARY] } as never)
+const compact = ($: Engine) => $.session.compact({ trigger: 'manual', messages: [SUMMARY] } as never)
 const questionIds = async (fixture: ReturnType<typeof prepare>) =>
   [fixture.memory.value, await fixture.saved()].map(value => value.questions.map(row => row.id))
 
@@ -124,26 +124,48 @@ test('B5 coalescing: a prompt still judges a rewind after waiting for a viewport
 test('B5 generation observe: a compact callback during a read prevents a stale rewind receipt', async ($, on) => {
   const fixture = prepare(on)
   await finish($)
-  let fired = false
-  fixture.reads.reply = async engine => {
-    if (!fired) { fired = true; await compact(engine) }
+  const reading = latch()
+  fixture.reads.reply = async () => {
+    reading.enter()
+    await reading.released
     return []
   }
-  await trackPrompt($, 'Continue after the compact callback')
-  expect(fired).toBe(true)
-  expect(fixture.durability.value.rewindBaseline).toBeUndefined()
-  expect(fixture.memory.value.questions.map(row => row.id)).toEqual([1])
+  const prompt = trackPrompt($, 'Continue after the compact callback')
+  try {
+    await fixtureWait(reading.entered, 'observation before compact callback')
+    await compact($)
+    expect(fixture.reads.compactions).toBe(1)
+    expect(fixture.memory.value.compactedAt).toBeDefined()
+    reading.release()
+    await fixtureWait(prompt, 'observation after compact callback')
+    expect(fixture.durability.value.rewindBaseline).toBeUndefined()
+    expect(fixture.memory.value.questions.map(row => row.id)).toEqual([1])
+  } finally {
+    reading.release()
+    await fixtureWait(prompt, 'observation compact cleanup')
+  }
 })
 
 test('B5 generation turn end: a compact callback prevents a pre-compact baseline from masking the next rewind', async ($, on) => {
   const fixture = prepare(on)
-  let fired = false
-  fixture.reads.reply = async engine => {
-    if (!fired) { fired = true; await compact(engine) }
+  const reading = latch()
+  fixture.reads.reply = async () => {
+    reading.enter()
+    await reading.released
     return OLD
   }
-  await finish($)
-  expect(fired).toBe(true)
+  const ending = finish($)
+  try {
+    await fixtureWait(reading.entered, 'turn-end read before compact callback')
+    await compact($)
+    expect(fixture.reads.compactions).toBe(1)
+    expect(fixture.memory.value.compactedAt).toBeDefined()
+    reading.release()
+    await fixtureWait(ending, 'turn-end read after compact callback')
+  } finally {
+    reading.release()
+    await fixtureWait(ending, 'turn-end compact cleanup')
+  }
   await fixture.clock.advance(1)
   fixture.memory.value = { ...fixture.memory.value, nextQuestionId: 3, questions: [...fixture.memory.value.questions,
     { id: 2, head: 'Question after compaction', at: Date.now(), turnId: 'after', status: 'open', trackedBy: 'after-question-call' }] }
