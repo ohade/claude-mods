@@ -2274,13 +2274,13 @@ const acknowledgeHistorySave = async ($: EngineInterface, id: string, memory: Le
 
 // TRACK-39 A2: after a successful save, at most once an hour per module and
 // with no write grant open, history.py moves roots idle for seven days to its
-// trash. The own and pending sessions stay protected; a failure is only logged.
-const collectHistory = async ($: EngineInterface, store: string, id: string): Promise<void> => {
+// trash. The own session and the session whose save was pending before this one
+// stay protected (this save replaces that record); a failure is only logged.
+const collectHistory = async ($: EngineInterface, store: string, id: string, pendingSession: string | undefined): Promise<void> => {
   const now = await $.clock.now()
   if (historyCollect.lastAt !== undefined && now - historyCollect.lastAt < HISTORY_COLLECT_INTERVAL_MS) return
   historyCollect.lastAt = now
-  const pending = await read($, historyPending)
-  const protectedSessions = pending === null || pending.session_id === id ? [id] : [id, pending.session_id]
+  const protectedSessions = pendingSession === undefined || pendingSession === id ? [id] : [id, pendingSession]
   const collected = await runHistory($, 'collect', { v: 3, op: 'collect', store, protected: protectedSessions, dry_run: false, limit: 50 })
   if (collected.kind !== 'ok') $.ui.log(`track: history collect skipped: ${collected.kind === 'refused' ? collected.reason : collected.cause}`, { to: 'debug' })
 }
@@ -2289,6 +2289,7 @@ const collectHistory = async ($: EngineInterface, store: string, id: string): Pr
 // throws: like the legacy save it records the failure and returns false.
 const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['track']['durability'], token?: OwnerToken): Promise<'legacy' | boolean> => {
   try {
+    const pendingSession = (await read($, historyPending))?.session_id
     const store = await bindHistory($, id)
     const resolved = await resolveHistoryPending($, store, id)
     const view = await saveView($, store, id)
@@ -2306,7 +2307,7 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
       const saved = await commitHistorySave($, store, id, view, current)
       await acknowledgeHistorySave($, id, memory, current, saved, intended)
     }
-    await collectHistory($, store, id).catch(error => $.ui.log(`track: history collect skipped: ${reason(error)}`, { to: 'debug' }))
+    await collectHistory($, store, id, pendingSession).catch(error => $.ui.log(`track: history collect skipped: ${reason(error)}`, { to: 'debug' }))
     return true
   } catch (error) {
     if (error instanceof OwnerChanged) throw error
