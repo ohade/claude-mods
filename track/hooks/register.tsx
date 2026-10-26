@@ -2032,9 +2032,12 @@ type HistoryExpect = { absent: true } | { seq: number; root_sha256: string }
 type HistoryRoot = { seq: number; generation: string | null; checkpoint: Checkpoint | null }
 type HistoryView = { root?: HistoryRoot; rootHash?: string; durable?: Ledger }
 type HistoryRun = { kind: 'ok'; response: Record<string, unknown> } | { kind: 'refused'; reason: string } | { kind: 'pending'; cause: string }
+type HistoryOp = 'bind' | 'read' | 'save' | 'resolve' | 'collect'
 const HISTORY_REQUEST_LIMIT = 3 * 1024 * 1024
 const historyPending = atom({ plugin: 'track', key: 'historyPending' } as const, null as PluginState['track']['historyPending'])
 const historyBinding = { store: undefined as string | undefined }
+const HISTORY_COLLECT_INTERVAL_MS = 60 * 60 * 1000
+const historyCollect = { lastAt: undefined as number | undefined }
 // Only an explicit '1' runs a v3 path. An unreadable flag keeps a module that
 // has already bound v3 on v3, so a v3 session never saves to the legacy store.
 const historyEnabled = async ($: EngineInterface): Promise<boolean> => {
@@ -2062,7 +2065,7 @@ const isRootHash = (value: unknown): boolean => typeof value === 'string' && /^[
 // wrote; a resolve names the current root, or nulls both when there is none.
 // A mutation that exits 0 without them may still have committed, so it is
 // pending rather than ok. Bind and read keep their own checks.
-const okReceiptValid = (op: 'bind' | 'read' | 'save' | 'resolve', response: Record<string, unknown>): boolean => {
+const okReceiptValid = (op: HistoryOp, response: Record<string, unknown>): boolean => {
   if (op === 'save') return isRootSeq(response.seq) && isRootHash(response.root_sha256)
   if (op === 'resolve') {
     return 'seq' in response && 'root_sha256' in response &&
@@ -2075,7 +2078,7 @@ class HistoryOutcomePending extends Error {}
 
 // Only an exit-1 precommit refusal for this exact request is a known failure;
 // any other incomplete or unparseable answer leaves the outcome pending.
-const runHistory = async ($: EngineInterface, op: 'bind' | 'read' | 'save' | 'resolve', request: Record<string, unknown>): Promise<HistoryRun> => {
+const runHistory = async ($: EngineInterface, op: HistoryOp, request: Record<string, unknown>): Promise<HistoryRun> => {
   const config = await configDir($)
   if (!config?.startsWith('/')) return { kind: 'refused', reason: 'history configuration unavailable' }
   let result: Awaited<ReturnType<EngineInterface['process']['run']>>
@@ -2269,6 +2272,19 @@ const acknowledgeHistorySave = async ($: EngineInterface, id: string, memory: Le
       : { isUnsaved: false, reason: '', memorySession: id, baseline })
 }
 
+// TRACK-39 A2: after a successful save, at most once an hour per module and
+// with no write grant open, history.py moves roots idle for seven days to its
+// trash. The own and pending sessions stay protected; a failure is only logged.
+const collectHistory = async ($: EngineInterface, store: string, id: string): Promise<void> => {
+  const now = await $.clock.now()
+  if (historyCollect.lastAt !== undefined && now - historyCollect.lastAt < HISTORY_COLLECT_INTERVAL_MS) return
+  historyCollect.lastAt = now
+  const pending = await read($, historyPending)
+  const protectedSessions = pending === null || pending.session_id === id ? [id] : [id, pending.session_id]
+  const collected = await runHistory($, 'collect', { v: 3, op: 'collect', store, protected: protectedSessions, dry_run: false, limit: 50 })
+  if (collected.kind !== 'ok') $.ui.log(`track: history collect skipped: ${collected.kind === 'refused' ? collected.reason : collected.cause}`, { to: 'debug' })
+}
+
 // Returns 'legacy' for a session that still lives in the engine store. It never
 // throws: like the legacy save it records the failure and returns false.
 const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['track']['durability'], token?: OwnerToken): Promise<'legacy' | boolean> => {
@@ -2285,11 +2301,12 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
       // The lost receipt's save already holds these rows. Acknowledge it like a
       // fresh commit, pane preference included, without saving the root again.
       await acknowledgeHistorySave($, id, memory, durable, { checkpoint: root.checkpoint!, generation: root.generation! }, intended)
-      return true
+    } else {
+      const current = await mergeWithRoot($, id, view, memory, intended.baseline?.session_id === id ? intended.baseline : undefined)
+      const saved = await commitHistorySave($, store, id, view, current)
+      await acknowledgeHistorySave($, id, memory, current, saved, intended)
     }
-    const current = await mergeWithRoot($, id, view, memory, intended.baseline?.session_id === id ? intended.baseline : undefined)
-    const saved = await commitHistorySave($, store, id, view, current)
-    await acknowledgeHistorySave($, id, memory, current, saved, intended)
+    await collectHistory($, store, id).catch(error => $.ui.log(`track: history collect skipped: ${reason(error)}`, { to: 'debug' }))
     return true
   } catch (error) {
     if (error instanceof OwnerChanged) throw error
