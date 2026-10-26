@@ -160,6 +160,7 @@ class LinkedInputClaimTests(unittest.TestCase):
     def test_replacement_after_a_successful_claim_is_never_touched(self):  # pin (c)
         with StorageFault(self.claim, after_publication=True, replace_on_inspect=True) as fault:
             run(FIRST)
+        self.assertTrue(fault.replaced or self.claim.exists(), "the input was never claimed")
         if not fault.replaced:
             fault.replace()  # no code inspected the path in flight: replace it after the claim
         self.assertTrue(self.claim.exists(), "cleanup deleted the replacement at the claim path")
