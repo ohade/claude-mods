@@ -203,7 +203,8 @@ running turn. Doorbells and informational notifications alone need no row. Track
 - **Chat plans.** When the model starts work of more than one step (a skill such as `/retro`, a
   plan in chat, a multi-step task), it registers the steps with `track_steps` and ticks them with
   `mark_step`. Work that joins a running plan, such as review comments from Plannotator, is
-  inserted with `track_steps({ steps, after })` after the step it follows. While a managed plugin
+  inserted with `track_steps({ steps, after })` after the step it follows, or with `after: "last"`
+  after the last plan row, even a completed or cleared one. While a managed plugin
   bypasses the system-prompt rule, each typed prompt, skill command and plugin prompt carries the
   instruction beside it; built-in commands do not. After reload, only the exact current composed
   instruction suppresses this fallback. A legacy boolean delivery flag is insufficient.

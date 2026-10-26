@@ -3410,7 +3410,7 @@ export const register: Register = on => {
         type: 'object',
         properties: {
           steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each one line' },
-          after: { type: 'string', minLength: 1, description: 'Insert after this non-blank step id (plan:2, task:7, ...) and keep the plan; omit for replacement' },
+          after: { type: 'string', minLength: 1, description: 'Insert after this non-blank step id (plan:2, task:7, ...) and keep the plan, or "last" for after the last plan row; omit for replacement' },
           replace: { type: 'boolean', description: 'Explicitly replace unfinished plan rows instead of preserving them; use after for additions' },
           source_text: { type: 'string', description: 'Optional exact first line of the user message these steps carry out; it registers that request' },
         },
@@ -4371,21 +4371,33 @@ export const register: Register = on => {
       // New work joins a running plan: insert after that step, ids after the highest plan id. The
       // ids are taken inside the write, so two calls in flight never take the same ones.
       const l = await read($, ledger)
-      if (!l.steps.some(s => s.id === after)) {
+      if (after !== 'last' && !l.steps.some(s => s.id === after)) {
         return { result: `No step ${after}. Known steps: ${l.steps.map(s => s.id).join(', ') || 'none'}.` }
       }
       let added: Step[] = []
+      let anchor: string | undefined
       await updateOwnedLedger($, token, cur => {
+        // "last" is the last stored plan row, cleared or not, resolved here so a plan row another
+        // writer added before this write is the anchor. With no plan row it creates the plan.
+        const plans = cur.steps.filter(s => s.source === 'plan')
+        anchor = after === 'last' ? plans[plans.length - 1]?.id : after
+        if (anchor === undefined) {
+          added = titles.map((subject, k) => newPlanStep(`plan:${k + 1}`, subject))
+          return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps, ...added]) }
+        }
         const top = Math.max(0, ...cur.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
         added = titles.map((subject, k) => newPlanStep(`plan:${top + k + 1}`, subject))
-        const i = cur.steps.findIndex(s => s.id === after)
+        const i = cur.steps.findIndex(s => s.id === anchor)
         const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
 
         return { ...cur, session_id: cur.session_id ?? session, steps: capSteps(steps) }
       })
       await coverInput($, 'steps', { source_text: e.source_text }, token)
 
-      return { result: `Inserted after ${after}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+      if (anchor === undefined) {
+        return { result: `Tracking ${added.length} steps: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+      }
+      return { result: `Inserted after ${anchor}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
     const beforeReplacement = e.replace === true ? [] : openPlanSteps((await read($, ledger)).steps)
     if (beforeReplacement.length > 0) return refusePlanReplacement(beforeReplacement)
