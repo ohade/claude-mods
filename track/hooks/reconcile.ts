@@ -72,11 +72,43 @@ const mergeStepOrder = (base: Ledger['steps'] | undefined, durable: Ledger['step
   return current.map(id => byId.get(id)!)
 }
 
+export const questionHighWater = (ledger: Pick<Ledger, 'nextQuestionId' | 'questions' | 'withdrawn'>): number =>
+  Math.max(ledger.nextQuestionId, ...ledger.questions.map(row => row.id + 1), ...(ledger.withdrawn ?? []).map(row => row.id + 1))
+
+export const legacySourceId = (from: string, row: Pick<Ledger['questions'][number], 'id' | 'sourceId'>): string =>
+  row.sourceId ?? `${from}:Q${row.id}`
+
+// Phase 2 (2026-10-26): a stale source cache replaced an unrelated question.
+// Visible rows own their display numbers; historical cache entries are only hints.
+export const reconcileQuestionIdentity = (questions: Ledger['questions'], hints: Ledger['restoredIds'], restores: Ledger['restores']): Pick<Ledger, 'restoredIds' | 'restores'> => {
+  const ids = new Map(Object.entries(hints ?? {}))
+  const visible = new Map<string, number>()
+  const used = new Set<number>()
+  for (const row of questions.filter(question => question.cleared !== true)) {
+    if (used.has(row.id) || row.sourceId !== undefined && visible.has(row.sourceId)) throw new Error('question identity is ambiguous; original rows were kept')
+    used.add(row.id)
+    if (row.sourceId !== undefined) {
+      visible.set(row.sourceId, row.id)
+      ids.set(row.sourceId, row.id)
+    }
+  }
+  return {
+    ...(ids.size > 0 && { restoredIds: Object.fromEntries(ids) }),
+    ...(restores !== undefined && { restores: restores.map(restore => ({ ...restore,
+      questions: restore.questions.map(row => {
+        const sourceId = legacySourceId(restore.from, row)
+        const id = visible.get(sourceId)
+        return id === undefined || id === row.id ? row : { ...row, id, sourceId }
+      }),
+    })) }),
+  }
+}
+
 export const reconcileLedger = (base: Ledger | undefined, durable: Ledger, local: Ledger, session: string): Ledger => {
   const saved = identifyLedger(durable, session)
   const current = identifyLedger(local, session)
   const original = base === undefined ? undefined : identifyLedger(base, session)
-  const questions = mergeRows(original?.questions, saved.questions, current.questions, row => row.sourceId ?? `${session}:Q${row.id}`)
+  const questions = mergeRows(original?.questions, saved.questions, current.questions, row => legacySourceId(session, row))
   const stepIdentity = (row: Ledger['steps'][number]) => row.sourceId ?? `${session}:${row.id}`
   const steps = mergeStepOrder(original?.steps, saved.steps, current.steps, mergeRows(original?.steps, saved.steps, current.steps, stepIdentity), stepIdentity)
   // Different logical generations may reuse a local plan id. Tool calls and
@@ -85,23 +117,19 @@ export const reconcileLedger = (base: Ledger | undefined, durable: Ledger, local
   const prompts = mergeRows(original?.prompts, saved.prompts, current.prompts, row => row.rowKey)
   const restores = mergeRows(original?.restores, saved.restores ?? [], current.restores ?? [], row => row.by)
   const withdrawn = mergeRows(original?.withdrawn, saved.withdrawn ?? [], current.withdrawn ?? [], row => String(row.id))
-  const restoredIds = { ...saved.restoredIds, ...current.restoredIds }
-  for (const [key, id] of Object.entries(saved.restoredIds ?? {})) {
-    if (current.restoredIds?.[key] !== undefined && current.restoredIds[key] !== id) throw new Error(`reconcile conflict: restored identity ${key}`)
-  }
   // Stable source identity is distinct from the local display number.
-  const used = new Set<number>()
-  let next = Math.max(saved.nextQuestionId, current.nextQuestionId, ...questions.map(row => row.id + 1))
+  const used = new Set(withdrawn.map(row => row.id))
+  let next = questionHighWater({ nextQuestionId: Math.max(saved.nextQuestionId, current.nextQuestionId), questions, withdrawn })
   for (const row of questions) {
     if (used.has(row.id)) row.id = next++
     used.add(row.id)
   }
   return {
     ...saved, ...current, questions, steps, prompts,
-    nextQuestionId: Math.max(next, ...withdrawn.map(row => row.id + 1)),
-    ...(saved.restores !== undefined || current.restores !== undefined ? { restores } : {}),
+    nextQuestionId: next,
+    ...reconcileQuestionIdentity(questions, { ...saved.restoredIds, ...current.restoredIds },
+      saved.restores !== undefined || current.restores !== undefined ? restores : undefined),
     ...(saved.withdrawn !== undefined || current.withdrawn !== undefined ? { withdrawn } : {}),
-    ...(Object.keys(restoredIds).length && { restoredIds }),
     ...(saved.compactedAt !== undefined || current.compactedAt !== undefined
       ? { compactedAt: Math.max(saved.compactedAt ?? 0, current.compactedAt ?? 0) } : {}),
   }
