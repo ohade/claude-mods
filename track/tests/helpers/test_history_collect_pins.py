@@ -222,5 +222,60 @@ class CollectReworkPinTests(CollectFixture):
         self.assertEqual(stat.S_IMODE((self.namespace() / "trash").lstat().st_mode), 0o700, "L1: trash/ is 0700")
 
 
+
+class CollectRoundTwoPinTests(CollectFixture):
+    """Refuter r2 rows: a refusal after a rename names what was done; lock and trash faults keep the root."""
+
+    collect_paused = CollectPinTests.collect_paused
+    locks = CollectPinTests.locks
+
+    def two_old_roots(self, row):
+        first, receipt = self.save_at(row, now_ms() - 8 * DAY_MS, session=FIRST)
+        self.save_at(row, now_ms() - 8 * DAY_MS, session=SECOND)
+        return {"session_id": first, "seq": receipt["seq"], "root_sha256": receipt["root_sha256"]}
+
+    def test_r2a_a_refusal_after_a_rename_names_the_trashed_rows(self):
+        first = self.two_old_roots("R2a")
+        objects = self.namespace() / "objects"
+
+        def replace_objects():
+            objects.rename(self.namespace() / "objects-moved")
+            objects.mkdir(mode=0o700)
+
+        # Opens of SECOND.json: enumeration, then its recheck after FIRST's rename.
+        completed, response = self.collect_paused("R2a", SECOND + ".json", 2, replace_objects)
+        self.assert_refusal(completed, response, "R2a", "namespace directory changed", phase="postcommit")
+        self.assertEqual(response.get("trashed"), [first], "R2a: the refusal names FIRST as trashed")
+        self.assertEqual((response.get("purged_trash"), response.get("purged_objects")), ([], []), "R2a: nothing was purged")
+        self.assertFalse(self.root_of(FIRST).exists(), "R2a: FIRST really is in trash")
+
+    def test_r2b_a_lock_replaced_by_a_symlink_after_preflight_keeps_the_root_live(self):
+        first = self.two_old_roots("R2b")
+        lock = self.locks() / (SECOND + ".lock")
+        target = self.scratch / "r2b-target"
+        target.write_bytes(b"")
+
+        def replace_lock():
+            lock.unlink()
+            lock.symlink_to(target)
+
+        completed, response = self.collect_paused("R2b", SECOND + ".lock", 1, replace_lock)
+        self.assert_ok(completed, response, "R2b")
+        self.assertEqual(response["trashed"], [first], "R2b: FIRST is trashed")
+        self.assertEqual(self.kept(response).get(SECOND), "live", "R2b: SECOND is kept live")
+
+    def test_r2c_a_trash_directory_that_refuses_the_rename_keeps_the_root_changed(self):
+        first = self.two_old_roots("R2c")
+        trash = self.namespace() / "trash"
+        try:
+            completed, response = self.collect_paused("R2c", SECOND + ".json", 2, lambda: trash.chmod(0o500))
+        finally:
+            trash.chmod(0o700)
+        self.assert_ok(completed, response, "R2c")
+        self.assertEqual(response["trashed"], [first], "R2c: FIRST is trashed")
+        self.assertEqual(self.kept(response).get(SECOND), "changed", "R2c: SECOND is kept changed")
+        self.assertTrue(self.root_of(SECOND).exists(), "R2c: SECOND stays in roots/")
+
+
 if __name__ == "__main__":
     unittest.main()
