@@ -394,6 +394,11 @@ test('FIXTURE phase2 R3: queued A-B-A decides target ownership at execution and 
 test('FIXTURE phase2 R4: overlapping same-target callbacks share one storage transition and old-token fence', async ($, on) => {
   const fixture = await setup(on)
   await beginA($, fixture)
+  fixture.pending.value = { inputs: [{ id: 7, head: 'A pending question?', excerpt: 'A pending question?',
+    textHash: 'a'.repeat(64), turnId: 'A-live-turn', held: true, label: 'question' }], nextId: 8 }
+  fixture.turn.value = { currentId: 'A-live-turn', gatedTurnId: 'A-live-turn', eventOrder: 12, stepReminder: 'A reminder',
+    freshness: { turnId: 'A-live-turn', edits: ['A-edit'], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] } }
+  fixture.activity.value = { ...idle(), isWorking: true, mainTurnId: 'A-live-turn', tasks: ['A-task'], owners: { 'A-task': ['plan:1'] } }
   const native = latch()
   const resume = latch()
   fixture.controls.taskHold = native
