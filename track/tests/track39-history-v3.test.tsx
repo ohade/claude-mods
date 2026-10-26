@@ -248,7 +248,16 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
   // This atom is deliberately not yet declared in the unchanged pre-P2 PluginState. The cast
   // registers only its test provider; it does not widen or modify the public production type.
   const pending = atomStore<HistoryPending | null>(on, 'historyPending' as never, null)
-  const store = pluginStore(on, copy(options.records ?? {}), undefined, { locks: options.locks })
+  // The product root, captured independently from its writer-lock spawns as cwd-spawn.test.tsx does.
+  // This proves one root across two product spawn paths, not host-level provenance.
+  const product = { root: undefined as string | undefined }
+  const store = pluginStore(on, copy(options.records ?? {}), undefined, { locks: options.locks, beforeLockSpawn: request => {
+    const helper = String(request.argv[1] ?? '')
+    const root = helper.slice(0, -'/hooks/writer-lock.py'.length)
+    expect(helper.endsWith('/hooks/writer-lock.py') && root.startsWith('/') && request.cwd === root, 'FIXTURE writer-lock root is absolute and its cwd').toBe(true)
+    expect(product.root === undefined || product.root === root, 'FIXTURE one product root across lock spawns').toBe(true)
+    product.root = root
+  } })
   const pool = blobPool(on, { configDir: CONFIG })
   const files = new Map<string, string>()
   on('fs.write', (_, event) => {
@@ -275,9 +284,9 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
   on('process.run', { argv: /\/hooks\/history\.py$/ }, async ($, event) => {
     const op = event.argv[2] as Operation
     store.locks.timeline.push(`run:history:${op}`)
-    // The client runs from its own plugin root, which differs from this test plugin's root.
-    const clientRoot = String(event.argv[1] ?? '').slice(0, -'/hooks/history.py'.length)
-    expect(clientRoot.startsWith('/') && String(event.argv[1]).endsWith('/hooks/history.py'), 'FIXTURE history helper path').toBe(true)
+    // The product runs from its own plugin root, which differs from this test plugin's root.
+    const clientRoot = product.root ?? ''
+    expect(clientRoot.startsWith('/'), 'FIXTURE product root was captured from a lock spawn before history').toBe(true)
     expect(event.argv, 'FIXTURE history argv').toEqual(['python3', `${clientRoot}/hooks/history.py`, op])
     expect(['bind', 'read', 'save', 'resolve'].includes(op), 'FIXTURE supported history operation').toBe(true)
     expect(typeof event.init?.stdin, 'FIXTURE string stdin').toBe('string')
