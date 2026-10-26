@@ -95,9 +95,11 @@ def claim_once(session, turn, kind):
 def publish_input_claim(holds, name, record):
     # TRACK-34 (2026-10-26): an input claim is permanent: spent once per
     # (session, input id) across turns and reloads, never expired or regranted.
-    # Bound: one small file per held input, nothing else, in its own directory,
-    # which is one entry for the freshness scan in expire_holds. Only an
-    # authoritative session retirement may reclaim these files.
+    # Bound: one small file per held input, plus at most one orphan .tmp per
+    # failed temp cleanup, in its own directory (one freshness-scan entry).
+    # Only an authoritative session retirement may reclaim these files.
+    # The file is fsynced before linking, but its directory is not: a crash or
+    # power loss can lose the link and grant one extra hold, never a lost hold.
     # Race-free by construction: the claim appears only through one link from a
     # temp name unique to this process. The only unlink is that temp, which no
     # peer can own, so no identity check exists and no peer file is deleted.
