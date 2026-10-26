@@ -2045,15 +2045,21 @@ const historyEnabled = async ($: EngineInterface): Promise<boolean> => {
   }
 }
 const SAVE_PENDING = 'save outcome pending: '
+// The cause in a failure text whose save outcome is unknown, else undefined.
+const pendingCauseOf = (failure: string): string | undefined =>
+  failure.startsWith(SAVE_PENDING) ? failure.slice(SAVE_PENDING.length) : undefined
 // The cause of the last save failure when its outcome is unknown, else undefined.
-const savePendingCause = (): string | undefined =>
-  persistence.failure.startsWith(SAVE_PENDING) ? persistence.failure.slice(SAVE_PENDING.length) : undefined
+const savePendingCause = (): string | undefined => pendingCauseOf(persistence.failure)
 // A pending outcome may have committed, so its public text never says "unsaved".
 const saveFailureText = (subject: string): string => {
   const cause = savePendingCause()
   return cause === undefined ? `${subject} is unsaved — ${persistence.failure}` : `${subject} save outcome pending — ${cause}`
 }
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+// The fields an op's ok receipt must carry. A save that exits 0 without them may
+// still have committed, so it is pending rather than ok.
+const okReceiptValid = (op: 'bind' | 'read' | 'save' | 'resolve', response: Record<string, unknown>): boolean =>
+  op !== 'save' || (Number.isSafeInteger(response.seq) && typeof response.root_sha256 === 'string')
 // A pending outcome may have committed, so it never reads as "unsaved".
 class HistoryOutcomePending extends Error {}
 
@@ -2072,7 +2078,9 @@ const runHistory = async ($: EngineInterface, op: 'bind' | 'read' | 'save' | 're
   catch { response = undefined }
   if (!isPlainObject(response) || response.protocol !== 3 || response.op !== op ||
       ('request_id' in request && response.request_id !== request.request_id)) return { kind: 'pending', cause: `history ${op} receipt is incompatible (exit ${result.exitCode})` }
-  if (result.exitCode === 0 && response.ok === true) return { kind: 'ok', response }
+  if (result.exitCode === 0 && response.ok === true) {
+    return okReceiptValid(op, response) ? { kind: 'ok', response } : { kind: 'pending', cause: `history ${op} receipt is incompatible (exit 0)` }
+  }
   if (result.exitCode === 1 && response.ok === false && response.phase === 'precommit' && typeof response.reason === 'string') return { kind: 'refused', reason: response.reason }
   return { kind: 'pending', cause: typeof response.reason === 'string' ? response.reason : `history ${op} exit ${result.exitCode}` }
 }
@@ -2214,7 +2222,6 @@ const commitHistorySave = async ($: EngineInterface, store: string, id: string, 
   if (saved.kind === 'pending') throw new HistoryOutcomePending(`${SAVE_PENDING}${saved.cause}`)
   await update($, historyPending, () => null)
   if (saved.kind === 'refused') throw new Error(saved.reason)
-  if (!Number.isSafeInteger(saved.response.seq) || typeof saved.response.root_sha256 !== 'string') throw new Error('v3 history save receipt is incompatible')
   return { checkpoint, generation }
 }
 
@@ -2292,7 +2299,9 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
 
 const resumeRouted = async ($: EngineInterface, id: string): Promise<'legacy' | 'v3'> => {
   await ensureWriter($, id)
-  const view = await readHistory($, await bindHistory($, id), id)
+  const store = await bindHistory($, id)
+  await resolveHistoryPending($, store, id)
+  const view = await readHistory($, store, id)
   if (view === 'legacy') return 'legacy'
   await resumeFromHistory($, id, view)
   return 'v3'
@@ -2303,7 +2312,9 @@ const historySnapshot = async ($: EngineInterface, id: string): Promise<{ checkp
   const run = persistence.queue.then(async () => {
     const owner = await $.session.id()
     await ensureWriter($, owner)
-    const view = await readHistory($, await bindHistory($, owner), id)
+    const store = await bindHistory($, owner)
+    await resolveHistoryPending($, store, id)
+    const view = await readHistory($, store, id)
     if (view === 'legacy') return 'legacy' as const
     return view.root === undefined || view.durable === undefined ? undefined : { checkpoint: view.root.checkpoint ?? undefined, ledger: view.durable }
   })
@@ -3268,10 +3279,16 @@ export const register: Register = on => {
     if (e.expected_session !== session) return failure('expected session does not match the current session')
     if (!(await saveLedger($))) return failure(persistence.failure)
     let bucket: { checkpoint?: Checkpoint; ledger?: Ledger } | undefined | 'legacy' = 'legacy'
-    try {
-      if (await historyEnabled($)) bucket = await historySnapshot($, session)
-      if (bucket === 'legacy') bucket = await readBodySnapshot($, `s:${session}`, await $.store.get(`s:${session}`)) as { checkpoint?: Checkpoint; ledger?: Ledger } | undefined
-    } catch (error) { return failure(reason(error)) }
+    if (await historyEnabled($)) {
+      try { bucket = await historySnapshot($, session) }
+      catch (error) { return failure(reason(error)) }
+    }
+    if (bucket === 'legacy') {
+      // As before v3, a failed store read throws rather than becoming a receipt.
+      const stored = await $.store.get(`s:${session}`)
+      try { bucket = await readBodySnapshot($, `s:${session}`, stored) as { checkpoint?: Checkpoint; ledger?: Ledger } | undefined }
+      catch (error) { return failure(reason(error)) }
+    }
     if (bucket?.checkpoint === undefined || bucket.ledger === undefined) return failure('saved checkpoint is missing')
     // Inventory and checksum come from the same acknowledged saved snapshot,
     // never a later atom read that could already contain a different blocker.
@@ -4818,7 +4835,10 @@ export const register: Register = on => {
     const stack = (): BannerRow[] => {
       const built: BannerRow[] = []
       if (isUnsaved) {
-        const label = unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`
+        // A pending outcome may have committed, so it never reads as unsaved.
+        const pendingCause = pendingCauseOf(unsavedReason)
+        const label = pendingCause !== undefined ? `Save outcome pending · ${pendingCause}`
+          : unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`
         built.push(piece('banner-unsaved', '', { label, brief: label, questions: [], steps: [], counts: [] }, 'warning'))
       }
       if (agentActivity) {
