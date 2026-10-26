@@ -8,14 +8,14 @@ import type { Engine, On } from './kit'
 // whatever its status or cleared flag. With no plan row the creation path runs. Task and todo rows,
 // and every retained row, stay unchanged.
 
-type StepRow = { id: string; source: string; subject: string; status: string; cleared?: true }
+type StepRow = { id: string; source: string; subject: string; status: string; cleared?: true; session_id?: string }
 type Held = { steps: StepRow[] }
 
 const call = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never)
 
 const plan = (n: number, status = 'pending', extra: Partial<StepRow> = {}): StepRow => ({ id: `plan:${n}`, source: 'plan', subject: `step ${n}`, status, ...extra })
-const task = { id: 'task:7', source: 'task', subject: 'native task', status: 'in_progress', session_id: SESSION }
-const todo = { id: 'todo:ship it', source: 'todo', subject: 'Ship it', status: 'pending', session_id: SESSION }
+const task: StepRow = { id: 'task:7', source: 'task', subject: 'native task', status: 'in_progress', session_id: SESSION }
+const todo: StepRow = { id: 'todo:ship it', source: 'todo', subject: 'Ship it', status: 'pending', session_id: SESSION }
 
 const prepare = (on: On, steps: StepRow[]) => {
   mock.clock(on)
