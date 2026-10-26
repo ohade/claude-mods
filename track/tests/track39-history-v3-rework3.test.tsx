@@ -2,7 +2,8 @@
 // memory still acknowledges the same save intent, so a pane preference it carried is persisted or
 // stays visibly pending, with no second root save. Save and resolve ok receipts follow the declared
 // schema: save needs seq >= 1 and a lowercase SHA-256 hex root hash; resolve needs both keys, either
-// both null (no root) or seq >= 1 with a hex hash; a truncated stderr is pending like a truncated stdout.
+// both null (no root) or seq >= 1 with a hex hash; a truncated stderr is pending like a truncated stdout,
+// for every op.
 // The history.py model here is minimal: bind, read, save and resolve, keyed by session.
 import { expect, mock, test } from 'claude-code/testing'
 import type { PluginState, ProcessRunResult } from 'claude-code'
@@ -25,6 +26,8 @@ type Options = {
   shapeSave?: (ordinal: number, response: Record<string, unknown>) => ProcessRunResult | undefined
   // Replaces the resolve answer; undefined keeps the model's own.
   shapeResolve?: (request: Record<string, unknown>, root: Root | undefined) => ProcessRunResult | undefined
+  // Replaces the ok answer of a bind or read.
+  shapeLookup?: (op: 'bind' | 'read', response: Record<string, unknown>) => ProcessRunResult | undefined
   refuseSet?: (key: string) => string | undefined
 }
 
@@ -60,11 +63,15 @@ const fixture = (on: On, options: Options = {}) => {
     const op = String(event.argv[2])
     const request = JSON.parse(event.init!.stdin!) as Record<string, unknown>
     ops.push({ op, request })
-    if (op === 'bind') return { value: reply({ ok: true, protocol: 3, op, store: KEY }) }
+    if (op === 'bind') {
+      const response = { ok: true, protocol: 3, op, store: KEY }
+      return { value: options.shapeLookup?.(op, response) ?? reply(response) }
+    }
     if (op === 'read') {
       const root = roots.get(String(request.session_id))
-      return { value: reply(root === undefined ? { ok: true, protocol: 3, op, state: 'absent' }
-        : { ok: true, protocol: 3, op, state: 'valid', root: { seq: root.seq, generation: root.generation, checkpoint: root.checkpoint, savedAt: root.savedAt }, root_sha256: root.hash, ledger_text: root.text }) }
+      const response = root === undefined ? { ok: true, protocol: 3, op, state: 'absent' }
+        : { ok: true, protocol: 3, op, state: 'valid', root: { seq: root.seq, generation: root.generation, checkpoint: root.checkpoint, savedAt: root.savedAt }, root_sha256: root.hash, ledger_text: root.text }
+      return { value: options.shapeLookup?.(op, response) ?? reply(response) }
     }
     if (op === 'save') {
       saves.push(request)
@@ -167,16 +174,19 @@ for (const row of saveRows) {
   })
 }
 
-const resolveRows: Array<{ name: string; fields: (root: Root) => Record<string, unknown> }> = [
+const resolveRows: Array<{ name: string; fields: (root: Root) => Record<string, unknown>; stderrTruncated?: boolean }> = [
   { name: 'RW7a a committed resolve without root_sha256', fields: root => ({ seq: root.seq }) },
   { name: 'RW7b a committed resolve without seq', fields: root => ({ root_sha256: root.hash }) },
   { name: 'RW7c a committed resolve with a null seq and a root hash', fields: root => ({ seq: null, root_sha256: root.hash }) },
   { name: 'RW7d a committed resolve with a seq and a null root hash', fields: root => ({ seq: root.seq, root_sha256: null }) },
+  { name: 'RW7f a committed resolve with seq 0', fields: root => ({ seq: 0, root_sha256: root.hash }) },
+  { name: 'RW7g a committed resolve with a non-hex root hash', fields: root => ({ seq: root.seq, root_sha256: 'not-a-sha256-hash' }) },
+  { name: 'RW7h a committed resolve with a truncated stderr', fields: root => ({ seq: root.seq, root_sha256: root.hash }), stderrTruncated: true },
 ]
 for (const row of resolveRows) {
   test(`TRACK-39 V3 ${row.name} keeps the request pending and saves nothing new`, async ($, on) => {
     const f = fixture(on, { loseReceipt: ordinal => ordinal === 2,
-      shapeResolve: (request, root) => reply({ ok: true, protocol: 3, op: 'resolve', request_id: request.request_id, outcome: 'committed', ...row.fields(root!) }) })
+      shapeResolve: (request, root) => reply({ ok: true, protocol: 3, op: 'resolve', request_id: request.request_id, outcome: 'committed', ...row.fields(root!) }, 0, row.stderrTruncated === true) })
     await drive(f, call($, 'track_steps', { steps: ['A'] }))
     await drive(f, call($, 'track_steps', { steps: ['B'], after: 'plan:1' }))
     const lost = String(f.saves[1]!.request_id)
@@ -200,3 +210,15 @@ test('TRACK-39 V3 RW7e a superseded resolve with both seq and root hash null (no
   expect(f.saves.length, 'RW7e: the new save followed the resolve').toBe(1)
   expect(resolved < opIndex(f, 'save', 0), 'RW7e: resolve ran before the save').toBe(true)
 })
+
+// A bind or read is not a mutation, so a truncated stderr there refuses the save
+// before any root is written; the cause names the op.
+for (const op of ['bind', 'read'] as const) {
+  test(`TRACK-39 V3 RW8 a truncated stderr on an ok ${op} refuses the save before any root write`, async ($, on) => {
+    const f = fixture(on, { shapeLookup: (lookup, response) => lookup === op ? reply(response, 0, true) : undefined })
+    const result = await drive(f, call($, 'track_steps', { steps: ['A'] }))
+    expect(opIndex(f, op) >= 0, `RW8 ${op}: the ${op} ran`).toBe(true)
+    expect(f.saves.length, `RW8 ${op}: no save ran`).toBe(0)
+    expect(text(result as never).includes(`history ${op} stderr was truncated`), `RW8 ${op}: the tool names the truncated ${op}`).toBe(true)
+  })
+}
