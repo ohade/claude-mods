@@ -18,7 +18,7 @@ const HEAD: SessionMessage[] = [
 
 // The same rows and transcript as compaction-missing-event.test.tsx, with a reader for the current transcript.
 const prepare = async ($: Engine, on: On) => {
-  mock.clock(on)
+  const clock = mock.clock(on)
   const initial: Ledger = {
     ...EMPTY, session_id: SESSION, nextQuestionId: 3,
     questions: [
@@ -52,7 +52,7 @@ const prepare = async ($: Engine, on: On) => {
   await $.turn.complete({ answer: 'Earlier work saved', reason: 'answer', turnId: 'before-compact', durationMs: 1, isAborted: false } as never)
   const saved = async () => (await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger }).ledger
   return {
-    memory, saved,
+    memory, saved, clock,
     current: () => messages,
     replaceTranscript: (next: SessionMessage[]) => { messages = next },
   }
@@ -142,4 +142,19 @@ test('a turn end does not replace the baseline: a compaction without its callbac
     result: ledger.steps[0]?.resultText }))
   const kept = { questions: [1, 2], answered: 'answered', result: RESULT }
   expect({ turnEndKeepsBaseline: views }).toEqual({ turnEndKeepsBaseline: [kept, kept] })
+})
+
+test('a viewport check without the prompt text decides nothing: a replaced transcript keeps every row and compactedAt', async ($, on) => {
+  // Hooks beneath the plugin register before the test's first engine call.
+  on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Text', props: {}, children: ['hint'] }))
+  const fixture = await prepare($, on)
+  await trackPrompt($, 'Observe the intact transcript')
+  fixture.replaceTranscript([{ role: 'user', text: 'A compacted summary of earlier work.', toolUses: [] }])
+  await $.ui.mount({ plugin: 'track', surface: 'terminal' as const, component: 'PromptHint' as const, requestId: 'hint',
+    props: { isDraft: true, isWorking: false, hint: '' } } as never)
+  await fixture.clock.advance(5000)
+  const views = [fixture.memory.value, await fixture.saved()].map(ledger => ({
+    questions: ledger.questions.map(q => q.id), compactedAt: ledger.compactedAt }))
+  expect({ viewportNoTextRead: views }).toEqual({ viewportNoTextRead: [
+    { questions: [1, 2], compactedAt: undefined }, { questions: [1, 2], compactedAt: undefined }] })
 })

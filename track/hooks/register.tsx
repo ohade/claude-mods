@@ -13,6 +13,7 @@ import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerContent } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
+import { classifyTranscriptChange, printsOf } from './transcript-baseline'
 import { readBlob } from './blob-store'
 import type { BlobFs } from './blob-store'
 
@@ -819,16 +820,6 @@ const MESSAGES_CAP = 4096
 // that is neither (allowing the prompt being sent after a rewound prefix) was compacted, even
 // when the host sent no compaction callback.
 let transcriptBaseline: { session: string; prints: string[] } | undefined
-const messagePrint = (role: string, text: string, ids: string[]): string => {
-  const s = `${role}\u0000${text}\u0000${ids.join(',')}`
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193)
-  return `${role}:${s.length}:${(h >>> 0).toString(16)}`
-}
-const startsWith = (whole: readonly string[], part: readonly string[]): boolean =>
-  part.length <= whole.length && part.every((p, i) => p === whole[i])
-const printsOf = (messages: readonly { role: string; text: string; toolUses: readonly { tool_use_id: string }[] }[]): string[] =>
-  messages.map(m => messagePrint(m.role, m.text, m.toolUses.map(u => u.tool_use_id)))
 // session.compact bumps this, so a read that started before the callback never writes after it.
 let baselineGeneration = 0
 
@@ -847,16 +838,6 @@ const judgedResultStep = (s: Step, since: number): boolean => s.resultRequestId 
 const hasJudgedRows = (l: Ledger): boolean =>
   l.questions.some(q => judgedQuestion(q, l.compactedAt ?? 0)) || l.steps.some(s => judgedResultStep(s, l.compactedAt ?? 0))
 
-// What a read means against the baseline: judge it for rewound rows (no baseline, growth, a rewound
-// prefix, or that prefix plus exactly the prompt being sent), decide nothing (no prompt text to
-// tell a rewind plus its prompt apart), or a compaction that sent no callback.
-const classifyTranscriptChange = (base: readonly string[] | undefined, prints: readonly string[],
-  last: { role: string; text: string } | undefined, submitted: string | undefined): 'judge' | 'undecided' | 'compacted' => {
-  if (base === undefined || startsWith(prints, base) || startsWith(base, prints)) return 'judge'
-  if (submitted !== undefined && last?.role === 'user' && last.text.trim() === submitted.trim() &&
-    startsWith(base, prints.slice(0, -1))) return 'judge'
-  return submitted === undefined ? 'undecided' : 'compacted'
-}
 
 // /rewind raises no event, so detect it from the transcript: a question whose
 // track_question call is gone was asked in a rewound turn, and an answer whose
