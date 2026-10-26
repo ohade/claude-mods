@@ -559,6 +559,14 @@ const rememberOwner = (a: Activity, id: string, stepIds: string[], steps: Step[]
   }
   return { owners, ownerOrder: order.filter(task => owners[task] !== undefined), launchOwners }
 }
+// Phase 2 D7 (Q38, 2026-10-26): launches are numbered in order, so a Stop inventory published
+// before a launch can never drop it. An id whose number was evicted has none and is never dropped.
+const rememberLaunch = (a: Activity, id: string): Pick<Activity, 'launchSeq' | 'launchNumbers'> => {
+  const seq = (a.launchSeq ?? 0) + 1
+  const launchNumbers = [...(a.launchNumbers ?? []).filter(row => row.task !== id), { task: id, seq }]
+  while (launchNumbers.length > OWNER_CAP) launchNumbers.shift()
+  return { launchSeq: seq, launchNumbers }
+}
 // TRACK-27 refuter 6: a reused id can name different work. Launch identity is
 // authoritative when present; only tasks without a launch row use the legacy id map.
 const ownerTasksForStep = (a: Activity, step: Step): string[] => {
@@ -1267,7 +1275,7 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 
 // `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
 // any step, so the helper reports unknown ownership instead of a stale step.
-type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; truncated?: true }
+type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
 type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 const GATE_SNAPSHOT_BYTES = 16 * 1024
 const MINIMAL_INPUT_BYTES = 100
@@ -1324,7 +1332,9 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
       // Reserve every id before budgeting freshness; longer repair wording is optional.
       inputs: inputs.map(i => ({ id: i.id, reason: minimalInputReason(i) })),
       inputs_complete: inputs.length === uncovered.length,
-      candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [] }
+      candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [],
+      // The command Stop hook copies this into its task inventory: a launch numbered above it is newer.
+      launch_seq: a.launchSeq ?? 0 }
     while (utf8Bytes(snapshot) > GATE_SNAPSHOT_BYTES && snapshot.candidates.length > 0) {
       snapshot.candidates.pop()
       snapshot.truncated = true
@@ -1385,6 +1395,92 @@ const nudgeMissingResults = async ($: EngineInterface, observed: Turn): Promise<
     return { ...current, resultNudgedTurnId: observed.currentId!, resultReminder: { turnId: observed.currentId!, ids } }
   })
   if (show) $.ui.toast(text)
+}
+
+// Phase 2 D1-D3 (R-S1, 2026-10-26): classic.Stop may not run on this host. The first main prompt
+// after the turn finished stores its reminders as a Stop would, without the toast, and the stored
+// lines below carry them once. A Stop that did run has already marked both, so nothing doubles.
+const remindFinishedTurn = async ($: EngineInterface, assertAdmitted: () => void): Promise<void> => {
+  const a = await read($, activity)
+  const steps = (await read($, ledger)).steps
+  await update($, turn, current => {
+    assertAdmitted()
+    const id = current.currentId
+    const fresh = current.freshness
+    // A new turn.start replaces the turn first, so a stale activity read cannot match it.
+    if (typeof id !== 'string' || fresh?.turnId !== id || a.isWorking || a.mainTurnId !== id) return current
+    let next = current
+    const ids = fresh.completed.map(row => row.id)
+    if (current.resultNudgedTurnId !== id && missingResultText(steps, ids) !== undefined) {
+      next = { ...next, resultNudgedTurnId: id, resultReminder: { turnId: id, ids } }
+    }
+    if (fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0 && !fresh.nudged.includes('bash')) {
+      next = { ...next, stepReminder: BASH_NUDGE, freshness: { ...fresh, nudged: [...fresh.nudged, 'bash'] } }
+    }
+    return next
+  })
+}
+
+const STOP_INVENTORY_OWNER = 'track-stop-inventory-v1'
+type StopInventory = { turnId: string; launchSeq: number; taskIds: Set<string> }
+
+// The inventory counts only for the turn that just finished, in this session, written whole.
+const readStopInventory = async ($: EngineInterface, session: string): Promise<StopInventory | undefined> => {
+  const t = await read($, turn)
+  const a = await read($, activity)
+  if (typeof t.currentId !== 'string' || a.isWorking || a.mainTurnId !== t.currentId) return undefined
+  const config = await configDir($)
+  if (!config?.startsWith('/')) return undefined
+  let row: { owner?: unknown; session_id?: unknown; turn_id?: unknown; launch_seq?: unknown; task_ids?: unknown; complete?: unknown }
+  try {
+    row = JSON.parse(await $.fs.read(`${config}/state/track/stop-inventory/${await sha256Hex(session)}.json`) as string)
+  } catch {
+    return undefined // missing or unreadable: nothing is known, so nothing leaves the banner
+  }
+  if (row === null || typeof row !== 'object' || row.owner !== STOP_INVENTORY_OWNER || row.complete !== true) return undefined
+  if (row.session_id !== session || row.turn_id !== t.currentId) return undefined
+  const seq = row.launch_seq
+  if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) return undefined
+  if (!Array.isArray(row.task_ids) || !row.task_ids.every(id => typeof id === 'string')) return undefined
+  return { turnId: t.currentId, launchSeq: seq, taskIds: new Set(row.task_ids as string[]) }
+}
+
+// Ids absent from the inventory that were launched at or before its snapshot. A later launch,
+// or an id with no launch number, may still run, so it stays.
+const inventoryDrops = (a: Activity, live: StopInventory): string[] => {
+  const numbers = new Map((a.launchNumbers ?? []).map(row => [row.task, row.seq] as const))
+  return [...a.background, ...(a.tasks ?? [])].filter(id => {
+    const seq = numbers.get(id)
+    return !live.taskIds.has(id) && seq !== undefined && seq <= live.launchSeq
+  })
+}
+
+// Finished tasks leave the banner. Each step they owned keeps its status and gains a visible
+// flag, plus one line for the model. `pick` reads the ids from the current activity.
+const finishTasks = async ($: EngineInterface, pick: (a: Activity) => string[], assertAdmitted: () => void, token?: OwnerToken): Promise<string | undefined> => {
+  let done: string[] = []
+  let ownerIds: string[] = []
+  await update($, activity, a => {
+    assertAdmitted()
+    done = pick(a)
+    if (done.length === 0) return a
+    const owners = a.owners ?? {}
+    ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
+    const nextOwners = { ...owners }
+    for (const id of done) delete nextOwners[id]
+    return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
+  })
+  if (done.length === 0) return undefined
+  const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
+  if (targets.length === 0) return undefined
+  const wanted = new Set(targets.map(s => s.id))
+  await update<Ledger>($, ledger, cur => {
+    assertAdmitted()
+    return { ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }
+  })
+  assertAdmitted()
+  await saveLedger($, token)
+  return `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
 }
 
 // Unset is normal: Claude Code then uses ~/.claude, as stop-gate.py and writer-lock.py do.
@@ -3651,26 +3747,16 @@ export const register: Register = on => {
       let followUpLine: string | undefined
       if (e.origin?.kind === 'task-notification') {
         const done = [...e.text.matchAll(new RegExp(TASK_ID.source, 'g'))].map(m => m[1] ?? '')
-        if (done.length > 0) {
-          const owners = (await read($, activity)).owners ?? {}
-          const ownerIds = [...new Set(done.flatMap(id => owners[id] ?? []))]
-          await update($, activity, a => {
-            assertAdmitted()
-            const nextOwners = { ...(a.owners ?? {}) }
-            for (const id of done) delete nextOwners[id]
-            return { ...a, background: a.background.filter(id => !done.includes(id)), tasks: (a.tasks ?? []).filter(id => !done.includes(id)), ...(a.owners !== undefined && { owners: nextOwners }) }
-          })
-          const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
-          if (targets.length > 0) {
-            const wanted = new Set(targets.map(s => s.id))
-            await update<Ledger>($, ledger, cur => {
-              assertAdmitted()
-              return { ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }
-            })
-            followUpLine = `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
-            assertAdmitted()
-            await saveLedger($, token)
-          }
+        if (done.length > 0) followUpLine = await finishTasks($, () => done, assertAdmitted, token)
+      }
+      // Phase 2 D6: classic.Stop may not run on this host, so the command hook's inventory of the
+      // finished turn's live tasks retires the rest at the next main prompt. Ids launched later stay.
+      const origin = e.origin?.kind
+      if ((e as { agentId?: string }).agentId === undefined && typeof token?.owner === 'string' && (origin === 'composer' || origin === 'plugin' || origin === 'task-notification')) {
+        const live = await readStopInventory($, token.owner)
+        if (live !== undefined) {
+          const line = await finishTasks($, a => inventoryDrops(a, live), assertAdmitted, token)
+          if (line !== undefined) followUpLine = followUpLine === undefined ? line : `${followUpLine} ${line}`
         }
       }
       assertAdmitted()
@@ -3692,6 +3778,7 @@ export const register: Register = on => {
         if (isBuiltin) return next(e)
       }
       const lines: string[] = [...(needsSteps ? [STEPS_LINE] : []), ...(followUpLine !== undefined ? [followUpLine] : [])]
+      if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined) await remindFinishedTurn($, assertAdmitted)
       const reminder = (await read($, turn)).stepReminder
       if ((typed || fromPlugin) && (e as { agentId?: string }).agentId === undefined && reminder !== undefined) {
         lines.push(reminder)
@@ -4211,7 +4298,7 @@ export const register: Register = on => {
         const agentId = launched.agentId
         const steps = (await read($, ledger)).steps
         const ids = agentLaunchOwner(steps, (await read($, turn)).currentId)
-        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids, steps) }))
+        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids, steps), ...rememberLaunch(a, agentId) }))
       }
 
       return ran
@@ -4242,7 +4329,7 @@ export const register: Register = on => {
       const ids = launchOwner(steps, (await read($, turn)).currentId)
       await update($, activity, a => {
         assertOwner(token)
-        return { ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids, steps) }
+        return { ...a, tasks: [...(a.tasks ?? []).filter(id => id !== taskId), taskId], ...rememberOwner(a, taskId, ids, steps), ...rememberLaunch(a, taskId) }
       })
     }
 
