@@ -2056,10 +2056,20 @@ const saveFailureText = (subject: string): string => {
   return cause === undefined ? `${subject} is unsaved — ${persistence.failure}` : `${subject} save outcome pending — ${cause}`
 }
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
-// The fields an op's ok receipt must carry. A save that exits 0 without them may
-// still have committed, so it is pending rather than ok.
-const okReceiptValid = (op: 'bind' | 'read' | 'save' | 'resolve', response: Record<string, unknown>): boolean =>
-  op !== 'save' || (Number.isSafeInteger(response.seq) && typeof response.root_sha256 === 'string')
+const isRootSeq = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 1
+const isRootHash = (value: unknown): boolean => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+// The fields a mutating op's ok receipt must carry: a save names the root it
+// wrote; a resolve names the current root, or nulls both when there is none.
+// A mutation that exits 0 without them may still have committed, so it is
+// pending rather than ok. Bind and read keep their own checks.
+const okReceiptValid = (op: 'bind' | 'read' | 'save' | 'resolve', response: Record<string, unknown>): boolean => {
+  if (op === 'save') return isRootSeq(response.seq) && isRootHash(response.root_sha256)
+  if (op === 'resolve') {
+    return 'seq' in response && 'root_sha256' in response &&
+      ((response.seq === null && response.root_sha256 === null) || (isRootSeq(response.seq) && isRootHash(response.root_sha256)))
+  }
+  return true
+}
 // A pending outcome may have committed, so it never reads as "unsaved".
 class HistoryOutcomePending extends Error {}
 
@@ -2073,6 +2083,7 @@ const runHistory = async ($: EngineInterface, op: 'bind' | 'read' | 'save' | 're
     result = await $.process.run(['python3', `${$.plugin.root}/hooks/history.py`, op], { stdin: JSON.stringify(request), timeoutMs: 8000, env: { CLAUDE_CONFIG_DIR: config } })
   } catch (error) { return { kind: 'pending', cause: `history ${op} did not answer: ${reason(error)}` } }
   if (result.isStdoutTruncated === true) return { kind: 'pending', cause: `history ${op} receipt was truncated` }
+  if (result.isStderrTruncated === true) return { kind: 'pending', cause: `history ${op} stderr was truncated` }
   let response: unknown
   try { response = result.stdout.endsWith('\n') && !result.stdout.slice(0, -1).includes('\n') ? JSON.parse(result.stdout) : undefined }
   catch { response = undefined }
@@ -2271,11 +2282,9 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
     const memory = await read($, ledger)
     const { root, durable } = view
     if (resolved === 'committed' && root !== undefined && durable !== undefined && sameValue(durable, identifyLedger(memory, id))) {
-      // The lost receipt's save already holds these rows.
-      savedRevisions.set(id, root.checkpoint!.revision)
-      await update($, durability, cur => ({ ...cur, isUnsaved: false, reason: '', memorySession: id,
-        baseline: { session_id: id, ledger: durable, checkpoint: root.checkpoint!, generation: root.generation! } }))
-      persistence.failure = ''
+      // The lost receipt's save already holds these rows. Acknowledge it like a
+      // fresh commit, pane preference included, without saving the root again.
+      await acknowledgeHistorySave($, id, memory, durable, { checkpoint: root.checkpoint!, generation: root.generation! }, intended)
       return true
     }
     const current = await mergeWithRoot($, id, view, memory, intended.baseline?.session_id === id ? intended.baseline : undefined)
