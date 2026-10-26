@@ -16,7 +16,7 @@ class InputMetadataFailureTests(unittest.TestCase):
     def snapshot(self):
         return {"v": 2, "session_id": inputs_fixture.SESSION, "turn_id": "t1",
                 "open": [], "candidates": [], "held": [],
-                "inputs": [{"id": 1, "reason": inputs_fixture.REASON}]}
+                "inputs": [{"id": 1, "reason": inputs_fixture.REASON}], "inputs_complete": True}
 
     def test_metadata_failure_before_publication_leaves_no_file_and_allows_retry(self):
         with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):

@@ -17,7 +17,7 @@ class InputClaimStorageTests(unittest.TestCase):
     def test_post_create_failure_leaves_the_input_available_for_retry(self):
         snapshot = {"v": 2, "session_id": inputs_fixture.SESSION, "turn_id": "t1",
                     "open": [], "candidates": [], "held": [],
-                    "inputs": [{"id": 1, "reason": inputs_fixture.REASON}]}
+                    "inputs": [{"id": 1, "reason": inputs_fixture.REASON}], "inputs_complete": True}
         payload = {"session_id": inputs_fixture.SESSION}
         with tempfile.TemporaryDirectory() as config, patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
             with patch.object(stop.os, "fchmod", side_effect=PermissionError("FIXTURE: claim mode denied")):

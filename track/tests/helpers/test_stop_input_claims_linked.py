@@ -23,7 +23,7 @@ REAL = {name: getattr(os, name) for name in WRAPPED}
 
 def run(*rows, turn="t1"):
     snapshot = {"v": 2, "session_id": inputs_fixture.SESSION, "turn_id": turn, "open": [], "candidates": [],
-                "held": [], "inputs": [{"id": identity, "reason": reason} for identity, reason in rows]}
+                "held": [], "inputs": [{"id": identity, "reason": reason} for identity, reason in rows], "inputs_complete": True}
     return stop.decision({"session_id": inputs_fixture.SESSION}, snapshot)
 
 
@@ -232,7 +232,7 @@ class LinkedInputClaimTests(unittest.TestCase):
     def test_output_failure_after_the_claim_keeps_the_input_held(self):  # amendment pin (2), output step
         payload = json.dumps({"session_id": inputs_fixture.SESSION})
         snapshot = {"v": 2, "session_id": inputs_fixture.SESSION, "turn_id": "t1", "open": [], "candidates": [],
-                    "held": [], "inputs": [{"id": FIRST[0], "reason": FIRST[1]}]}
+                    "held": [], "inputs": [{"id": FIRST[0], "reason": FIRST[1]}], "inputs_complete": True}
         environment = {**os.environ, "CLAUDE_CONFIG_DIR": self.config, "TRACK_GATE_SNAPSHOT": json.dumps(snapshot)}
         read, write = os.pipe()
         os.close(read)  # the host stopped reading: writing the block fails

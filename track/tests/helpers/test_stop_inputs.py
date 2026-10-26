@@ -16,7 +16,7 @@ class StopInputTests(unittest.TestCase):
     def invoke(self, config, inputs, turn="t1", session=SESSION, **payload):
         snapshot = {
             "v": 2, "session_id": session, "turn_id": turn,
-            "open": [], "candidates": [], "held": [], "inputs": inputs,
+            "open": [], "candidates": [], "held": [], "inputs": inputs, "inputs_complete": True,
         }
         result = subprocess.run(
             ["python3", str(SCRIPT)],

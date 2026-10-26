@@ -31,7 +31,7 @@ class InputClaimFailureTests(unittest.TestCase):
         first = {"id": 1, "reason": inputs_fixture.REASON}
         second = {"id": 2, "reason": "track: the second input needs its own Track row."}
         snapshot = {"v": 2, "session_id": inputs_fixture.SESSION, "turn_id": "t1",
-                    "open": [], "candidates": [], "held": [], "inputs": [first, second]}
+                    "open": [], "candidates": [], "held": [], "inputs": [first, second], "inputs_complete": True}
         payload = {"session_id": inputs_fixture.SESSION}
         denied = stop.claim_name(inputs_fixture.SESSION, "input:2", "uncovered_input")
         original_open = os.open

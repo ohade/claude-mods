@@ -12,11 +12,20 @@ const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, c
 const ANSWER = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text'
 const worded = (text: string) => `track: a prompt looks like a question ("${text.slice(0, 80)}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${ANSWER}; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.`
 const labelled = (text: string) => `track: the classifier labelled a prompt a question ("${text.slice(0, 80)}") and no question row covers it; steps never cover a labelled question. Call mcp__track__track_question with source_text = its first line, ${ANSWER}. If it is a request already tracked as steps, mark that question deferred with a note naming the step. Then finish.`
-type Snapshot = { inputs?: Array<{ id: number; reason: string }>; candidates?: Array<{ kind: string }>; truncated?: true }
+type Snapshot = { inputs?: Array<{ id: number; reason: string }>; inputs_complete?: boolean; candidates?: Array<{ kind: string; id?: string }>; truncated?: true }
 type Mode = 'block' | 'spent' | 'unknown' | 'exit' | 'truncated' | 'throw'
 const input = (id: number, extra: Partial<PendingInput> = {}): PendingInput => ({
   id, head: FIRST, excerpt: FIRST, textHash: `fixture-${id}`, turnId: 'turn-1', ...extra,
 })
+const bytes = (snapshot: Snapshot): number => new TextEncoder().encode(JSON.stringify(snapshot)).length
+const minimal = (id: number): string => `track: Register input ${id} with mcp__track__track_question.`
+const waiting = (count: number, padding = ''): { steps: Step[]; freshness: StepFreshness } => {
+  const steps: Step[] = Array.from({ length: count }, (_, index) => ({
+    id: `plan:${index + 1}${padding}`, source: 'plan', subject: 'Review the result', status: 'waiting',
+  }))
+  const ids = steps.map(step => step.id)
+  return { steps, freshness: { turnId: 'turn-1', edits: [], bash: [], steps: ids, completed: [], waiting: ids, held: [], nudged: [] } }
+}
 
 const prepare = (on: On, options: { inputs?: PendingInput[]; classifier?: boolean; freshness?: StepFreshness; steps?: Step[]; below?: string; root?: false } = {}) => {
   const clock = mock.clock(on)
@@ -128,7 +137,7 @@ test('R3 classic Stop claims the input once and returns the exact helper receipt
   expect(fixture.calls).toHaveLength(1)
   expect(fixture.calls[0]?.argv).toEqual(['python3', '/fixture/track/hooks/stop-gate.py', '--claim'])
   expect(fixture.calls[0]?.timeout).toBe(2000)
-  expect(fixture.calls[0]?.snapshot).toMatchObject({ inputs: [{ id: 1, reason: worded(FIRST) }], candidates: [] })
+  expect(fixture.calls[0]?.snapshot).toMatchObject({ inputs: [{ id: 1, reason: worded(FIRST) }], inputs_complete: true, candidates: [] })
   expect(fixture.pending.value.inputs[0]?.held).toBe(true)
   expect(fixture.turn.value.gatedTurnId).toBe('turn-1')
   expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
@@ -145,10 +154,12 @@ test('R4 the published input remains present while freshness claim copies omit i
   // The merged baseline has no producer. This prerequisite is R4's observed RED;
   // the no-key assertions below reject a naive producer-only implementation.
   expect(fixture.snapshot().inputs).toEqual([{ id: 1, reason: worded(FIRST) }])
+  expect(fixture.snapshot().inputs_complete).toBe(true)
   await stop($, { stop_hook_active: true })
   expect(fixture.calls.length).toBeGreaterThan(0)
   for (const claim of fixture.calls) {
     expect(Object.hasOwn(claim.snapshot, 'inputs')).toBe(false)
+    expect(Object.hasOwn(claim.snapshot, 'inputs_complete')).toBe(false)
     expect(claim.snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1' }])
   }
 })
@@ -168,19 +179,56 @@ for (const mode of ['spent', 'unknown'] as const) {
   })
 }
 
-test('R6 the byte bound removes candidates before inputs and marks partial evidence', async ($, on) => {
-  const inputs = Array.from({ length: 50 }, (_, index) => input(index + 1, { excerpt: `Why ${'😀'.repeat(70)} ${index}?` }))
-  const fixture = prepare(on, { inputs,
-    steps: [{ id: 'plan:1', source: 'plan', subject: 'Review the result', status: 'waiting' }],
-    freshness: { turnId: 'turn-1', edits: [], bash: [], steps: ['plan:1'], completed: [], waiting: ['plan:1'], held: [], nudged: [] } })
+test('R6b long input reasons shrink before they displace a waiting candidate', async ($, on) => {
+  const inputs = Array.from({ length: 25 }, (_, index) => input(index + 1, { held: true, excerpt: `Why ${'😀'.repeat(35)} ${index}?` }))
+  const fixture = prepare(on, { inputs, ...waiting(1) })
+  fixture.helper.mode = 'spent'
   await call($, 'Bash', { command: 'true' })
   const snapshot = fixture.snapshot()
-  expect(Array.isArray(snapshot.inputs)).toBe(true)
-  expect(snapshot.inputs!.length).toBeGreaterThan(0)
-  expect(snapshot.inputs!.length).toBeLessThan(50)
-  expect(snapshot.candidates).toEqual([])
+  expect(snapshot.inputs?.map(row => row.id)).toEqual(inputs.map(row => row.id))
+  expect(snapshot.inputs_complete).toBe(true)
+  expect(snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1' }])
+  expect(snapshot.inputs?.at(-1)?.reason).toBe(worded(inputs.at(-1)!.excerpt))
+  expect(snapshot.inputs?.[0]?.reason).toContain('mcp__track__track_question')
+  expect(snapshot.inputs![0]!.reason.length).toBeLessThan(worded(inputs[0]!.excerpt).length)
+  expect(snapshot.truncated).toBeUndefined()
+  expect(bytes(snapshot)).toBeLessThanOrEqual(16 * 1024)
+  await stop($, { stop_hook_active: true })
+  expect(fixture.calls.length).toBeGreaterThan(0)
+  expect(fixture.calls[0]?.snapshot.candidates).toEqual(snapshot.candidates)
+})
+
+test('R6c candidate overflow keeps every input complete while truncating freshness', async ($, on) => {
+  const fixture = prepare(on, { inputs: [input(1)], ...waiting(300, 'x'.repeat(55)) })
+  await call($, 'Bash', { command: 'true' })
+  const snapshot = fixture.snapshot()
+  expect(snapshot.inputs?.map(row => row.id)).toEqual([1])
+  expect(snapshot.inputs_complete).toBe(true)
+  expect(snapshot.candidates!.length).toBeLessThan(300)
+  expect(snapshot.candidates!.length).toBeGreaterThan(0)
   expect(snapshot.truncated).toBe(true)
-  expect(new TextEncoder().encode(JSON.stringify(snapshot)).length).toBeLessThanOrEqual(16 * 1024)
+  expect(bytes(snapshot)).toBeLessThanOrEqual(16 * 1024)
+})
+
+test('R6d minimal input reasons are reserved before candidate truncation', async ($, on) => {
+  const fixture = prepare(on, waiting(150, 'x'.repeat(55)))
+  await call($, 'Bash', { command: 'true' })
+  const before = fixture.snapshot()
+  expect(before.inputs).toEqual([])
+  expect(before.candidates).toHaveLength(150)
+  expect(before.truncated).toBeUndefined()
+  expect(bytes(before)).toBeGreaterThan(14 * 1024)
+  expect(bytes(before)).toBeLessThanOrEqual(16 * 1024)
+  const inputs = Array.from({ length: 50 }, (_, index) => input(index + 1, { excerpt: `Why ${'😀'.repeat(35)} ${index}?` }))
+  fixture.pending.value = { inputs, nextId: 51 }
+  await call($, 'Bash', { command: 'true' })
+  const snapshot = fixture.snapshot()
+  expect(snapshot.inputs).toEqual(inputs.map(row => ({ id: row.id, reason: minimal(row.id) })))
+  expect(snapshot.inputs_complete).toBe(true)
+  expect(snapshot.candidates!.length).toBeLessThan(before.candidates!.length)
+  expect(snapshot.candidates!.length).toBeGreaterThan(0)
+  expect(snapshot.truncated).toBe(true)
+  expect(bytes(snapshot)).toBeLessThanOrEqual(16 * 1024)
 })
 
 test('C1 a lower Stop block is preserved without spending an input claim', async ($, on) => {
