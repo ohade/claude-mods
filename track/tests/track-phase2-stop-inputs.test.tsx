@@ -106,6 +106,22 @@ for (const label of ['question', 'not_question'] as const) {
   })
 }
 
+test('R2c a delayed question label republishes in a session-owned ledger', async ($, on) => {
+  const fixture = prepare(on, { classifier: true })
+  fixture.ledger.value.session_id = SESSION
+  let release = (_text: string) => {}
+  fixture.classifier.reply = () => new Promise<string>(resolve => { release = resolve })
+  const text = 'Explain the retry mechanism'
+  await ask($, text)
+  await start($)
+  await fixture.clock.advance(1)
+  const before = fixture.publications.length
+  release('question')
+  await fixture.clock.advance(1)
+  expect(fixture.snapshot().inputs).toEqual([{ id: 1, reason: labelled(text) }])
+  expect(fixture.publications.length).toBeGreaterThan(before)
+})
+
 test('R3 classic Stop claims the input once and returns the exact helper receipt', async ($, on) => {
   const fixture = prepare(on, { inputs: [input(1)] })
   expect((await stop($)).block).toBe(HELPER_REASON)
@@ -181,6 +197,7 @@ for (const failure of ['exit', 'truncated', 'throw', 'configuration'] as const) 
     expect((await stop($)).block).toBe(worded(FIRST))
     expect(fixture.pending.value.inputs[0]?.held).toBe(true)
     expect(fixture.turn.value.gatedTurnId).toBe('turn-1')
+    expect(fixture.turn.value.freshness?.nudged).toContain('claim')
     expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
   })
 }
