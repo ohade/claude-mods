@@ -20,6 +20,9 @@ KINDS = ("premature_completion", "stale_in_progress", "missing_waiting_request",
 HOLD_OWNER = "track-stop-hold-v1"
 TTL_SECONDS = 7 * 24 * 60 * 60
 INPUT_KIND = "uncovered_input"
+INVENTORY_OWNER = "track-stop-inventory-v1"
+INVENTORY_CAP = 256
+INVENTORY_BYTES = 64 * 1024
 
 
 def unavailable(what):
@@ -278,16 +281,110 @@ def decision(payload, snapshot, plugin=False):
     )}
 
 
+def inventory_record(payload, snapshot):
+    # Phase 2 D5 (Q37, 2026-10-26): only a main-loop Stop whose snapshot names
+    # this session and turn proves which background tasks are still live.
+    if not isinstance(payload, dict) or not isinstance(snapshot, dict) or payload.get("agent_id") is not None:
+        return None
+    session, turn, seq = payload.get("session_id"), snapshot.get("turn_id"), snapshot.get("launch_seq")
+    if snapshot.get("v") != 2 or not isinstance(session, str) or not session.strip() or snapshot.get("session_id") != session:
+        return None
+    if not isinstance(turn, str) or not turn.strip() or type(seq) is not int or seq < 0:
+        return None
+    tasks = payload.get("background_tasks")
+    if not isinstance(tasks, list) or len(tasks) > INVENTORY_CAP:
+        return None
+    if not all(isinstance(task, dict) and isinstance(task.get("id"), str) for task in tasks):
+        return None
+    return {"owner": INVENTORY_OWNER, "session_id": session, "turn_id": turn, "launch_seq": seq,
+            "task_ids": [task["id"] for task in tasks], "complete": True}
+
+
+def inventory_name(session):
+    return hashlib.sha256(session.encode("utf-8")).hexdigest() + ".json"
+
+
+def expire_inventories(directory):
+    cutoff = time.time() - TTL_SECONDS
+    # Same bounded rule as expire_holds: the marker and the name derived from
+    # its own session id make a file ours; nothing else is removed or rewritten.
+    for index, path in enumerate(directory.iterdir()):
+        if index >= 512:
+            break
+        if re.fullmatch(r"[0-9a-f]{64}\.json", path.name) is None:
+            continue
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "r") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cutoff:
+                    continue
+                row = json.loads(handle.read(INVENTORY_BYTES + 1))
+                if not isinstance(row, dict) or row.get("owner") != INVENTORY_OWNER:
+                    continue
+                if not isinstance(row.get("session_id"), str) or inventory_name(row["session_id"]) != path.name:
+                    continue
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (info.st_dev, info.st_ino):
+                    path.unlink()
+        except (OSError, ValueError):
+            continue
+
+
+def write_inventory(record):
+    config = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    if not Path(config).is_absolute():
+        raise ValueError("inventory configuration")
+    directory = Path(config) / "state" / "track" / "stop-inventory"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError("inventory directory")
+    directory.chmod(0o700)
+    expire_inventories(directory)
+    name = inventory_name(record["session_id"])
+    # Replaced whole through rename, so the module never reads a partial list.
+    # A failed temp cleanup can leave one orphan .tmp; expiry never matches it.
+    temp = directory / f"{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        try:
+            os.fchmod(fd, 0o600)
+            data = json.dumps(record, ensure_ascii=False).encode("utf-8")
+            if os.write(fd, data) != len(data):
+                raise OSError("short inventory write")
+        finally:
+            os.close(fd)
+        os.replace(temp, directory / name)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+
 def main():
+    payload = gate = None
     try:
         raw = sys.stdin.read(1024 * 1024 + 1)
         snapshot = os.environ.get("TRACK_GATE_SNAPSHOT", "{}")
         if len(raw) > 1024 * 1024 or len(snapshot.encode("utf-8")) > 16 * 1024:
             raise ValueError("bounded input exceeded")
-        answer = decision(json.loads(raw), json.loads(snapshot), plugin=sys.argv[1:] == ["--claim"])
+        payload, gate = json.loads(raw), json.loads(snapshot)
+        answer = decision(payload, gate, plugin=sys.argv[1:] == ["--claim"])
     except (ValueError, TypeError) as error:
         print(f"track: Stop snapshot unavailable ({type(error).__name__})", file=sys.stderr)
         answer = {}
+    if sys.argv[1:] == []:
+        # The inventory never changes the decision or the exit code.
+        try:
+            record = inventory_record(payload, gate)
+            if record is not None:
+                write_inventory(record)
+        except (OSError, ValueError) as error:
+            print(f"track: background task inventory not written ({type(error).__name__})", file=sys.stderr)
     print(json.dumps(answer, ensure_ascii=False))
 
 
