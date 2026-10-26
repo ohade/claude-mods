@@ -1474,3 +1474,112 @@ for (const [switchToB, outage] of [[true, false], [false, false], [true, true], 
     }
   })
 }
+
+// Cases 38/39: a prompt that is not a question skips the fenced pending write, so only the later
+// writes (reminder clears, the withdrawn notice, the context lines) can reach the new owner.
+for (const switchToB of [true, false]) {
+  const name = switchToB
+    ? '38: an A prompt held at the classifier-setting read cannot clear B\'s reminder or withdrawn notice or carry B\'s rows'
+    : '39 CONTROL: an A prompt held at the classifier-setting read still delivers and clears A\'s reminder and withdrawn notice'
+  test(`FIXTURE TRACK34 session switch ${name}`, async ($, on) => {
+    const held = latch()
+    let armed = false
+    let heldOnce = false
+    on('store.get', { key: /^.+$/ }, async (_, e, next) => {
+      if (e.key === 'classifier' && armed && !heldOnce) {
+        armed = false
+        heldOnce = true
+        held.enter()
+        await held.released
+      }
+      return next(e)
+    })
+    const fixture = await setup(on)
+    await beginA($, fixture)
+    fixture.store.held.set('classifier', { isOn: false })
+    const text = 'Continue with the agreed plan.'
+    armed = true
+    const request = outcome(submit($, text))
+    const reminder = switchToB ? 'track: B step reminder.' : 'track: A step reminder.'
+    const withdrawn = [{ id: 9, head: switchToB ? 'A question B withdrew' : 'A question A withdrew' }]
+    try {
+      const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), request.then(() => 'returned')]),
+        'late-writes classifier-setting read')
+      if (phase !== 'held') throw new Error(`INVALID FIXTURE: A prompt returned before its classifier-setting read; outcome=${JSON.stringify(await request)}`)
+      if (fixture.controls.session !== A) throw new Error('INVALID FIXTURE: the hold did not follow A ownership admission')
+      if (switchToB) {
+        fixture.controls.session = B
+        const lookup = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'late-writes B selection')
+        if (lookup.deny !== undefined || lookup.isError === true) throw new Error(`INVALID FIXTURE: B selection failed: ${JSON.stringify(lookup)}`)
+      }
+      // The selected session's own reminder and withdrawn notice, waiting for its next prompt.
+      fixture.turn.value = { ...fixture.turn.value, stepReminder: reminder }
+      fixture.memory.value = { ...fixture.memory.value, withdrawn }
+      held.release()
+      const result = await fixtureWait(request, 'late-writes prompt completion')
+      expect(result.error).toBeUndefined()
+      expect(result.value?.text).toBe(text)
+      const context = fixture.promptCalls.at(-1)?.context
+      if (switchToB) {
+        // Named behavioral RED: B's waiting notices survive, and A's prompt carries none of B's rows.
+        expect({ lateWritesCrossOwnerB: { stepReminder: fixture.turn.value.stepReminder, withdrawn: fixture.memory.value.withdrawn } })
+          .toEqual({ lateWritesCrossOwnerB: { stepReminder: reminder, withdrawn } })
+        expect({ lateWritesCrossOwnerContext: context }).toEqual({
+          lateWritesCrossOwnerContext: ['track: session owner changed during the call; Track did not record this prompt.'],
+        })
+      } else {
+        expect({ lateWritesNoSwitchA: { stepReminder: fixture.turn.value.stepReminder, withdrawn: fixture.memory.value.withdrawn } })
+          .toEqual({ lateWritesNoSwitchA: { stepReminder: undefined, withdrawn: [] } })
+        expect(context).toEqual(expect.arrayContaining([reminder, expect.stringContaining('the user withdrew question:9')]))
+      }
+    } finally {
+      held.release()
+      await fixtureWait(request, 'late-writes prompt cleanup')
+    }
+  })
+}
+
+// Case 40: the switch lands inside the later block itself, at a skill command's command.list read.
+test('FIXTURE TRACK34 session switch 40: an A skill command held at its command.list read cannot clear B\'s reminder or withdrawn notice or carry B\'s rows', async ($, on) => {
+  const held = latch()
+  let armed = false
+  let heldOnce = false
+  on('command.list', async () => {
+    if (armed && !heldOnce) {
+      heldOnce = true
+      held.enter()
+      await held.released
+    }
+    return { value: [{ name: 'retro', description: 'retro', source: 'plugin' as const }] }
+  })
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  const text = '/retro the last change'
+  armed = true
+  const request = outcome(submit($, text))
+  const reminder = 'track: B step reminder.'
+  const withdrawn = [{ id: 9, head: 'A question B withdrew' }]
+  try {
+    const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), request.then(() => 'returned')]),
+      'late-writes command.list read')
+    if (phase !== 'held') throw new Error(`INVALID FIXTURE: A skill command returned before command.list; outcome=${JSON.stringify(await request)}`)
+    if (fixture.controls.session !== A) throw new Error('INVALID FIXTURE: the hold did not follow A ownership admission')
+    fixture.controls.session = B
+    const lookup = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'late-writes command B selection')
+    if (lookup.deny !== undefined || lookup.isError === true) throw new Error(`INVALID FIXTURE: B selection failed: ${JSON.stringify(lookup)}`)
+    fixture.turn.value = { ...fixture.turn.value, stepReminder: reminder }
+    fixture.memory.value = { ...fixture.memory.value, withdrawn }
+    held.release()
+    const result = await fixtureWait(request, 'late-writes command completion')
+    expect(result.error).toBeUndefined()
+    expect(result.value?.text).toBe(text)
+    expect({ lateWritesInBlockCrossOwnerB: { stepReminder: fixture.turn.value.stepReminder, withdrawn: fixture.memory.value.withdrawn } })
+      .toEqual({ lateWritesInBlockCrossOwnerB: { stepReminder: reminder, withdrawn } })
+    expect({ lateWritesInBlockContext: fixture.promptCalls.at(-1)?.context }).toEqual({
+      lateWritesInBlockContext: ['track: session owner changed during the call; Track did not record this prompt.'],
+    })
+  } finally {
+    held.release()
+    await fixtureWait(request, 'late-writes command cleanup')
+  }
+})
