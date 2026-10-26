@@ -85,7 +85,9 @@ class StopInventoryTests(unittest.TestCase):
             result = self.invoke(config, snapshot(), [{"id": "a"}])
             self.assertEqual(result.returncode, expected.returncode)
             self.assertEqual(json.loads(result.stdout), json.loads(expected.stdout))
-            self.assertLessEqual(len([line for line in result.stderr.splitlines() if line.strip()]), 1)
+            lines = [line for line in result.stderr.splitlines() if line.strip()]
+            self.assertEqual(len(lines), 1, result.stderr)
+            self.assertIn("inventory not written", lines[0])
             self.assertEqual(blocked.read_text(), "FIXTURE: a file where the inventory directory belongs")
 
 

@@ -39,6 +39,7 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   on('session.append', (_, e, next) => next(e))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => ({}))
+  on('command.list', () => ({ value: [{ name: 'help', description: 'help', source: 'builtin' as const }] }))
   on('prompt.submit', (_, e) => { contexts.push(...(e.context ?? [])); return { text: e.text } })
   on('tool.call', { tool: 'Bash' }, () => {
     const id = launches.shift()
@@ -211,4 +212,55 @@ test('B4 classic Stop ran: its replacement stands, the inventory changes nothing
   expect(banner(fixture)).toEqual(['a'])
   await $.prompt.submit({ text: '<task-notification><task-id>a</task-id><status>completed</status></task-notification>', origin: { kind: 'task-notification' } } as never)
   expect(banner(fixture)).toEqual([])
+})
+
+const FOLLOW_UP = 'track: background work finished while plan:1 is still in_progress; update it with mcp__track__mark_step.'
+
+test('O7 a builtin command in the window leaves the banner and follow-up flags alone; the next typed prompt drops and nudges once', async ($, on) => {
+  const fixture = await prepare($, on, [step({ status: 'in_progress', activeTurnId: 't0' })])
+  await start($, 't0')
+  await launch($, fixture, 'a')
+  finish(fixture, 't0')
+  await start($, 't1')
+  const seq = fixture.snapshot().launch_seq
+  await inventory(fixture, { owner: OWNER, session_id: SESSION, turn_id: 't1', launch_seq: seq, task_ids: [], complete: true })
+  finish(fixture, 't1')
+  await $.prompt.submit({ text: '/help', origin: { kind: 'composer' } } as never)
+  expect(banner(fixture)).toEqual(['a'])
+  expect((fixture.ledger.value.steps[0] as Step & { followUp?: true }).followUp).toBeUndefined()
+  expect(count(fixture.contexts, FOLLOW_UP)).toBe(0)
+  await ask($)
+  expect(banner(fixture)).toEqual([])
+  expect((fixture.ledger.value.steps[0] as Step & { followUp?: true }).followUp).toBe(true)
+  expect(count(fixture.contexts, FOLLOW_UP)).toBe(1)
+  await ask($, 'Continue again.')
+  expect(count(fixture.contexts, FOLLOW_UP)).toBe(1)
+})
+
+test('O8 a task notification first after a skipped Stop: the next typed prompt still carries each reminder once', async ($, on) => {
+  const fixture = await prepare($, on)
+  const notify = () => $.prompt.submit({ text: '<task-notification><task-id>gone</task-id><status>completed</status></task-notification>', origin: { kind: 'task-notification' } } as never)
+  // Turn t1 completes a step without result_text; a notification turn comes first.
+  await start($, 't1')
+  await invoke($, 'mcp__track__mark_step', { id: 'plan:1', status: 'completed' })
+  finish(fixture, 't1')
+  await notify()
+  expect(count(fixture.contexts, RESULT_LINE)).toBe(0)
+  await start($, 't1n')
+  finish(fixture, 't1n')
+  await ask($)
+  expect(count(fixture.contexts, RESULT_LINE)).toBe(1)
+  // Turn t2 runs Bash only; again a notification turn comes first.
+  await start($, 't2')
+  await invoke($, 'Bash', { command: 'git status --porcelain' })
+  finish(fixture, 't2')
+  await notify()
+  expect(count(fixture.contexts, BASH)).toBe(0)
+  await start($, 't2n')
+  finish(fixture, 't2n')
+  await ask($, 'Continue the next part.')
+  expect(count(fixture.contexts, BASH)).toBe(1)
+  await ask($, 'Continue again.')
+  expect(count(fixture.contexts, RESULT_LINE)).toBe(1)
+  expect(count(fixture.contexts, BASH)).toBe(1)
 })
