@@ -1322,6 +1322,7 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
       // The helper's shared claim owns the hold; a module-only held mark must
       // not hide an input from the command hook when classic.Stop is skipped.
       // Reserve every id before budgeting freshness; longer repair wording is optional.
+      // 50 minimal rows under 100 bytes each reserve about 5 KB of the 16 KB snapshot budget.
       inputs: inputs.map(i => ({ id: i.id, reason: minimalInputReason(i) })),
       inputs_complete: inputs.length === uncovered.length,
       candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [] }
