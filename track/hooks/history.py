@@ -49,10 +49,25 @@ ROOT_KEYS = {"v", "session_id", "seq", "generation", "checkpoint", "savedAt",
              "object", "request_id", "recent", "writer"}
 CHECKPOINT_KEYS = {"v", "ok", "source_session", "destination_session",
                    "applied_checksum", "revision", "checksum", "counts", "reason"}
+ROOT_NAME = re.compile(r"([0-9a-f-]{36})\.json")
+ROOT_TEMP = re.compile(r"\.[0-9a-f-]{36}\.[0-9]+\.[0-9a-f]{16}\.tmp")
+TRASH_NAME = re.compile(r"([0-9a-f-]{36})\.([1-9][0-9]*)\.([0-9a-f]{64})\.([0-9]+)\.json")
+OBJECT_NAME = re.compile(r"([0-9a-f]{64})\.json")
+OBJECT_TEMP = re.compile(r"\.[0-9a-f]{64}\.[0-9]+\.[0-9a-f]{16}\.tmp")
+EXPIRY_MS = 7 * 24 * 60 * 60 * 1000
+TRASH_GRACE_MS = 24 * 60 * 60 * 1000
 
 
 class HistoryError(RuntimeError):
     """A refusal whose phase is determined by the root rename boundary."""
+
+
+class CollectInterrupted(HistoryError):
+    """A collect refusal after its first change, carrying the rows already done."""
+
+    def __init__(self, reason, rows):
+        super().__init__(reason)
+        self.rows = rows
 
 
 def encode(value):
@@ -208,6 +223,8 @@ def validate_request(request, operation):
         "save": {"store", "session_id", "module_token", "request_id", "expect", "generation",
                  "checkpoint", "savedAt", "ledger_text"},
         "resolve": {"store", "session_id", "module_token", "request_id", "expect", "resolve_id"},
+        "collect": {"store", "protected", "dry_run", "limit"},
+        "restore": {"store", "session_id", "entry"},
     }
     require(exact_keys(request, common | fields[operation]) and type(request["v"]) is int
             and request["v"] == 3 and request["op"] == operation, "invalid request schema")
@@ -215,9 +232,21 @@ def validate_request(request, operation):
         require(matches(PLUGIN, request["plugin"]) and matches(HEX, request["nonce"]),
                 "invalid bind identity")
         return
+    if operation == "collect":
+        protected = request["protected"]
+        require(matches(STORE_KEY, request["store"]) and isinstance(protected, list)
+                and len(protected) <= 64 and all(is_uuid(session, 4) for session in protected),
+                "invalid namespace or protected sessions")
+        require(type(request["dry_run"]) is bool and safe_integer(request["limit"], 1, 50),
+                "invalid collect options")
+        return
     require(matches(STORE_KEY, request["store"]) and is_uuid(request["session_id"], 4),
             "invalid namespace or session")
     if operation == "read":
+        return
+    if operation == "restore":
+        entry = TRASH_NAME.fullmatch(request["entry"]) if isinstance(request["entry"], str) else None
+        require(entry is not None and entry.group(1) == request["session_id"], "invalid trash entry")
         return
     require(matches(TOKEN, request["module_token"]) and is_uuid(request["request_id"], 4),
             "invalid writer or request identity")
@@ -579,6 +608,267 @@ def run_history(request, config, directories, owner, mutation):
     return response
 
 
+def now_ms():
+    return time.time_ns() // 1000000
+
+
+def stored_root(directory, name, session):
+    """The compact bytes, root and digest of one root-shaped leaf."""
+    raw = read_leaf(directory, name, MAX_ROOT)
+    root = parse_json(raw)
+    validate_root(root, session)
+    require(encode(root) == raw, "root is not compact UTF-8 JSON")
+    return raw, root, hashlib.sha256(raw).hexdigest()
+
+
+def namespace_entries(directories, trash):
+    """Every root, trash entry and object, or a refusal naming the first unknown entry."""
+    roots, entries, objects = {}, {}, set()
+
+    def unknown(name):
+        raise HistoryError("v3 namespace has unknown entry: " + name)
+
+    for name in sorted(os.listdir(directories["roots"])):
+        found = ROOT_NAME.fullmatch(name)
+        if found is None or not is_uuid(found.group(1), 4):
+            if ROOT_TEMP.fullmatch(name) is None:
+                unknown(name)
+            continue
+        try:
+            raw, root, digest = stored_root(directories["roots"], name, found.group(1))
+            mtime = os.stat(name, dir_fd=directories["roots"], follow_symlinks=False).st_mtime_ns // 1000000
+        except (HistoryError, transactions.TransactionError, OSError, ValueError, UnicodeError) as error:
+            raise HistoryError("v3 history damaged: roots/" + name) from error
+        roots[found.group(1)] = {"name": name, "root": root, "digest": digest, "mtime": mtime}
+    for name in sorted(os.listdir(trash)) if trash is not None else []:
+        found = TRASH_NAME.fullmatch(name)
+        if found is None or not is_uuid(found.group(1), 4):
+            unknown(name)
+        try:
+            raw, root, digest = stored_root(trash, name, found.group(1))
+            require(root["seq"] == int(found.group(2)) and digest == found.group(3), "trash entry name differs")
+        except (HistoryError, transactions.TransactionError, OSError, ValueError, UnicodeError) as error:
+            raise HistoryError("v3 history damaged: trash/" + name) from error
+        entries[name] = {"root": root, "trashed_at": int(found.group(4))}
+    for name in sorted(os.listdir(directories["objects"])):
+        found = OBJECT_NAME.fullmatch(name)
+        if found is None:
+            if OBJECT_TEMP.fullmatch(name) is None:
+                unknown(name)
+            continue
+        if not stat.S_ISREG(os.stat(name, dir_fd=directories["objects"], follow_symlinks=False).st_mode):
+            unknown(name)
+        objects.add(found.group(1))
+    return roots, entries, objects
+
+
+# D5 rechecks a victim before taking the D2 guard; collect takes the guard
+# first and rechecks under it, which is strictly stronger: no lease can start
+# between the recheck and the rename.
+@contextmanager
+def session_guard(locks, session):
+    """Yields False while a live owner may hold the session lease, else True with it held."""
+    with ExitStack() as handles:
+        try:
+            descriptor = handles.enter_context(transactions.open_leaf(locks["locks"], session + ".lock"))
+        except FileNotFoundError:
+            descriptor = None  # No lock file means no live owner.
+        except (transactions.TransactionError, OSError):
+            # The lock changed shape after the preflight; its owner is unknown.
+            yield False
+            return
+        if descriptor is not None:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+        yield True
+
+
+def trash_directory(handles, directories, *, create):
+    device = os.fstat(directories["anchor"]).st_dev
+    try:
+        return enter_directory(handles, "trash", directories["namespace"], device,
+                               private=True, create=create)
+    except FileNotFoundError:
+        return None
+
+
+def verify_trash(config, key, directories, trash):
+    verify_directories(config, key, directories)
+    current = os.stat("trash", dir_fd=directories["namespace"], follow_symlinks=False)
+    require(transactions.same_file(current, os.fstat(trash)), "namespace directory changed")
+
+
+def preflight_locks(locks, sessions):
+    """Refuses an unexpected lock-file shape before any rename, never after one."""
+    for session in sessions:
+        try:
+            info = os.stat(session + ".lock", dir_fd=locks["locks"], follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        transactions.validate_leaf(info)
+
+
+def response_bound(request, roots, entries, objects, candidates):
+    """The largest collect response this run can emit, from fixed row shapes."""
+    session = "0" * 36
+    empty = {"ok": True, "protocol": 3, "op": "collect", "dry_run": request["dry_run"], "trashed": [],
+             "purged_trash": [], "purged_objects": [], "kept": [], "more": False}
+    trashed = len(encode({"session_id": session, "seq": MAX_INTEGER, "root_sha256": "0" * 64})) + 1
+    kept = len(encode({"session_id": session, "reason": "protected"})) + 1
+    return (len(encode(empty)) + min(request["limit"], len(candidates)) * trashed + len(roots) * kept
+            + sum(len(encode(name)) + 1 for name in entries) + len(objects) * (len(encode("0" * 64)) + 1))
+
+
+def age_reason(saved_at, now):
+    age = now - saved_at
+    return "future" if age < 0 else "young" if age < EXPIRY_MS else None
+
+
+def run_collect(request, config, directories, locks, mutation):
+    """Moves expired roots to trash, then purges old trash and unnamed objects."""
+    protected = set(request["protected"])
+    with ExitStack() as handles:
+        trash = trash_directory(handles, directories, create=False)
+        roots, entries, objects = namespace_entries(directories, trash)
+        now = now_ms()
+        kept, candidates = [], []
+        for session, found in sorted(roots.items()):
+            root = found["root"]
+            saved_at = found["mtime"] if root["savedAt"] is None else root["savedAt"]
+            reason = "protected" if session in protected else age_reason(saved_at, now)
+            if reason is None:
+                candidates.append(session)
+            else:
+                kept.append({"session_id": session, "reason": reason})
+        # A refusal must never follow a rename, so both checks run first.
+        require(response_bound(request, roots, entries, objects, candidates) + 1 <= MAX_RESPONSE,
+                "collect response too large")
+        preflight_locks(locks, candidates)
+        done = {"trashed": [], "purged_trash": [], "purged_objects": []}
+        try:
+            response = collect_changes(request, config, directories, locks, handles, mutation,
+                                       (trash, roots, entries, objects, candidates, kept, now), done)
+        except (HistoryError, transactions.TransactionError, OSError, ValueError) as error:
+            # Only a refusal after a change is postcommit; it names every row already done.
+            if mutation["committed"]:
+                raise CollectInterrupted(str(error), done) from error
+            raise
+    return response
+
+
+def collect_changes(request, config, directories, locks, handles, mutation, listing, done):
+    """The guarded renames and purges of one collect; appends each finished row to done."""
+    key, dry_run = request["store"], request["dry_run"]
+    trash, roots, entries, objects, candidates, kept, now = listing
+    trashed, more = done["trashed"], False
+    for session in candidates:
+        if len(trashed) == request["limit"]:
+            more = True
+            break
+        found = roots[session]
+        with session_guard(locks, session) as free:
+            if not free:
+                kept.append({"session_id": session, "reason": "live"})
+                continue
+            # A refusal here could follow an earlier rename, so any failed
+            # recheck keeps the root instead.
+            try:
+                unchanged = hashlib.sha256(read_leaf(directories["roots"], found["name"], MAX_ROOT)).hexdigest() == found["digest"]
+            except (HistoryError, transactions.TransactionError, OSError, ValueError):
+                unchanged = False
+            if not unchanged:
+                kept.append({"session_id": session, "reason": "changed"})
+                continue
+            if not dry_run:
+                if trash is None:
+                    trash = trash_directory(handles, directories, create=True)
+                verify_trash(config, key, directories, trash)
+                name = "%s.%d.%s.%d.json" % (session, found["root"]["seq"], found["digest"], now_ms())
+                try:
+                    os.stat(name, dir_fd=trash, follow_symlinks=False)
+                    kept.append({"session_id": session, "reason": "changed"})
+                    continue
+                except FileNotFoundError:
+                    pass
+                try:
+                    os.rename(found["name"], name, src_dir_fd=directories["roots"], dst_dir_fd=trash)
+                except OSError:
+                    # A rename either happens or not; a failed one left the root in place.
+                    kept.append({"session_id": session, "reason": "changed"})
+                    continue
+                mutation["committed"] = True
+                trashed.append({"session_id": session, "seq": found["root"]["seq"], "root_sha256": found["digest"]})
+                entries[name] = {"root": found["root"], "trashed_at": now}
+                os.fsync(trash)
+                os.fsync(directories["roots"])
+            else:
+                trashed.append({"session_id": session, "seq": found["root"]["seq"], "root_sha256": found["digest"]})
+    kept.sort(key=lambda entry: entry["session_id"])
+    purged_trash = sorted(name for name, entry in entries.items()
+                          if now - entry["trashed_at"] >= TRASH_GRACE_MS)
+    if purged_trash and not dry_run:
+        verify_trash(config, key, directories, trash)
+        for name in purged_trash:
+            os.unlink(name, dir_fd=trash)
+            mutation["committed"] = True
+            done["purged_trash"].append(name)
+        os.fsync(trash)
+    # A root changed outside history.py may name an object this run never
+    # saw, so a run that kept any root as "changed" purges no object.
+    changed = any(entry["reason"] == "changed" for entry in kept)
+    named = {found["root"]["object"]["checksum"] for found in roots.values() if found["root"]["object"] is not None}
+    purged = set(purged_trash)
+    named |= {entry["root"]["object"]["checksum"] for name, entry in entries.items()
+              if name not in purged and entry["root"]["object"] is not None}
+    purged_objects = [] if changed else sorted(objects - named)
+    if purged_objects and not dry_run:
+        verify_directories(config, key, directories)
+        for checksum in purged_objects:
+            os.unlink(checksum + ".json", dir_fd=directories["objects"])
+            mutation["committed"] = True
+            done["purged_objects"].append(checksum)
+        os.fsync(directories["objects"])
+    return {"ok": True, "protocol": 3, "op": "collect", "dry_run": dry_run, "trashed": trashed,
+            "purged_trash": purged_trash, "purged_objects": purged_objects, "kept": kept, "more": more}
+
+
+def run_restore(request, config, directories, mutation):
+    """Moves one trash entry back to its root while that root is absent."""
+    session, entry = request["session_id"], request["entry"]
+    name = session + ".json"
+    with ExitStack() as handles:
+        try:
+            os.stat(name, dir_fd=directories["roots"], follow_symlinks=False)
+            raise HistoryError("root exists")
+        except FileNotFoundError:
+            pass
+        trash = trash_directory(handles, directories, create=False)
+        try:
+            require(trash is not None, "trash entry absent")
+            os.stat(entry, dir_fd=trash, follow_symlinks=False)
+        except FileNotFoundError as error:
+            raise HistoryError("trash entry absent") from error
+        found = TRASH_NAME.fullmatch(entry)
+        try:
+            raw, root, digest = stored_root(trash, entry, session)
+            require(root["seq"] == int(found.group(2)) and digest == found.group(3), "trash entry name differs")
+            if root["object"] is not None:
+                checksum = root["object"]["checksum"]
+                data = read_leaf(directories["objects"], checksum + ".json", MAX_LEDGER)
+                require(hashlib.sha256(data).hexdigest() == checksum, "object checksum differs")
+        except (HistoryError, transactions.TransactionError, OSError, ValueError, UnicodeError) as error:
+            raise HistoryError("v3 history damaged: " + str(error)) from error
+        verify_trash(config, request["store"], directories, trash)
+        os.rename(entry, name, src_dir_fd=trash, dst_dir_fd=directories["roots"])
+        mutation["committed"] = True
+        os.fsync(directories["roots"])
+        os.fsync(trash)
+    return {"ok": True, "protocol": 3, "op": "restore", "seq": root["seq"], "root_sha256": digest}
+
+
 def run_locked(request, mutation):
     config = transactions.selected_config()
     parent = os.getppid()
@@ -604,13 +894,18 @@ def run_locked(request, mutation):
                     emit({"ok": True, "protocol": 3, "op": operation, "store": key})
             else:
                 with history_namespace(config, request["store"], locks) as directories:
-                    response = run_history(request, config, directories, owner, mutation)
+                    if operation == "collect":
+                        response = run_collect(request, config, directories, locks, mutation)
+                    elif operation == "restore":
+                        response = run_restore(request, config, directories, mutation)
+                    else:
+                        response = run_history(request, config, directories, owner, mutation)
                     emit(response)
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("op", choices=("bind", "read", "save", "resolve"))
+    parser.add_argument("op", choices=("bind", "read", "save", "resolve", "collect", "restore"))
     try:
         arguments = parser.parse_args(argv)
     except SystemExit as error:
@@ -633,6 +928,8 @@ def main(argv):
                     "reason": str(error)}
         if operation in ("save", "resolve") and isinstance(request, dict) and "request_id" in request:
             response["request_id"] = request["request_id"]
+        if isinstance(error, CollectInterrupted):
+            response.update(error.rows)
         emit(response)
         return 1
     finally:

@@ -26,7 +26,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const UUID4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const SHA = /^[0-9a-f]{64}$/
 
-type Operation = 'bind' | 'read' | 'save' | 'resolve'
+type Operation = 'bind' | 'read' | 'save' | 'resolve' | 'collect'
 type ExpectedRoot = { absent: true } | { seq: number; root_sha256: string }
 type HistoryPending = { session_id: string; request_id: string; expect: ExpectedRoot }
 type Recent = { kind: 'save'; request_id: string; seq: number }
@@ -149,6 +149,10 @@ const rootMatches = (expected: ExpectedRoot, root?: Root, rootHash?: string) => 
 // Pure FIXTURE transition: maps and timelines supplied by the caller are never mutated here.
 // Lease/OS ownership is deliberately outside this in-memory model; native rows model the wire,
 // CAS, bounded objects, semantic revisions, recent requests, fences and nested-grant refusal.
+// TRACK-39 A2 contract r2 collect request shape.
+const validCollect = (request: Record<string, unknown>): boolean => exactKeys(request, ['v', 'op', 'store', 'protected', 'dry_run', 'limit'])
+  && Array.isArray(request.protected) && request.protected.length <= 64 && request.protected.every(session => matches(UUID4, session))
+  && typeof request.dry_run === 'boolean' && Number.isSafeInteger(request.limit) && (request.limit as number) >= 1 && (request.limit as number) <= 50
 export const historyModel = async (state: ModelState, op: Operation, stdin: string, timeline: readonly string[]): Promise<ModelReply> => {
   let request: Record<string, unknown> = {}
   const reply = (ok: boolean, fields: Record<string, unknown> = {}, next = state, exitCode = ok ? 0 : 1): ModelReply => ({
@@ -162,7 +166,12 @@ export const historyModel = async (state: ModelState, op: Operation, stdin: stri
   if (!objectValue(parsed)) return refuse('request is not a JSON object')
   request = parsed
   if (request.v !== 3 || request.op !== op) return refuse('request protocol or operation differs')
-  if (['bind', 'save', 'resolve'].includes(op) && openGrants(timeline).size > 0) return refuse('store writer is busy')
+  if (['bind', 'save', 'resolve', 'collect'].includes(op) && openGrants(timeline).size > 0) return refuse('store writer is busy')
+  // TRACK-39 A2: the model keeps no root ages, so a valid collect finds nothing to trash.
+  if (op === 'collect') {
+    if (!validCollect(request) || request.store !== await namespaceKey()) return refuse('invalid collect request')
+    return reply(true, { dry_run: request.dry_run, trashed: [], purged_trash: [], purged_objects: [], kept: [], more: false })
+  }
   if (op === 'bind') {
     if (!exactKeys(request, ['v', 'op', 'plugin', 'nonce']) || request.plugin !== 'track' || !matches(SHA, request.nonce)) return refuse('invalid bind request')
     const binding = state.bindValue
@@ -280,7 +289,7 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
   const calls: HistoryCall[] = []
   const receipts: ModelReceipt[] = []
   // Ordinals count client process calls for each operation, excluding direct model seed/read calls.
-  const ordinals: Record<Operation, number> = { bind: 0, read: 0, save: 0, resolve: 0 }
+  const ordinals: Record<Operation, number> = { bind: 0, read: 0, save: 0, resolve: 0, collect: 0 }
   on('process.run', { argv: /\/hooks\/history\.py$/ }, async ($, event) => {
     const op = event.argv[2] as Operation
     store.locks.timeline.push(`run:history:${op}`)
@@ -288,7 +297,7 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
     const clientRoot = product.root ?? ''
     expect(clientRoot.startsWith('/'), 'FIXTURE product root was captured from a lock spawn before history').toBe(true)
     expect(event.argv, 'FIXTURE history argv').toEqual(['python3', `${clientRoot}/hooks/history.py`, op])
-    expect(['bind', 'read', 'save', 'resolve'].includes(op), 'FIXTURE supported history operation').toBe(true)
+    expect(['bind', 'read', 'save', 'resolve', 'collect'].includes(op), 'FIXTURE supported history operation').toBe(true)
     expect(typeof event.init?.stdin, 'FIXTURE string stdin').toBe('string')
     expect(event.init?.env, 'FIXTURE isolated config environment').toEqual({ CLAUDE_CONFIG_DIR: CONFIG })
     expect(event.init?.timeoutMs, 'FIXTURE history timeout').toBe(8000)
@@ -298,6 +307,7 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
     if (byteLength(stdin) <= RAW_LIMIT) {
       try { const parsed: unknown = JSON.parse(stdin); if (objectValue(parsed)) request = parsed } catch { /* The model returns the malformed-JSON refusal. */ }
     }
+    if (op === 'collect') expect(validCollect(request), 'FIXTURE collect request shape').toBe(true)
     const ordinal = ++ordinals[op]
     calls.push({ op, ordinal, argv: [...event.argv], stdin, request: copy(request), pluginRoot: clientRoot })
     if (op === 'bind' && options.dropBindNonce === true) store.held.delete('v3:bind')
