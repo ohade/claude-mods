@@ -10,7 +10,7 @@ import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuest
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
-import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerContent } from './reconcile'
+import { assertLedgerOwner, identifyLedger, reconcileLedger, reconcileQuestionIdentity, sameLedgerContent } from './reconcile'
 import type { Baseline, SessionHead } from './reconcile'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
@@ -3105,11 +3105,14 @@ const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
   const prior = ownership.running?.run.catch(() => undefined) ?? Promise.resolve()
   const run = prior.then(async () => {
     ownership.epoch++
-    // The previous session's turn, activity and pending inputs are not this session's.
-    // resumeLedger archives its ledger.
-    await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
-    await update($, activity, () => IDLE)
-    await update($, pending, p => ({ inputs: [], nextId: p.nextId }))
+    // Decide after queued transitions finish: A->B->A must clear B's atoms.
+    // A same-target direct resume fences old tokens while keeping its own atoms.
+    const owner = (await read($, ledger)).session_id ?? (await read($, durability)).memorySession
+    if (owner !== id) {
+      await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
+      await update($, activity, () => IDLE)
+      await update($, pending, p => ({ inputs: [], nextId: p.nextId }))
+    }
     await resumeOwned($, id)
   })
   const flight = { id, run }
@@ -3350,7 +3353,7 @@ export const register: Register = on => {
 
     try {
       const id = await $.session.id()
-      await resumeOwned($, id)
+      await switchOwner($, id)
     } catch (error) {
       $.ui.log(`track: resume failed: ${reason(error)}`, { to: 'debug' })
     }
@@ -4399,17 +4402,27 @@ export const register: Register = on => {
       if (refusal !== undefined) {
         return cur
       }
-      let nextId = cur.nextQuestionId
-      const ids = { ...(cur.restoredIds ?? {}) }
-      for (const r of cur.restores ?? []) for (const q of r.questions) ids[q.sourceId ?? `${r.from}:Q${q.id}`] ??= q.id
+      const identity = reconcileQuestionIdentity(cur.questions, cur.restoredIds, cur.restores)
+      let nextId = Math.max(cur.nextQuestionId, ...cur.questions.map(q => q.id + 1), ...(cur.withdrawn ?? []).map(q => q.id + 1))
+      const occupied = new Set([...cur.questions.map(q => q.id), ...(cur.withdrawn ?? []).map(q => q.id)])
+      const ids = new Map(Object.entries(identity.restoredIds ?? {}))
+      for (const r of identity.restores ?? []) for (const q of r.questions) {
+        const sourceId = q.sourceId ?? `${r.from}:Q${q.id}`
+        if (!ids.has(sourceId)) ids.set(sourceId, q.id)
+      }
       restored = questions.map(q => {
         const sourceId = q.sourceId ?? `${from}:Q${q.id}`
-        const local = cur.questions.find(one => one.sourceId === sourceId)
-        const id = ids[sourceId] ?? nextId++
-        ids[sourceId] = id
+        const local = cur.questions.find(one => one.sourceId === sourceId && one.cleared !== true)
+          ?? cur.questions.find(one => one.sourceId === sourceId)
+        const cached = ids.get(sourceId)
+        const id = local?.id ?? (cached !== undefined && Number.isSafeInteger(cached) && cached > 0 && !occupied.has(cached) ? cached : nextId++)
+        occupied.add(id)
+        nextId = Math.max(nextId, id + 1)
+        ids.set(sourceId, id)
         return !replace && local !== undefined ? local : asRestored(q, id, from, mechanical ? undefined : e.tool_use_id)
       })
-      const kept = cur.questions.filter(q => !restored.some(one => one.id === q.id))
+      const sources = new Set(restored.map(q => q.sourceId))
+      const kept = cur.questions.filter(q => q.sourceId === undefined || !sources.has(q.sourceId))
       // A validated checkpoint must retain every source value. Only local spent
       // rows may make room; otherwise refuse before changing the ledger.
       const combined = checkpoint === undefined
@@ -4420,15 +4433,17 @@ export const register: Register = on => {
         return cur
       }
       const by = e.tool_use_id
+      const restores = by !== undefined && !(mechanical && wasRestored(cur))
+        ? keepRestores([...(identity.restores ?? []), { by, from, steps: steps.length, visibleSteps: visibleStepCount, questions: restored }], combined)
+        : identity.restores
 
       return {
         ...cur,
         ...(destination !== undefined && { session_id: destination }),
         steps: steps.length > 0 && (replace || cur.steps.length === 0) ? steps : cur.steps,
         questions: combined,
-        nextQuestionId: Math.max(nextId, ...restored.map(q => q.id + 1)),
-        restoredIds: ids,
-        ...(by !== undefined && !(mechanical && wasRestored(cur)) && { restores: keepRestores([...(cur.restores ?? []), { by, from, steps: steps.length, visibleSteps: visibleStepCount, questions: restored }], combined) }),
+        nextQuestionId: nextId,
+        ...reconcileQuestionIdentity(combined, Object.fromEntries(ids), restores),
       }
     }
     let proposed = propose(before)
@@ -4439,7 +4454,7 @@ export const register: Register = on => {
       // The acknowledged native UUID lives on the question itself, so a
       // bounded archive ring cannot evict a live question's jump target.
       const visible = restored.filter(q => q.cleared !== true)
-      const existing = !replace && visible.every(q => q.restoredBy !== undefined && SESSION_ID.test(q.restoredBy) && before.restores?.some(r => r.by === q.restoredBy && r.display === 'user' && r.questions.some(saved => saved.id === q.id)))
+      const existing = !replace && visible.every(q => q.restoredBy !== undefined && SESSION_ID.test(q.restoredBy) && proposed.restores?.some(r => r.by === q.restoredBy && r.display === 'user' && r.questions.some(saved => saved.id === q.id)))
       if (visible.length > 0 && !existing) {
         const text = restoreNotice({ by: '', from, steps: steps.length, visibleSteps: visibleStepCount, questions: visible, display: 'user' })
         const notice = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
@@ -4625,7 +4640,7 @@ export const register: Register = on => {
 
   on('classic.SessionStart', async ($, e, next) => {
     if (e.source === 'resume') {
-      await resumeOwned($, e.session_id)
+      await switchOwner($, e.session_id)
     }
 
     return next(e)
