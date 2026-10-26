@@ -245,9 +245,25 @@ class CollectRoundTwoPinTests(CollectFixture):
         # Opens of SECOND.json: enumeration, then its recheck after FIRST's rename.
         completed, response = self.collect_paused("R2a", SECOND + ".json", 2, replace_objects)
         self.assert_refusal(completed, response, "R2a", "namespace directory changed", phase="postcommit")
+        self.assertEqual(set(response), {"ok", "protocol", "op", "phase", "reason", "trashed", "purged_trash", "purged_objects"},
+                         "R2a: exact postcommit refusal keys")
         self.assertEqual(response.get("trashed"), [first], "R2a: the refusal names FIRST as trashed")
         self.assertEqual((response.get("purged_trash"), response.get("purged_objects")), ([], []), "R2a: nothing was purged")
         self.assertFalse(self.root_of(FIRST).exists(), "R2a: FIRST really is in trash")
+
+    def test_r3a_a_refusal_before_any_rename_keeps_the_precommit_keys(self):
+        self.two_old_roots("R3a")
+        objects = self.namespace() / "objects"
+
+        def replace_objects():
+            objects.rename(self.namespace() / "objects-moved")
+            objects.mkdir(mode=0o700)
+
+        # Opens of FIRST.json: enumeration, then its recheck before any rename.
+        completed, response = self.collect_paused("R3a", FIRST + ".json", 2, replace_objects)
+        self.assert_refusal(completed, response, "R3a", "namespace directory changed")
+        self.assertEqual(set(response), {"ok", "protocol", "op", "phase", "reason"}, "R3a: exact precommit refusal keys")
+        self.assertTrue(self.root_of(FIRST).exists(), "R3a: FIRST is still in roots/")
 
     def test_r2b_a_lock_replaced_by_a_symlink_after_preflight_keeps_the_root_live(self):
         first = self.two_old_roots("R2b")
