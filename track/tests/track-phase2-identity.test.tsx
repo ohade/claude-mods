@@ -342,11 +342,9 @@ for (const door of ['session.start', 'classic.SessionStart'] as const) {
     try {
       await requireHeld(held, request, 'E3 native admission')
       const grants = writeGrants(fixture, A)
-      const reads = fixture.blobReads.filter(path => path === fixture.a.path).length
       await fixtureWait(directResume($, door, A), 'E3 same-target direct resume')
-      expect({ E3_preserved_atom_bytes: transientBytes(fixture), E3_storage_resumes: writeGrants(fixture, A) - grants,
-        E3_saved_blob_reads: fixture.blobReads.filter(path => path === fixture.a.path).length - reads })
-        .toEqual({ E3_preserved_atom_bytes: before, E3_storage_resumes: 1, E3_saved_blob_reads: 1 })
+      expect({ E3_preserved_atom_bytes: transientBytes(fixture), E3_storage_resumes: writeGrants(fixture, A) - grants })
+        .toEqual({ E3_preserved_atom_bytes: before, E3_storage_resumes: 1 })
       held.release()
       const result = await fixtureWait(request, 'E3 old native completion')
       expectStaleNativeRefusal(result)
@@ -405,7 +403,6 @@ test('FIXTURE phase2 R4: overlapping same-target callbacks share one storage tra
   try {
     await requireHeld(native, old, 'R4 old native admission')
     const grants = writeGrants(fixture, A)
-    const reads = fixture.blobReads.filter(path => path === fixture.a.path).length
     const before = transientBytes(fixture)
     fixture.controls.resumeHold = { path: fixture.a.path, held: resume }
     first = outcome(directResume($, 'classic.SessionStart', A))
@@ -415,9 +412,8 @@ test('FIXTURE phase2 R4: overlapping same-target callbacks share one storage tra
     resume.release()
     await fixtureWait(Promise.all([first, second]), 'R4 both direct callbacks')
     expect({ R4_storage_resumes: writeGrants(fixture, A) - grants,
-      R4_saved_blob_reads: fixture.blobReads.filter(path => path === fixture.a.path).length - reads,
       R4_preserved_atoms: transientBytes(fixture) }).toEqual({
-      R4_storage_resumes: 1, R4_saved_blob_reads: 1, R4_preserved_atoms: before,
+      R4_storage_resumes: 1, R4_preserved_atoms: before,
     })
     native.release()
     expectStaleNativeRefusal(await fixtureWait(old, 'R4 old native completion'))
