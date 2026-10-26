@@ -617,8 +617,8 @@ def namespace_entries(directories, trash):
     """Every root, trash entry and object, or a refusal naming the first unknown entry."""
     roots, entries, objects = {}, {}, set()
 
-    def unknown(name, error=None):
-        raise HistoryError("v3 namespace has unknown entry: " + name) from error
+    def unknown(name):
+        raise HistoryError("v3 namespace has unknown entry: " + name)
 
     for name in sorted(os.listdir(directories["roots"])):
         found = ROOT_NAME.fullmatch(name)
@@ -630,7 +630,7 @@ def namespace_entries(directories, trash):
             raw, root, digest = stored_root(directories["roots"], name, found.group(1))
             mtime = os.stat(name, dir_fd=directories["roots"], follow_symlinks=False).st_mtime_ns // 1000000
         except (HistoryError, transactions.TransactionError, OSError, ValueError, UnicodeError) as error:
-            unknown(name, error)
+            raise HistoryError("v3 history damaged: roots/" + name) from error
         roots[found.group(1)] = {"name": name, "root": root, "digest": digest, "mtime": mtime}
     for name in sorted(os.listdir(trash)) if trash is not None else []:
         found = TRASH_NAME.fullmatch(name)
@@ -638,10 +638,9 @@ def namespace_entries(directories, trash):
             unknown(name)
         try:
             raw, root, digest = stored_root(trash, name, found.group(1))
+            require(root["seq"] == int(found.group(2)) and digest == found.group(3), "trash entry name differs")
         except (HistoryError, transactions.TransactionError, OSError, ValueError, UnicodeError) as error:
-            unknown(name, error)
-        if root["seq"] != int(found.group(2)) or digest != found.group(3):
-            unknown(name)
+            raise HistoryError("v3 history damaged: trash/" + name) from error
         entries[name] = {"root": root, "trashed_at": int(found.group(4))}
     for name in sorted(os.listdir(directories["objects"])):
         found = OBJECT_NAME.fullmatch(name)
@@ -655,6 +654,9 @@ def namespace_entries(directories, trash):
     return roots, entries, objects
 
 
+# D5 rechecks a victim before taking the D2 guard; collect takes the guard
+# first and rechecks under it, which is strictly stronger: no lease can start
+# between the recheck and the rename.
 @contextmanager
 def session_guard(locks, session):
     """Yields False while a live owner holds the session lease, else True with it held."""
@@ -687,6 +689,27 @@ def verify_trash(config, key, directories, trash):
     require(transactions.same_file(current, os.fstat(trash)), "namespace directory changed")
 
 
+def preflight_locks(locks, sessions):
+    """Refuses an unexpected lock-file shape before any rename, never after one."""
+    for session in sessions:
+        try:
+            info = os.stat(session + ".lock", dir_fd=locks["locks"], follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        transactions.validate_leaf(info)
+
+
+def response_bound(request, roots, entries, objects, candidates):
+    """The largest collect response this run can emit, from fixed row shapes."""
+    session = "0" * 36
+    empty = {"ok": True, "protocol": 3, "op": "collect", "dry_run": request["dry_run"], "trashed": [],
+             "purged_trash": [], "purged_objects": [], "kept": [], "more": False}
+    trashed = len(encode({"session_id": session, "seq": MAX_INTEGER, "root_sha256": "0" * 64})) + 1
+    kept = len(encode({"session_id": session, "reason": "protected"})) + 1
+    return (len(encode(empty)) + min(request["limit"], len(candidates)) * trashed + len(roots) * kept
+            + sum(len(encode(name)) + 1 for name in entries) + len(objects) * (len(encode("0" * 64)) + 1))
+
+
 def age_reason(saved_at, now):
     age = now - saved_at
     return "future" if age < 0 else "young" if age < EXPIRY_MS else None
@@ -708,6 +731,10 @@ def run_collect(request, config, directories, locks, mutation):
                 candidates.append(session)
             else:
                 kept.append({"session_id": session, "reason": reason})
+        # A refusal must never follow a rename, so both checks run first.
+        require(response_bound(request, roots, entries, objects, candidates) + 1 <= MAX_RESPONSE,
+                "collect response too large")
+        preflight_locks(locks, candidates)
         trashed, more = [], False
         for session in candidates:
             if len(trashed) == request["limit"]:
@@ -751,7 +778,8 @@ def run_collect(request, config, directories, locks, mutation):
                 os.unlink(name, dir_fd=trash)
                 mutation["committed"] = True
             os.fsync(trash)
-        # A root changed outside history.py may name an object this run never saw.
+        # A root changed outside history.py may name an object this run never
+        # saw, so a run that kept any root as "changed" purges no object.
         changed = any(entry["reason"] == "changed" for entry in kept)
         named = {found["root"]["object"]["checksum"] for found in roots.values() if found["root"]["object"] is not None}
         named |= {entry["root"]["object"]["checksum"] for name, entry in entries.items()
@@ -763,10 +791,8 @@ def run_collect(request, config, directories, locks, mutation):
                 os.unlink(checksum + ".json", dir_fd=directories["objects"])
                 mutation["committed"] = True
             os.fsync(directories["objects"])
-    response = {"ok": True, "protocol": 3, "op": "collect", "dry_run": dry_run, "trashed": trashed,
-                "purged_trash": purged_trash, "purged_objects": purged_objects, "kept": kept, "more": more}
-    require(len(encode(response)) + 1 <= MAX_RESPONSE, "collect response too large")
-    return response
+    return {"ok": True, "protocol": 3, "op": "collect", "dry_run": dry_run, "trashed": trashed,
+            "purged_trash": purged_trash, "purged_objects": purged_objects, "kept": kept, "more": more}
 
 
 def run_restore(request, config, directories, mutation):
