@@ -75,7 +75,7 @@ const drive = async <T,>(f: Fixture, call: Promise<T>): Promise<T> => {
   if (!finished) await f.clock.advance(DRIVE_MS)
   return call
 }
-const trackSteps = (f: Fixture, $: Engine, steps: string[]) => drive(f, $.tool.call({ tool: 'mcp__track__track_steps', steps } as never))
+const trackSteps = (f: Fixture, $: Engine, steps: string[], after?: string) => drive(f, $.tool.call({ tool: 'mcp__track__track_steps', steps, ...(after === undefined ? {} : { after }) } as never))
 const collects = (f: Fixture) => f.calls.filter(call => call.op === 'collect')
 
 test('TRACK-39 V3 N1 a flagged save is followed by one collect with no grant open', async ($, on) => {
@@ -102,10 +102,12 @@ test('TRACK-39 V3 N3 collect runs at most hourly and protects the pending sessio
   await trackSteps(f, $, ['A'])
   expect(collects(f).length, 'N3: the first save collects').toBe(1)
   expect(collects(f)[0]!.request.protected, 'N3: own and pending sessions are protected').toEqual([SESSION, OTHER])
-  await trackSteps(f, $, ['B'])
+  await trackSteps(f, $, ['B'], 'plan:1')
+  expect(f.calls.filter(call => call.op === 'save').length, 'N3: B committed a save').toBe(2)
   expect(collects(f).length, 'N3: a save within the hour does not collect again').toBe(1)
   await f.clock.advance(HOUR_MS)
-  await trackSteps(f, $, ['C'])
+  await trackSteps(f, $, ['C'], 'plan:2')
+  expect(f.calls.filter(call => call.op === 'save').length, 'N3: C committed a save').toBe(3)
   expect(collects(f).length, 'N3: a save an hour later collects again').toBe(2)
 })
 
