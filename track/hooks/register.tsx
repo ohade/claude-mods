@@ -2035,10 +2035,23 @@ type HistoryRun = { kind: 'ok'; response: Record<string, unknown> } | { kind: 'r
 const HISTORY_REQUEST_LIMIT = 3 * 1024 * 1024
 const historyPending = atom({ plugin: 'track', key: 'historyPending' } as const, null as PluginState['track']['historyPending'])
 const historyBinding = { store: undefined as string | undefined }
-// An unreadable flag is treated as unset: only an explicit '1' runs a v3 path.
+// Only an explicit '1' runs a v3 path. An unreadable flag keeps a module that
+// has already bound v3 on v3, so a v3 session never saves to the legacy store.
 const historyEnabled = async ($: EngineInterface): Promise<boolean> => {
   try { return (await $.env.get('TRACK_HISTORY_V3')) === '1' }
-  catch { return false }
+  catch (error) {
+    $.ui.log(`track: TRACK_HISTORY_V3 unreadable: ${reason(error)}`, { to: 'debug' })
+    return historyBinding.store !== undefined
+  }
+}
+const SAVE_PENDING = 'save outcome pending: '
+// The cause of the last save failure when its outcome is unknown, else undefined.
+const savePendingCause = (): string | undefined =>
+  persistence.failure.startsWith(SAVE_PENDING) ? persistence.failure.slice(SAVE_PENDING.length) : undefined
+// A pending outcome may have committed, so its public text never says "unsaved".
+const saveFailureText = (subject: string): string => {
+  const cause = savePendingCause()
+  return cause === undefined ? `${subject} is unsaved — ${persistence.failure}` : `${subject} save outcome pending — ${cause}`
 }
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 // A pending outcome may have committed, so it never reads as "unsaved".
@@ -2100,9 +2113,9 @@ const bindHistory = async ($: EngineInterface, id: string): Promise<string> => {
 // A valid or damaged root decides the route; only an absent root defers to an
 // existing legacy record, so a v3 session never falls back to legacy content.
 const readHistory = async ($: EngineInterface, store: string, id: string): Promise<HistoryView | 'legacy'> => {
-  const read = await runHistory($, 'read', { v: 3, op: 'read', store, session_id: id })
-  if (read.kind !== 'ok') throw new Error(read.kind === 'refused' ? read.reason : `v3 history read failed: ${read.cause}`)
-  const { response } = read
+  const readRun = await runHistory($, 'read', { v: 3, op: 'read', store, session_id: id })
+  if (readRun.kind !== 'ok') throw new Error(readRun.kind === 'refused' ? readRun.reason : `v3 history read failed: ${readRun.cause}`)
+  const { response } = readRun
   if (response.state === 'absent') {
     return await $.store.get(`s:${id}`) !== undefined || await $.store.get(`h:${id}`) !== undefined ? 'legacy' : {}
   }
@@ -2148,10 +2161,94 @@ const resolveHistoryPending = async ($: EngineInterface, store: string, id: stri
     request_id: pending.request_id, expect: pending.expect, resolve_id: crypto.randomUUID() })
   const resolved = outcome.kind === 'ok' ? outcome.response.outcome : undefined
   if (resolved !== 'committed' && resolved !== 'fenced' && resolved !== 'superseded') {
-    throw new HistoryOutcomePending(`save outcome pending: ${outcome.kind === 'refused' ? outcome.reason : outcome.kind === 'pending' ? outcome.cause : 'resolve receipt is incompatible'}`)
+    throw new HistoryOutcomePending(`${SAVE_PENDING}${outcome.kind === 'refused' ? outcome.reason : outcome.kind === 'pending' ? outcome.cause : 'resolve receipt is incompatible'}`)
   }
   await update($, historyPending, () => null)
   return resolved
+}
+
+// The root view for a save, after merging memory from another session or
+// durable rows this module never resumed.
+const saveView = async ($: EngineInterface, store: string, id: string): Promise<HistoryView | 'legacy'> => {
+  const view = await readHistory($, store, id)
+  if (view === 'legacy') return view
+  const acknowledged = await read($, durability)
+  const owned = await read($, ledger)
+  if (acknowledged.memorySession === id && (owned.session_id === undefined || owned.session_id === id) &&
+      (view.durable === undefined || acknowledged.baseline?.session_id === id || savedRevisions.has(id))) return view
+  await resumeFromHistory($, id, view)
+  const resumed = await readHistory($, store, id)
+  if (resumed === 'legacy') throw new Error('v3 history disappeared during resume; current rows were kept')
+  return resumed
+}
+
+// Rows to save over `view`: memory itself, or its three-way merge when the root
+// moved past this module's baseline. A merge conflict archives memory and adopts the root.
+const mergeWithRoot = async ($: EngineInterface, id: string, view: HistoryView, memory: Ledger, baseline: Baseline | undefined): Promise<Ledger> => {
+  const current = identifyLedger(memory, id)
+  const { root, durable } = view
+  if (root === undefined || durable === undefined) return current
+  const expected = savedRevisions.get(id) ?? baseline?.checkpoint?.revision
+  if (expected === undefined) throw new Error('stale writer revision; no verified baseline; resume before saving; v3 history was kept')
+  if (expected === root.checkpoint!.revision && (baseline?.generation === undefined || baseline.generation === root.generation)) return current
+  try { return reconcileLedger(baseline?.ledger, durable, current, id) }
+  catch (error) {
+    let archive = ''
+    await inOwnGrant($, id, async context => { archive = await adoptAfterConflict($, context, id, memory, baseline, durable, root.checkpoint!, root.generation!) })
+    throw new Error(`stale writer revision; newer v3 history was kept; local rows archived in ${archive}; ${reason(error)}`)
+  }
+}
+
+// Records the request as pending before history.py runs, so an unknown outcome
+// is resolved before any later save; clears it only on a known outcome.
+const commitHistorySave = async ($: EngineInterface, store: string, id: string, view: HistoryView, current: Ledger): Promise<{ checkpoint: Checkpoint; generation: string }> => {
+  const { root } = view
+  const checkpoint = await describeCheckpoint(current, id, root?.checkpoint ?? undefined)
+  const generation = root?.generation ?? crypto.randomUUID()
+  const expect: HistoryExpect = root === undefined ? { absent: true } : { seq: root.seq, root_sha256: view.rootHash! }
+  const request = { v: 3, op: 'save', store, session_id: id, module_token: writer.token, request_id: crypto.randomUUID(), expect,
+    generation, checkpoint, savedAt: Date.now(), ledger_text: JSON.stringify(current) }
+  if (new TextEncoder().encode(JSON.stringify(request)).length > HISTORY_REQUEST_LIMIT) throw new Error('history save request too large; rows were kept')
+  await update($, historyPending, () => ({ session_id: id, request_id: request.request_id, expect }))
+  const saved = await runHistory($, 'save', request)
+  if (saved.kind === 'pending') throw new HistoryOutcomePending(`${SAVE_PENDING}${saved.cause}`)
+  await update($, historyPending, () => null)
+  if (saved.kind === 'refused') throw new Error(saved.reason)
+  if (!Number.isSafeInteger(saved.response.seq) || typeof saved.response.root_sha256 !== 'string') throw new Error('v3 history save receipt is incompatible')
+  return { checkpoint, generation }
+}
+
+// The rows are committed; a pane preference refused afterwards stays pending on
+// its own and never makes the committed rows read as unsaved.
+const acknowledgeHistorySave = async ($: EngineInterface, id: string, memory: Ledger, current: Ledger, saved: { checkpoint: Checkpoint; generation: string }, intended: PluginState['track']['durability']): Promise<void> => {
+  const { checkpoint, generation } = saved
+  let memoryChanged = false
+  await update($, ledger, cur => {
+    memoryChanged = !sameValue(cur, memory)
+    return memoryChanged ? reconcileLedger(memory, current, cur, id) : current
+  })
+  savedRevisions.set(id, checkpoint.revision)
+  persistence.failure = ''
+  const preference = intended.closedByPerson
+  let preferenceFailure: string | undefined
+  if (preference !== undefined) {
+    try {
+      await inOwnGrant($, id, async context => {
+        await retentionStore($, context).set('closedByPerson', preference)
+        if (await $.store.get('closedByPerson') !== preference) throw new Error('pane preference read-back did not match')
+      })
+    } catch (error) {
+      preferenceFailure = reason(error)
+      $.ui.log(`track: pane preference not saved; rows were saved: ${preferenceFailure}`, { to: 'debug' })
+      $.ui.toast(`track: pane preference not saved — ${preferenceFailure}`)
+    }
+  }
+  const baseline = { session_id: id, ledger: current, checkpoint, generation }
+  await update($, durability, cur => preferenceFailure !== undefined
+    ? { ...cur, baseline, memorySession: id, isUnsaved: true, reason: `pane preference save pending: ${preferenceFailure}` }
+    : memoryChanged || cur.closedByPerson !== preference || cur.rewindSession !== intended.rewindSession
+      ? { ...cur, baseline, isUnsaved: true, reason: memoryChanged ? 'ledger save pending' : cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
+      : { isUnsaved: false, reason: '', memorySession: id, baseline })
 }
 
 // Returns 'legacy' for a session that still lives in the engine store. It never
@@ -2160,73 +2257,23 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
   try {
     const store = await bindHistory($, id)
     const resolved = await resolveHistoryPending($, store, id)
-    let view = await readHistory($, store, id)
+    const view = await saveView($, store, id)
     if (view === 'legacy') return 'legacy'
     assertOwner(token)
-    let acknowledged = await read($, durability)
-    const owned = await read($, ledger)
-    // Memory from another session, or durable rows this module never resumed, are merged first.
-    if (acknowledged.memorySession !== id || owned.session_id !== undefined && owned.session_id !== id ||
-        view.durable !== undefined && acknowledged.baseline?.session_id !== id && !savedRevisions.has(id)) {
-      await resumeFromHistory($, id, view)
-      view = await readHistory($, store, id)
-      if (view === 'legacy') throw new Error('v3 history disappeared during resume; current rows were kept')
-      acknowledged = await read($, durability)
-    }
-    const intended = { ...acknowledged, closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }
+    const intended = { ...await read($, durability), closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }
     const memory = await read($, ledger)
-    let current = identifyLedger(memory, id)
     const { root, durable } = view
-    const baseline = intended.baseline?.session_id === id ? intended.baseline : undefined
-    if (resolved === 'committed' && durable !== undefined && sameValue(durable, current)) {
+    if (resolved === 'committed' && root !== undefined && durable !== undefined && sameValue(durable, identifyLedger(memory, id))) {
       // The lost receipt's save already holds these rows.
-      savedRevisions.set(id, root!.checkpoint!.revision)
+      savedRevisions.set(id, root.checkpoint!.revision)
       await update($, durability, cur => ({ ...cur, isUnsaved: false, reason: '', memorySession: id,
-        baseline: { session_id: id, ledger: durable, checkpoint: root!.checkpoint!, generation: root!.generation! } }))
+        baseline: { session_id: id, ledger: durable, checkpoint: root.checkpoint!, generation: root.generation! } }))
       persistence.failure = ''
       return true
     }
-    if (durable !== undefined) {
-      const expected = savedRevisions.get(id) ?? baseline?.checkpoint?.revision
-      if (expected === undefined) throw new Error('stale writer revision; no verified baseline; resume before saving; v3 history was kept')
-      if (expected !== root!.checkpoint!.revision || (baseline?.generation !== undefined && baseline.generation !== root!.generation)) {
-        try { current = reconcileLedger(baseline?.ledger, durable, current, id) }
-        catch (error) {
-          let archive = ''
-          await inOwnGrant($, id, async context => { archive = await adoptAfterConflict($, context, id, memory, baseline, durable, root!.checkpoint!, root!.generation!) })
-          throw new Error(`stale writer revision; newer v3 history was kept; local rows archived in ${archive}; ${reason(error)}`)
-        }
-      }
-    }
-    const checkpoint = await describeCheckpoint(current, id, root?.checkpoint ?? undefined)
-    const generation = root?.generation ?? crypto.randomUUID()
-    const expect: HistoryExpect = root === undefined ? { absent: true } : { seq: root.seq, root_sha256: view.rootHash! }
-    const request = { v: 3, op: 'save', store, session_id: id, module_token: writer.token, request_id: crypto.randomUUID(), expect,
-      generation, checkpoint, savedAt: Date.now(), ledger_text: JSON.stringify(current) }
-    if (new TextEncoder().encode(JSON.stringify(request)).length > HISTORY_REQUEST_LIMIT) throw new Error('history save request too large; rows were kept')
-    await update($, historyPending, () => ({ session_id: id, request_id: request.request_id, expect }))
-    const saved = await runHistory($, 'save', request)
-    if (saved.kind === 'pending') throw new HistoryOutcomePending(`save outcome pending: ${saved.cause}`)
-    await update($, historyPending, () => null)
-    if (saved.kind === 'refused') throw new Error(saved.reason)
-    if (!Number.isSafeInteger(saved.response.seq) || typeof saved.response.root_sha256 !== 'string') throw new Error('v3 history save receipt is incompatible')
-    let memoryChanged = false
-    await update($, ledger, cur => {
-      memoryChanged = !sameValue(cur, memory)
-      return memoryChanged ? reconcileLedger(memory, current, cur, id) : current
-    })
-    savedRevisions.set(id, checkpoint.revision)
-    persistence.failure = ''
-    const preference = intended.closedByPerson
-    if (preference !== undefined) {
-      await inOwnGrant($, id, async context => {
-        await retentionStore($, context).set('closedByPerson', preference)
-        if (await $.store.get('closedByPerson') !== preference) throw new Error('pane preference read-back did not match')
-      })
-    }
-    await update($, durability, cur => memoryChanged || cur.closedByPerson !== preference || cur.rewindSession !== intended.rewindSession
-      ? { ...cur, baseline: { session_id: id, ledger: current, checkpoint, generation }, isUnsaved: true, reason: memoryChanged ? 'ledger save pending' : cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
-      : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id, ledger: current, checkpoint, generation } })
+    const current = await mergeWithRoot($, id, view, memory, intended.baseline?.session_id === id ? intended.baseline : undefined)
+    const saved = await commitHistorySave($, store, id, view, current)
+    await acknowledgeHistorySave($, id, memory, current, saved, intended)
     return true
   } catch (error) {
     if (error instanceof OwnerChanged) throw error
@@ -2234,7 +2281,7 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
     await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: persistence.failure }))
     if (error instanceof HistoryOutcomePending) {
       $.ui.log(`track: ${persistence.failure}`, { to: 'debug' })
-      $.ui.toast(`track: ${persistence.failure.replace(/^save outcome pending: /, 'save outcome pending — ')}`)
+      $.ui.toast(`track: save outcome pending — ${savePendingCause()}`)
     } else {
       $.ui.log(`track: unsaved; save failed: ${persistence.failure}`, { to: 'debug' })
       $.ui.toast(`track: unsaved — ${persistence.failure}`)
@@ -2860,7 +2907,7 @@ const reorderTrackedSteps = async ($: EngineInterface, ids: unknown, token?: Own
   })
   if (refusal !== undefined) return failure(refusal)
   await publishGate($, token)
-  if (!(await saveLedger($, token))) return failure(`order is unsaved — ${persistence.failure}`)
+  if (!(await saveLedger($, token))) return failure(saveFailureText('order'))
   const saved = (await read($, durability)).baseline
   if (saved?.session_id !== session) return failure('saved order could not be verified')
   const order = visibleSteps(saved.ledger.steps).map(step => step.id)
@@ -3066,8 +3113,8 @@ export const register: Register = on => {
       }
       return ran
     }
-    const warning = persistence.failure.startsWith('save outcome pending: ')
-      ? `track: ${persistence.failure.replace(/^save outcome pending: /, 'save outcome pending — ')}` : `track: unsaved — ${persistence.failure}`
+    const pendingCause = savePendingCause()
+    const warning = pendingCause === undefined ? `track: unsaved — ${persistence.failure}` : `track: save outcome pending — ${pendingCause}`
     if (e.tool === RESTORE_TRACKER && e.expected_checkpoint !== undefined && typeof ran.result === 'string') {
       const receipt = JSON.parse(ran.result) as Checkpoint
       return { ...ran, result: JSON.stringify({ ...receipt, ok: false, reason: warning }), context: [...(ran.context ?? []), warning] }
@@ -3499,7 +3546,7 @@ export const register: Register = on => {
       const kept = await dropRewound($, String(e.text ?? ''))
       // A rewind check that ran after an owner change speaks for the new owner, not for this prompt.
       assertAdmitted()
-      if (!kept) return { drop: `track: rewind is unsaved — ${persistence.failure}. Retry after storage is available.` }
+      if (!kept) return { drop: `track: ${saveFailureText('rewind')}. Retry after storage is available.` }
       const typed = e.origin?.kind === 'composer'
       // A plugin's prompt (Plannotator's review comments) can add work to a running plan.
       const fromPlugin = e.origin?.kind === 'plugin'
