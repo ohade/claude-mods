@@ -7,6 +7,8 @@ pin paths the first rows did not reach.
 """
 import os
 from pathlib import Path
+import select
+import stat
 import subprocess
 import sys
 import time
@@ -14,7 +16,7 @@ import unittest
 import uuid
 
 from test_history import HISTORY, checksum, compact
-from test_history_collect import DAY_MS, CollectFixture, now_ms
+from test_history_collect import COLLECT_RUNNER, DAY_MS, CollectFixture, now_ms
 
 LIMIT_RUNNER = Path(__file__).resolve().parent / "history_limit_runner.py"
 FIRST = "00000000-0000-4000-8000-000000000001"
@@ -25,6 +27,29 @@ class CollectPinTests(CollectFixture):
 
     def locks(self):
         return self.config / "state" / "track" / "locks"
+
+    def collect_paused(self, row, name, count, action):
+        """Runs collect paused before the count-th open of leaf name, applying action there."""
+        ready = self.scratch / ("ready-" + uuid.uuid4().hex)
+        go = self.scratch / ("go-" + uuid.uuid4().hex)
+        os.mkfifo(ready, 0o600)
+        os.mkfifo(go, 0o600)
+        ready_fd = os.open(ready, os.O_RDWR | os.O_NONBLOCK)
+        go_fd = os.open(go, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            request = {"v": 3, "op": "collect", "store": self.store, "protected": [], "dry_run": False, "limit": 50}
+            child = self.spawn([sys.executable, str(COLLECT_RUNNER), str(HISTORY), "collect", "--pause-name", name,
+                                "--pause-count", str(count), "--ready", str(ready), "--go", str(go)], data=compact(request))
+            readable, _, _ = select.select([ready_fd], [], [], 10)
+            self.assertTrue(readable, f"{row}: collect paused at {name}#{count}")
+            os.read(ready_fd, 4096)
+            action()
+            os.write(go_fd, b"go\n")
+            completed = child.finish()
+        finally:
+            os.close(go_fd)
+            os.close(ready_fd)
+        return completed, self.parse_response(completed, request, row)
 
     def collect_limited(self, row, limit):
         request = {"v": 3, "op": "collect", "store": self.store, "protected": [], "dry_run": False, "limit": 50}
@@ -137,6 +162,64 @@ class CollectPinTests(CollectFixture):
         completed, response = self.invoke(request, "P9")
         self.assert_refusal(completed, response, "P9", "v3 history damaged")
         self.assertFalse(self.root_of(session).exists(), "P9: nothing was restored")
+
+
+class CollectReworkPinTests(CollectFixture):
+    """Refuter r1 rows: a failed recheck keeps its root instead of refusing after a rename."""
+
+    collect_paused = CollectPinTests.collect_paused
+
+    def test_m1_a_recheck_failure_after_a_rename_keeps_the_root_changed(self):
+        self.save_at("M1", now_ms() - 8 * DAY_MS, session=FIRST)
+        self.save_at("M1", now_ms() - 8 * DAY_MS, session=SECOND)
+        second = self.root_of(SECOND)
+        # Opens of SECOND.json: enumeration, then its recheck after FIRST's rename.
+        completed, response = self.collect_paused("M1", SECOND + ".json", 2, lambda: second.chmod(0o644))
+        self.assert_ok(completed, response, "M1")
+        self.assertNotEqual(response.get("phase"), "postcommit", "M1: never a postcommit refusal")
+        self.assertEqual([entry["session_id"] for entry in response["trashed"]], [FIRST], "M1: FIRST is reported trashed")
+        self.assertEqual(self.kept(response).get(SECOND), "changed", "M1: SECOND is kept changed")
+        self.assertTrue(second.exists(), "M1: SECOND stays in roots/")
+
+    def test_m2_a_changed_root_suspends_object_purge_for_the_run(self):
+        session, _ = self.save_at("M2", now_ms() - 8 * DAY_MS)
+        orphan_text = compact({"rows": [{"id": "orphan"}], "metadata": {}})
+        orphan = self.namespace() / "objects" / (checksum(orphan_text) + ".json")
+        orphan.write_bytes(orphan_text)
+        orphan.chmod(0o600)
+        root = self.root_of(session)
+        original = root.read_bytes()
+        completed, response = self.collect_paused("M2", session + ".json", 2,
+                                                  lambda: root.write_bytes(original + b" "))
+        self.assert_ok(completed, response, "M2")
+        self.assertEqual(self.kept(response).get(session), "changed", "M2: the root was kept changed")
+        self.assertEqual(response["purged_objects"], [], "M2: no object is purged in a run with a changed root")
+        self.assertTrue(orphan.exists(), "M2: the orphan object stays")
+        root.write_bytes(original)
+        response = self.collected("M2 again")
+        self.assertEqual([entry["session_id"] for entry in response["trashed"]], [session], "M2: the restored root is trashed")
+        self.assertEqual(response["purged_objects"], [checksum(orphan_text)], "M2: without a changed root the orphan is purged")
+        self.assertFalse(orphan.exists(), "M2: the orphan object is gone")
+
+    def test_l1_a_future_mtime_fence_root_is_kept_future(self):
+        session = str(uuid.uuid4())
+        lease = self.start_lease("L1", session=session)
+        request = {"v": 3, "op": "resolve", "store": self.store, "session_id": session, "module_token": self.token,
+                   "request_id": str(uuid.uuid4()), "expect": {"absent": True}, "resolve_id": str(uuid.uuid4())}
+        completed, response = self.invoke(request, "L1 fence")
+        self.assert_ok(completed, response, "L1 fence")
+        lease.stop()
+        self.children.remove(lease)
+        future = (now_ms() + DAY_MS) / 1000
+        os.utime(self.root_of(session), (future, future))
+        response = self.collected("L1")
+        self.assertEqual(response["trashed"], [], "L1: a future fence root is never trashed")
+        self.assertEqual(self.kept(response).get(session), "future", "L1: kept future")
+
+    def test_l1_trash_directory_is_created_private(self):
+        self.save_at("L1 trash", now_ms() - 8 * DAY_MS)
+        self.collected("L1 trash")
+        self.assertEqual(stat.S_IMODE((self.namespace() / "trash").lstat().st_mode), 0o700, "L1: trash/ is 0700")
 
 
 if __name__ == "__main__":
