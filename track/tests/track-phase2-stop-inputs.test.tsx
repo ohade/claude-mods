@@ -17,8 +17,7 @@ type Mode = 'block' | 'spent' | 'unknown' | 'exit' | 'truncated' | 'throw'
 const input = (id: number, extra: Partial<PendingInput> = {}): PendingInput => ({
   id, head: FIRST, excerpt: FIRST, textHash: `fixture-${id}`, turnId: 'turn-1', ...extra,
 })
-const bytes = (snapshot: Snapshot): number => new TextEncoder().encode(JSON.stringify(snapshot)).length
-const minimal = (id: number): string => `track: Register input ${id} with mcp__track__track_question.`
+const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length
 const waiting = (count: number, padding = ''): { steps: Step[]; freshness: StepFreshness } => {
   const steps: Step[] = Array.from({ length: count }, (_, index) => ({
     id: `plan:${index + 1}${padding}`, source: 'plan', subject: 'Review the result', status: 'waiting',
@@ -223,7 +222,13 @@ test('R6d minimal input reasons are reserved before candidate truncation', async
   fixture.pending.value = { inputs, nextId: 51 }
   await call($, 'Bash', { command: 'true' })
   const snapshot = fixture.snapshot()
-  expect(snapshot.inputs).toEqual(inputs.map(row => ({ id: row.id, reason: minimal(row.id) })))
+  expect(snapshot.inputs?.map(row => row.id)).toEqual(inputs.map(row => row.id))
+  for (const row of snapshot.inputs!) {
+    const excerpt = /^track: "(Why .+)" needs mcp__track__track_question\.$/.exec(row.reason)?.[1]
+    expect(excerpt).toBeDefined()
+    expect(Array.from(excerpt!).length).toBeLessThanOrEqual(20)
+    expect(bytes(row)).toBeLessThan(100)
+  }
   expect(snapshot.inputs_complete).toBe(true)
   expect(snapshot.candidates!.length).toBeLessThan(before.candidates!.length)
   expect(snapshot.candidates!.length).toBeGreaterThan(0)

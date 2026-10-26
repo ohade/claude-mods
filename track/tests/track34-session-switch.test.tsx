@@ -83,7 +83,8 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
   const b = await seed(B, await rows(B, 'B'), files)
   const c = await seed(C, await rows(C, 'C'), files)
   const saved = { [A]: a.entry, [B]: b.entry, [C]: c.entry }
-  const controls = { session: A, identityFailure: '', identityFailOnce: false, readFailure: '', resumeHold: undefined as Latch | undefined,
+  const controls = { session: A, identityFailure: '', identityFailOnce: false, identityHold: undefined as Latch | undefined,
+    readFailure: '', resumeHold: undefined as Latch | undefined,
     taskHold: undefined as Latch | undefined,
     todoHold: undefined as Latch | undefined, updateHold: undefined as Latch | undefined,
     workHold: undefined as Latch | undefined, updateSuccess: true,
@@ -128,7 +129,14 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
       }
       throw new Error(failure)
     }
-    return { value: controls.session }
+    const value = controls.session
+    const held = controls.identityHold
+    if (held !== undefined) {
+      controls.identityHold = undefined
+      held.enter()
+      return held.released.then(() => ({ value }))
+    }
+    return { value }
   }).catch((_, _e, next) => ({ deny: next.error.message ?? 'TRACK34 session.id fixture failed without a reason' }))
   on('store.get', { key: /^s:/ }, (_, e, next) => {
     if (e.key === `s:${B}` && controls.readFailure !== '') {
@@ -422,6 +430,45 @@ test('FIXTURE TRACK34 session switch 08: B pending, answer source, freshness and
   } finally {
     oldLabel.release()
     newLabel.release()
+    await fixture.clock.settle()
+  }
+})
+
+test('FIXTURE TRACK34 classifier publication rejects an epoch change after its label write', async ($, on) => {
+  const fixture = await setup(on)
+  const model = latch()
+  const owner = latch()
+  const publications: string[] = []
+  on('env.set', { name: 'TRACK_GATE_SNAPSHOT' }, (_, e) => {
+    publications.push(String(e.value))
+    return { value: {} }
+  })
+  fixture.controls.modelReply = async () => {
+    model.enter()
+    await model.released
+    return 'question'
+  }
+  await beginA($, fixture)
+  fixture.store.held.set('classifier', { isOn: true })
+  await submit($, 'Explain the publication race')
+  await fixture.clock.advance(1)
+  await fixtureWait(model.entered, 'classifier started before publication race')
+  fixture.controls.identityHold = owner
+  model.release()
+  try {
+    await fixtureWait(owner.entered, 'classifier owner read after label write')
+    expect(fixture.pending.value.inputs.at(-1)?.label).toBe('question')
+    fixture.controls.session = B
+    await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'B selected during classifier owner read')
+    expect(fixture.memory.value).toEqual(fixture.b.rows)
+    expect(publications.length).toBeGreaterThan(0)
+    const before = { count: publications.length, snapshot: publications.at(-1) }
+    owner.release()
+    await fixture.clock.settle()
+    expect({ count: publications.length, snapshot: publications.at(-1) }).toEqual(before)
+  } finally {
+    model.release()
+    owner.release()
     await fixture.clock.settle()
   }
 })
