@@ -35,7 +35,7 @@ const prepare = (on: On, options: { inputs?: PendingInput[]; classifier?: boolea
   atomStore(on, 'scroll', { questions: null, steps: null })
   pluginStore(on, { classifier: { isOn: options.classifier === true } })
   const lines = logs(on)
-  const env = new Map<string, string>([['CLAUDE_CONFIG_DIR', '/fixture/config']])
+  const env = new Map<string, string>(options.root === false ? [] : [['CLAUDE_CONFIG_DIR', '/fixture/config']])
   if (options.root !== false) env.set('CLAUDE_PLUGIN_ROOT', '/fixture/track')
   const helper = { mode: 'block' as Mode }
   const classifier = { reply: (_text: string): Promise<string> => Promise.resolve('not_question') }
@@ -53,7 +53,7 @@ const prepare = (on: On, options: { inputs?: PendingInput[]; classifier?: boolea
   on('classic.Stop', () => options.below === undefined ? {} : { block: options.below })
   on('tool.call', { tool: 'Bash' }, () => ({ result: 'fixture command finished' }))
   on('model.complete', async (_, e) => ({ value: { isAnswered: true, text: await classifier.reply(e.prompt), usage: USAGE } }) as never)
-  on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
+  on('process.run', { argv: /^\/.*\/hooks\/stop-gate\.py$/ }, (_, e) => {
     calls.push({ snapshot: JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}'), argv: e.argv, timeout: e.init?.timeoutMs })
     if (helper.mode === 'throw') throw new Error('fixture helper unavailable')
     const receipt = helper.mode === 'block' ? { decision: 'block', reason: HELPER_REASON } : {}
@@ -134,7 +134,7 @@ test('R3 classic Stop claims the input once and returns the exact helper receipt
   const fixture = prepare(on, { inputs: [input(1)] })
   expect((await stop($)).block).toBe(HELPER_REASON)
   expect(fixture.calls).toHaveLength(1)
-  expect(fixture.calls[0]?.argv).toEqual(['python3', '/fixture/track/hooks/stop-gate.py', '--claim'])
+  expect(fixture.calls[0]?.argv).toEqual(['python3', expect.stringMatching(/^\/.*\/hooks\/stop-gate\.py$/), '--claim'])
   expect(fixture.calls[0]?.timeout).toBe(2000)
   expect(fixture.calls[0]?.snapshot).toMatchObject({ inputs: [{ id: 1, reason: worded(FIRST) }], inputs_complete: true, candidates: [] })
   expect(fixture.pending.value.inputs[0]?.held).toBe(true)

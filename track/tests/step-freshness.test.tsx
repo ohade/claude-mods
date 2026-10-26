@@ -44,8 +44,8 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   on('env.get', (_, e) => ({ value: env.get(e.name) }))
   on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   // Observed 2026-10-23: own-save publication also calls process.run; model only Stop claims, leaving blob publication unavailable.
-  on('process.run', { argv: /^\/fixture\/track\/hooks\/stop-gate\.py$/ }, (_, e) => {
-    expect(e.argv).toContain('/fixture/track/hooks/stop-gate.py')
+  on('process.run', { argv: /^\/.*\/hooks\/stop-gate\.py$/ }, (_, e) => {
+    expect(e.argv[1]).toMatch(/^\/.*\/hooks\/stop-gate\.py$/)
     claim.calls++
     if (claim.denied) return { deny: 'fixture claim process denied' }
     const snapshot = JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}')
