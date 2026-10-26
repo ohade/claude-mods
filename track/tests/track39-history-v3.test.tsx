@@ -275,7 +275,10 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
   on('process.run', { argv: /\/hooks\/history\.py$/ }, async ($, event) => {
     const op = event.argv[2] as Operation
     store.locks.timeline.push(`run:history:${op}`)
-    expect(event.argv, 'FIXTURE history argv').toEqual(['python3', `${$.plugin.root}/hooks/history.py`, op])
+    // The client runs from its own plugin root, which differs from this test plugin's root.
+    const clientRoot = String(event.argv[1] ?? '').slice(0, -'/hooks/history.py'.length)
+    expect(clientRoot.startsWith('/') && String(event.argv[1]).endsWith('/hooks/history.py'), 'FIXTURE history helper path').toBe(true)
+    expect(event.argv, 'FIXTURE history argv').toEqual(['python3', `${clientRoot}/hooks/history.py`, op])
     expect(['bind', 'read', 'save', 'resolve'].includes(op), 'FIXTURE supported history operation').toBe(true)
     expect(typeof event.init?.stdin, 'FIXTURE string stdin').toBe('string')
     expect(event.init?.env, 'FIXTURE isolated config environment').toEqual({ CLAUDE_CONFIG_DIR: CONFIG })
@@ -287,7 +290,7 @@ const fixture = (on: On, options: FixtureOptions = {}) => {
       try { const parsed: unknown = JSON.parse(stdin); if (objectValue(parsed)) request = parsed } catch { /* The model returns the malformed-JSON refusal. */ }
     }
     const ordinal = ++ordinals[op]
-    calls.push({ op, ordinal, argv: [...event.argv], stdin, request: copy(request), pluginRoot: $.plugin.root })
+    calls.push({ op, ordinal, argv: [...event.argv], stdin, request: copy(request), pluginRoot: clientRoot })
     if (op === 'bind' && options.dropBindNonce === true) store.held.delete('v3:bind')
     model.state = { ...model.state, bindValue: copy(store.held.get('v3:bind') ?? null) }
     const rejected = options.reject?.(op, ordinal) === true
