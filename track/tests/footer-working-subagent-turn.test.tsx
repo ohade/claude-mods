@@ -59,8 +59,17 @@ test('P2 a background agent outlives the main turn: Agents while it runs, never 
   const during = await bannerOf($)
   expect(during).toContain('Agents')
   expect(during).not.toContain('Working')
+})
 
+// The pane mounts once per test, so the after-state of P2 is its own test.
+test('P3 a background agent that outlived the main turn ends: the footer is not Working', async ($, on) => {
+  const activity = prepare(on, { ...IDLE, background: ['ag1'] })
+  await start($, 'main-1')
+  await start($, 'agent-turn-1', 'ag1')
+  await complete($, 'main-1')
   await complete($, 'agent-turn-1', 'ag1')
+
+  expect(activity.value.isWorking).toBe(false)
   expect(activity.value.background).toEqual([])
   expect(await bannerOf($)).not.toContain('Working')
 })
