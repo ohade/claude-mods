@@ -54,7 +54,7 @@ prepare_repo() {
   git -C "$repo" config user.name Fixture
   git -C "$repo" config user.email fixture@example.invalid
   mkdir -p "$repo/track/tests" "$repo/image-thumbs/tests" "$repo/scripts/tests"
-  mkdir -p "$repo/track/.claude-plugin" "$repo/image-thumbs/.claude-plugin"
+  mkdir -p "$repo/track/.claude-plugin" "$repo/image-thumbs/.claude-plugin" "$repo/track/hooks"
   printf 'fixture\n' > "$repo/track/tests/input"
   printf 'fixture\n' > "$repo/image-thumbs/tests/input"
   printf '{}\n' > "$repo/track/.claude-plugin/plugin.json"
@@ -62,6 +62,8 @@ prepare_repo() {
   # Has tests/ but is not a mod (no .claude-plugin/plugin.json): land.sh must skip it.
   printf 'fixture\n' > "$repo/scripts/tests/input"
   git -C "$repo" add .
+  # Every case carries valid identity metadata, so the identity preflight never fails an unrelated case.
+  identity
   git -C "$repo" commit -qm base
   base=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" worktree add -q --detach "$live" "$base"
@@ -85,10 +87,23 @@ expect_unchanged() {
   expect_equal "$(cksum < "$receipt")" "$before_receipt" 'receipt changed'
   expect_equal "$(git -C "$repo" worktree list --porcelain | grep -c '^worktree ')" 2 'temporary worktree leaked'
 }
+# The shared generator over the fixture's tracked track/ tree (failure-intake D1); the fixture's source base is a stand-in.
+identity() {
+  python3 "$suite_dir/scripts/land-state.py" identity generate "$repo" track "$(printf '0%.0s' {1..40})" > /dev/null
+  git -C "$repo" add track/hooks/build-identity.ts
+}
 commit_checks() {
   git -C "$repo" checkout -q candidate
   git -C "$repo" add .
+  identity
   git -C "$repo" commit -qm 'fixture release checks'
+  target=$(git -C "$repo" rev-parse HEAD)
+  git -C "$repo" checkout -q main
+}
+# A candidate commit whose identity metadata is left as the case made it.
+commit_raw() {
+  git -C "$repo" add -A .
+  git -C "$repo" commit -qm 'fixture identity case'
   target=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" checkout -q main
 }
@@ -232,6 +247,33 @@ bash "$land" --status > "$CLAUDE_MODS_HOME/status"
 if grep -q DRIFT "$CLAUDE_MODS_HOME/status"; then fail 'false drift'; fi
 printf 'PASS landing, counts, cleanup and status\n'
 
+# K1 (failure-intake E-I4), FIXTURE release-gate proof: the landing path refuses a track/ tree whose identity is
+# missing or does not match its own recomputation, and still lands one the shared generator produced.
+prepare_repo identity-missing
+git -C "$repo" checkout -q candidate
+git -C "$repo" rm -q track/hooks/build-identity.ts
+commit_raw
+run_failure
+expect_unchanged
+grep -q 'identity missing' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the missing identity'
+printf 'PASS K1 missing identity prevents publication\n'
+
+prepare_repo identity-mismatch
+git -C "$repo" checkout -q candidate
+printf 'drifted after generation\n' > "$repo/track/tests/input"
+commit_raw
+run_failure
+expect_unchanged
+grep -q 'identity mismatch' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the identity mismatch'
+printf 'PASS K1 mismatched identity prevents publication\n'
+
+prepare_repo identity-valid
+printf 'changed under track\n' > "$repo/track/tests/input"
+commit_checks
+bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1 || fail 'a valid generated identity did not land'
+expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'live not advanced with a valid identity'
+printf 'PASS K1 valid generated identity lands\n'
+
 prepare_repo locked
 mkdir "$state/claude-mods-land.lock"
 printf '{"pid":%s,"created_at":0,"host":"%s"}\n' "$$" "$(hostname)" > "$state/claude-mods-land.lock/owner.json"
@@ -291,4 +333,4 @@ if bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then result=0; else
 expect_equal "$(git --git-dir="$CLAUDE_MODS_HOME/origin.git" rev-parse main)" "$target" 'pushed untested concurrent main'
 expect_equal "$result" 1 'concurrent main change not reported'
 printf 'PASS pinned push detects concurrent main\n'
-printf 'PASS 16 landing cases (FIXTURE; no real Claude or remote service)\n'
+printf 'PASS 19 landing cases (FIXTURE; no real Claude or remote service)\n'
