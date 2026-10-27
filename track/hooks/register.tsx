@@ -28,6 +28,10 @@ const PANE_ROWS = 16
 // The rewind check a prompt-hint redraw schedules: run after this delay, at most once per gap.
 // Module memory, not $.state: a reload only resets the debounce.
 const REWIND_CHECK_DELAY_MS = 1000
+// Failure-intake D2: the identity is the module's static import, bound when this file loaded and never
+// refreshed. Declared here, with the module constants, so the landing checks that slice production
+// functions out of this file (tests/helpers/check_cwd_spawn.ts) never evaluate it in their sandbox.
+const LOADED_IDENTITY = identityOf(BUILD_IDENTITY)
 const REWIND_CHECK_GAP_MS = 3000
 const rewindCheck = { isScheduled: false, lastAt: -Infinity, running: undefined as { hasPrompt: boolean; run: Promise<boolean> } | undefined }
 // The built-in diff panel's rule, less its git condition (the tracker does not need git, and a
@@ -3324,9 +3328,8 @@ const ensureOwner = async ($: EngineInterface): Promise<Owned> => {
   return { ok: true, token: { owner: id, epoch: ownership.epoch } }
 }
 
-// Failure-intake D2/D3: the identity is the module's static import, bound when this file loaded and never
-// refreshed. `observed_disk` is the checkout's HEAD now: evidence of drift, never of the loaded code.
-const LOADED_IDENTITY = identityOf(BUILD_IDENTITY)
+// Failure-intake D3: `observed_disk` is the checkout's HEAD now: evidence of drift, never of the loaded code.
+// (LOADED_IDENTITY, the D2 static identity, is declared with the module constants at the top of this file.)
 const observedDisk = async ($: EngineInterface): Promise<string | undefined> => {
   const root = $.plugin.root
   if (!root?.startsWith('/')) return undefined
