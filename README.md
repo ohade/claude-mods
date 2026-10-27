@@ -278,7 +278,7 @@ It opens by itself by the built-in diff panel's rule, less the git condition: in
 layout, at least 144 columns wide, and never after you closed it by hand (ctrl+x x). A reload of
 the mod leaves an open pane open. `/track` shows or hides it at any width, and like `/btw` it acts
 at once while a turn runs and adds nothing to the session; `/track status` prints the open
-questions. To keep the diff
+questions and the line `track: loaded <fingerprint8|unknown> (disk <commit8|unknown>)`. To keep the diff
 panel out of the slot, type `/diff` once.
 
 `/track classifier` reports the optional question classifier's setting. `/track classifier on`
@@ -470,6 +470,8 @@ helper that refuses legacy clients needs positive admission first: every loaded 
 protocol 2 client and no legacy helper or SDK work is still outstanding, or the hosts are shown
 to be quiescent. A census of leases or processes alone is not enough. Writer exclusion after a
 helper dies unexpectedly is still unresolved.
+
+`mcp__track__diagnose` returns a read-only, main-loop-only failure-intake bundle of ids, counts and event codes, at most 32 KiB; see [track/docs/failure-intake.md](track/docs/failure-intake.md).
 
 ### Local checkpoint/restore contract v1
 
