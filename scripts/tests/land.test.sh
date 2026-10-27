@@ -108,6 +108,46 @@ commit_raw() {
   git -C "$repo" checkout -q main
 }
 
+# K1 (failure-intake E-I4), FIXTURE release-gate proof: the landing path refuses a track/ tree whose identity is
+# missing or does not match its own recomputation, and still lands one the shared generator produced.
+k1_identity_missing() {
+  prepare_repo identity-missing
+  git -C "$repo" checkout -q candidate
+  git -C "$repo" rm -q track/hooks/build-identity.ts
+  commit_raw
+  run_failure
+  expect_unchanged
+  grep -q 'identity missing' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the missing identity'
+  printf 'PASS K1 missing identity prevents publication\n'
+}
+k1_identity_mismatch() {
+  prepare_repo identity-mismatch
+  git -C "$repo" checkout -q candidate
+  printf 'drifted after generation\n' > "$repo/track/tests/input"
+  commit_raw
+  run_failure
+  expect_unchanged
+  grep -q 'identity mismatch' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the identity mismatch'
+  printf 'PASS K1 mismatched identity prevents publication\n'
+}
+k1_identity_valid() {
+  prepare_repo identity-valid
+  printf 'changed under track\n' > "$repo/track/tests/input"
+  commit_checks
+  bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1 || fail 'a valid generated identity did not land'
+  expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'live not advanced with a valid identity'
+  printf 'PASS K1 valid generated identity lands\n'
+}
+# Erratum 2 (failure-intake K1): LAND_TEST_K1_CASE=missing|mismatch|valid runs that one K1 case alone and stops,
+# because this suite is fail-fast and a full run cannot show the second case red. Unset, every case runs as before.
+case "${LAND_TEST_K1_CASE:-}" in
+  '') ;;
+  missing) k1_identity_missing; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
+  mismatch) k1_identity_mismatch; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
+  valid) k1_identity_valid; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
+  *) fail "unknown LAND_TEST_K1_CASE: ${LAND_TEST_K1_CASE}" ;;
+esac
+
 # GR-1 (2026-10-20): the native runner passed while real helper checks were skipped.
 prepare_repo python-helper
 mkdir -p "$repo/track/tests/helpers"
@@ -247,32 +287,9 @@ bash "$land" --status > "$CLAUDE_MODS_HOME/status"
 if grep -q DRIFT "$CLAUDE_MODS_HOME/status"; then fail 'false drift'; fi
 printf 'PASS landing, counts, cleanup and status\n'
 
-# K1 (failure-intake E-I4), FIXTURE release-gate proof: the landing path refuses a track/ tree whose identity is
-# missing or does not match its own recomputation, and still lands one the shared generator produced.
-prepare_repo identity-missing
-git -C "$repo" checkout -q candidate
-git -C "$repo" rm -q track/hooks/build-identity.ts
-commit_raw
-run_failure
-expect_unchanged
-grep -q 'identity missing' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the missing identity'
-printf 'PASS K1 missing identity prevents publication\n'
-
-prepare_repo identity-mismatch
-git -C "$repo" checkout -q candidate
-printf 'drifted after generation\n' > "$repo/track/tests/input"
-commit_raw
-run_failure
-expect_unchanged
-grep -q 'identity mismatch' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the identity mismatch'
-printf 'PASS K1 mismatched identity prevents publication\n'
-
-prepare_repo identity-valid
-printf 'changed under track\n' > "$repo/track/tests/input"
-commit_checks
-bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1 || fail 'a valid generated identity did not land'
-expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'live not advanced with a valid identity'
-printf 'PASS K1 valid generated identity lands\n'
+k1_identity_missing
+k1_identity_mismatch
+k1_identity_valid
 
 prepare_repo locked
 mkdir "$state/claude-mods-land.lock"
