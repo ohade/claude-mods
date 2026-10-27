@@ -85,6 +85,11 @@ class SdkLandingTest(unittest.TestCase):
         self.manifest = self.sut / 'sdk-types.json'
         self.manifest.write_text(json.dumps({'v': 1, 'version': VERSION, 'files': files}))
         self.git('add', '.')
+        # Failure-intake E-I4: track/ carries the shared generator's valid identity, so the landing
+        # identity preflight never fails an SDK case for a reason other than the one it pins.
+        (mod / 'hooks').mkdir()
+        self.run_command('python3', str(self.sut / 'land-state.py'), 'identity', 'generate', str(self.repo), 'track', '0' * 40)
+        self.git('add', 'track/hooks/build-identity.ts')
         self.git('commit', '-qm', 'SDK landing fixture base')
         self.base = self.git('rev-parse', 'HEAD').stdout.strip()
         self.run_command('git', '-C', str(self.repo), 'worktree', 'add', '--detach', str(self.live), self.base)
