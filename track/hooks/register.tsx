@@ -3861,6 +3861,10 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    // A subagent's loop starts turns too (agentId set). Everything below is the main turn's:
+    // its current id, freshness record, input and row binding, and activity. A subagent's start
+    // touches none of it, or the main turn's Stop would judge an emptied record.
+    if (e.agentId !== undefined) return next(e)
     // prompt.submit may already have stored this turn's inputs, unbound: they are this turn's.
     // A covered input of an earlier turn is done and leaves, and so is one Haiku called
     // not_question; an unresolved one stays. Steps coverage waits for a label still to come: a late
@@ -3872,9 +3876,7 @@ export const register: Register = on => {
         inputs: p.inputs.filter(i => i.turnId === null || i.turnId === e.turnId || (i.covered === undefined ? i.label !== 'not_question' : i.covered === 'steps' && i.label === undefined)).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
       }))
     }
-    // A subagent's loop starts turns too (agentId set). Only the main loop's start is main work:
-    // a subagent's would take mainTurnId, and the main turn.complete would never clear isWorking.
-    if (e.agentId === undefined) await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
+    await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
