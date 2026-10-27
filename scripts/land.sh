@@ -93,6 +93,15 @@ printf '{}\n' > "$sdk_file"
 phase=tests
 mod_count=0
 has_failed=false
+# Failure-intake E-I4: Track's generated build identity must match its own tree before any mod check
+# runs; the receipt then maps that source fingerprint to the deployed commit.
+identity_file=
+if [ -f "$temporary_tree/track/.claude-plugin/plugin.json" ]; then
+  identity_file="$log_dir/identity.json"
+  printf '{}\n' > "$identity_file"
+  python3 "$helper" identity check "$temporary_tree" track --record "$identity_file" > /dev/null ||
+    die 'track build identity check failed; main, live and receipt were not changed'
+fi
 
 # GR-1 (2026-10-20): native fixture tests do not execute OS helpers or type checks.
 # Every check uses the tested tree, a bounded child group and its own private log.
@@ -174,7 +183,7 @@ check_layout
 [ "$(head_at "$repo")" = "$main_before" ] || die 'main moved during testing'
 [ "$(head_at "$live")" = "$live_before" ] || die 'live moved during testing'
 receipt_tmp=$(mktemp "$state/.claude-mods-live.XXXXXX")
-python3 "$helper" receipt "$receipt" "$target" "$live_before" "$mods_file" "$log_dir" --sdk "$sdk_file" > "$receipt_tmp"
+python3 "$helper" receipt "$receipt" "$target" "$live_before" "$mods_file" "$log_dir" --sdk "$sdk_file" ${identity_file:+--identity "$identity_file"} > "$receipt_tmp"
 
 # Publication is resumable, not atomic across two worktrees and a remote.
 phase=merge
