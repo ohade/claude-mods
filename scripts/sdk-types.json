@@ -1,10 +1,10 @@
 {
   "v": 1,
-  "version": "2.1.311",
-  "provenance": "Engine-written SDK from a native Claude Code 2.1.311 load on 2026-10-26 (interactive startup of a be5e106 Track copy from a scratch folder outside the landing tree). Contains digests only, no copied API or machine-specific tool schemas.",
+  "version": "2.1.312",
+  "provenance": "Engine-written SDK from a native Claude Code 2.1.312 load on 2026-10-27 (manager capture of the 604d2f1 Track copy, layout root ~/git/worktrees/staging/sdk-capture-2.1.312; diff vs 2.1.311: version header and one doc comment on effort). Contains digests only, no copied API or machine-specific tool schemas.",
   "files": {
     "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
-    "track/.claude-plugin/types/claude-code/index.d.ts": "2701abac34fdfce22b82a29f51bfe5fe729d85de03b6c76f4c7e5eabb5b878b3",
+    "track/.claude-plugin/types/claude-code/index.d.ts": "b17c6407f4800426db052491483c4bf0aabc36ce686526fe9b70cd904a821f5a",
     "track/.claude-plugin/types/claude-code-tools/index.d.ts": "6589ab8e477d10097616eecf1cced946d2d73ded93558fe852ec1c2a90fb7a4d",
     "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "0cab298516885f406c7762cf83b84334b5f5f02e1207abc79a02d136f518354b"
   }
