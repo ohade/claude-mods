@@ -43,7 +43,13 @@ const world = (on: On, options: { owner?: string | null; ledger?: Record<string,
     env.push(name)
     return (options.gateFailure !== undefined && name === 'TRACK_GATE_SNAPSHOT' ? { deny: options.gateFailure } : { value: undefined }) as never
   })
-  // The test's own classic.Stop hook is the bottom of the chain.
+  // The test's own classic.Stop hook is the bottom of the chain; session.start needs the host's registrations.
+  on('classic.Stop', () => ({}))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   return { ledger, turn, activity, pending, durability, store, git, env, setSession: (id: string) => { session = () => id }, sessionBy: (f: () => string) => { session = f } }
 }
 
