@@ -26,12 +26,16 @@ const prepare = (on: On, start: Activity = IDLE) => {
   return activity
 }
 
-const bannerOf = async ($: Engine) => {
+// The pane mounts once per test; the reader reads its current rows each time it is called.
+const bannerReader = async ($: Engine) => {
   const ui = (await $.ui.mount(pane('dock'))) as unknown as Drawn
-  const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
 
-  return rows.map(el => String(el.text ?? '')).join(' ')
+  return async () => {
+    const rows = (await ui.findAll({ type: 'Box' })).filter(el => String(el.key ?? '').startsWith('banner-'))
+    return rows.map(el => String(el.text ?? '')).join(' ')
+  }
 }
+const bannerOf = async ($: Engine) => (await bannerReader($))()
 
 const start = ($: Engine, turnId: string, agentId?: string) =>
   $.turn.start({ text: '', turnId, ...(agentId !== undefined && { agentId }) } as never)
@@ -43,7 +47,21 @@ test('P1 a subagent turn inside the main turn: after both end, the footer is not
   await start($, 'main-1')
   await start($, 'agent-turn-1', 'ag1')
   await complete($, 'agent-turn-1', 'ag1')
+  // The subagent's end is not the main turn's: the main turn is still Working.
+  expect(activity.value.isWorking).toBe(true)
+  const banner = await bannerReader($)
+  expect(await banner()).toContain('Working')
   await complete($, 'main-1')
+
+  expect(activity.value.isWorking).toBe(false)
+  expect(await banner()).not.toContain('Working')
+})
+
+test('P4 a background agent turn that starts after the main turn ended does not make the footer Working', async ($, on) => {
+  const activity = prepare(on, { ...IDLE, background: ['ag1'] })
+  await start($, 'main-1')
+  await complete($, 'main-1')
+  await start($, 'agent-turn-2', 'ag1')
 
   expect(activity.value.isWorking).toBe(false)
   expect(await bannerOf($)).not.toContain('Working')
