@@ -3872,7 +3872,9 @@ export const register: Register = on => {
         inputs: p.inputs.filter(i => i.turnId === null || i.turnId === e.turnId || (i.covered === undefined ? i.label !== 'not_question' : i.covered === 'steps' && i.label === undefined)).map(i => (i.turnId === null ? { ...i, turnId: e.turnId } : i)),
       }))
     }
-    await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
+    // A subagent's loop starts turns too (agentId set). Only the main loop's start is main work:
+    // a subagent's would take mainTurnId, and the main turn.complete would never clear isWorking.
+    if (e.agentId === undefined) await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
     await update($, ledger, l => ({
       ...l,
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
