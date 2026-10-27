@@ -1419,7 +1419,8 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
   try { return await run } catch { return undefined } // the queue reports the cause above
 }
 
-const freshnessNudge = async ($: EngineInterface, code: string, text: string, remind = false): Promise<void> => {
+// Shows a nudge once per turn and code; answers the turn it was shown for, or undefined when not shown.
+const freshnessNudge = async ($: EngineInterface, code: string, text: string, remind = false): Promise<{ turn: string | null } | undefined> => {
   let show = false
   let nudgedTurn: string | null = null
   await update($, turn, current => {
@@ -1436,10 +1437,14 @@ const freshnessNudge = async ($: EngineInterface, code: string, text: string, re
     show = true
     return { ...current, ...(remind && { stepReminder: text }), freshness: { ...fresh, nudged: [...fresh.nudged, code] } }
   })
-  if (show) {
-    $.ui.toast(text)
-    noteEvent($, 'stop.nudge', { code }, nudgedTurn)
-  }
+  if (!show) return undefined
+  $.ui.toast(text)
+  return { turn: nudgedTurn }
+}
+// Failure-intake D6: stop.nudge is fed at the six listed freshnessNudge callers only (identity, bash, claim),
+// never inside freshnessNudge, so the facts:<kind> caller and any later caller feed nothing.
+const nudgeFed = ($: EngineInterface, code: string, shown: { turn: string | null } | undefined): void => {
+  if (shown !== undefined) noteEvent($, 'stop.nudge', { code }, shown.turn)
 }
 
 const missingResultText = (steps: Step[], ids: string[]): string | undefined => {
@@ -1578,16 +1583,16 @@ const prepareStopClaim = async ($: EngineInterface) => {
 const stepStop = async ($: EngineInterface, payload: { session_id?: string; background_tasks?: readonly { id: string; type: string }[] }): Promise<string | undefined> => {
   const snapshot = await publishGate($)
   if (snapshot === undefined || !snapshot.session_id || !snapshot.turn_id || (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) {
-    await freshnessNudge($, 'identity', 'track: Stop snapshot identity unavailable; reconcile steps before finishing.')
+    nudgeFed($, 'identity', await freshnessNudge($, 'identity', 'track: Stop snapshot identity unavailable; reconcile steps before finishing.'))
     return undefined
   }
   const t = await read($, turn)
   const fresh = t.freshness?.turnId === snapshot.turn_id ? t.freshness : undefined
-  if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) await freshnessNudge($, 'bash', BASH_NUDGE, true)
+  if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) nudgeFed($, 'bash', await freshnessNudge($, 'bash', BASH_NUDGE, true))
   if (snapshot.candidates.length === 0) return undefined
   const claim = await prepareStopClaim($)
   if (claim === undefined) {
-    await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.')
+    nudgeFed($, 'claim', await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.'))
     return undefined
   }
   for (const kind of FRESHNESS_KINDS) {
@@ -1616,7 +1621,7 @@ const stepStop = async ($: EngineInterface, payload: { session_id?: string; back
       if (currentTurn) noteEvent($, 'stop.block.module', { kind, held: [kind], candidates: candidates.length }, snapshot.turn_id)
       return currentTurn ? receipt.reason : undefined
     } catch (error) {
-      await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`)
+      nudgeFed($, 'claim', await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`))
       return undefined
     }
   }
@@ -1644,7 +1649,7 @@ const claimUncoveredInputs = async ($: EngineInterface, payload: { session_id?: 
     // claim. An unavailable fact preserves it for a later Stop.
     return { held: diagnostic === '' }
   } catch (error) {
-    await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`)
+    nudgeFed($, 'claim', await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`))
     return { held: true, block: uncoveredBlock(inputs) }
   }
 }
@@ -2574,7 +2579,6 @@ const saveRouted = async ($: EngineInterface, id: string, intent: PluginState['t
     await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: persistence.failure }))
     if (error instanceof HistoryOutcomePending) {
       $.ui.log(`track: ${persistence.failure}`, { to: 'debug' })
-      noteEvent($, 'save.failed', { phase: 'history_outcome_pending' })
       $.ui.toast(`track: save outcome pending — ${savePendingCause()}`)
     } else {
       $.ui.log(`track: unsaved; save failed: ${persistence.failure}`, { to: 'debug' })
@@ -3360,7 +3364,11 @@ const claimStats = async ($: EngineInterface, session: string, turnId: string | 
   for (const [claimTurn, kind] of wanted) {
     const name = await claimName(session, claimTurn, kind)
     let present = false
-    try { present = (await $.fs.stat(`${config}/state/track/stop-holds/${name}`)).kind === 'file' }
+    // D9 lstat: a symbolic link never counts as a present claim, whatever it leads to.
+    try {
+      const stat = await $.fs.stat(`${config}/state/track/stop-holds/${name}`)
+      present = stat.kind === 'file' && stat.isLink !== true
+    }
     catch { present = false }
     stats.push({ name, kind, present })
   }
@@ -4130,7 +4138,7 @@ export const register: Register = on => {
       }
     }
     if (t.currentId === null) {
-      if (!e.stop_hook_active) await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.')
+      if (!e.stop_hook_active) nudgeFed($, 'identity', await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.'))
       return below
     }
     // Ohad, 2026-10-18: every Stop after a block carries stop_hook_active, and it still checks

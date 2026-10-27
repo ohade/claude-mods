@@ -94,9 +94,10 @@ phase=tests
 mod_count=0
 has_failed=false
 # Failure-intake E-I4: Track's generated build identity must match its own tree before any mod check
-# runs; the receipt then maps that source fingerprint to the deployed commit.
+# runs; the receipt then maps that source fingerprint to the deployed commit. Any target tree with a track/
+# directory is checked, with or without track/.claude-plugin/plugin.json.
 identity_file=
-if [ -f "$temporary_tree/track/.claude-plugin/plugin.json" ]; then
+if [ -d "$temporary_tree/track" ]; then
   identity_file="$log_dir/identity.json"
   printf '{}\n' > "$identity_file"
   python3 "$helper" identity check "$temporary_tree" track --record "$identity_file" > /dev/null ||
