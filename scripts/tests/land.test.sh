@@ -138,13 +138,25 @@ k1_identity_valid() {
   expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'live not advanced with a valid identity'
   printf 'PASS K1 valid generated identity lands\n'
 }
-# Erratum 2 (failure-intake K1): LAND_TEST_K1_CASE=missing|mismatch|valid runs that one K1 case alone and stops,
+# Correction 1 (L6): a target with track/ but no track/.claude-plugin/plugin.json is still identity-checked.
+k1_identity_no_manifest() {
+  prepare_repo identity-no-manifest
+  git -C "$repo" checkout -q candidate
+  git -C "$repo" rm -q track/.claude-plugin/plugin.json track/hooks/build-identity.ts
+  commit_raw
+  run_failure
+  expect_unchanged
+  grep -q 'identity missing' "$CLAUDE_MODS_HOME/output" || fail 'landing output does not name the missing identity without plugin.json'
+  printf 'PASS K1 missing identity without plugin.json prevents publication\n'
+}
+# Erratum 2 (failure-intake K1): LAND_TEST_K1_CASE=missing|mismatch|valid|nomanifest runs that one K1 case alone and stops,
 # because this suite is fail-fast and a full run cannot show the second case red. Unset, every case runs as before.
 case "${LAND_TEST_K1_CASE:-}" in
   '') ;;
   missing) k1_identity_missing; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
   mismatch) k1_identity_mismatch; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
   valid) k1_identity_valid; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
+  nomanifest) k1_identity_no_manifest; printf 'PASS 1 selected K1 landing case (FIXTURE)\n'; exit 0 ;;
   *) fail "unknown LAND_TEST_K1_CASE: ${LAND_TEST_K1_CASE}" ;;
 esac
 
@@ -290,6 +302,7 @@ printf 'PASS landing, counts, cleanup and status\n'
 k1_identity_missing
 k1_identity_mismatch
 k1_identity_valid
+k1_identity_no_manifest
 
 prepare_repo locked
 mkdir "$state/claude-mods-land.lock"

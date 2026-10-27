@@ -16,7 +16,9 @@ const CONFIG = '/cfg'
 const HOLDS = `${CONFIG}/state/track/stop-holds`
 const FINGERPRINT = String((BUILD_IDENTITY as { source_fingerprint: unknown }).source_fingerprint)
 
-type Git = { head: string | null; calls: number }
+// `ms` is how long the fixture git runs; like the engine (SDK process.run), a run still going at its
+// timeoutMs (30 s when none is given) rejects.
+type Git = { head: string | null; calls: number; ms: number }
 const runResult = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'fixture git error', isStdoutTruncated: false, isStderrTruncated: false } })
 
 // An admitted, stable owner: the ledger names this session and no ownership transition runs.
@@ -30,17 +32,20 @@ const world = (on: On, options: { owner?: string | null; ledger?: Record<string,
   const store = pluginStore(on)
   let session: () => string = () => SESSION
   on('session.id', () => ({ value: session() }))
-  const git: Git = { head: options.head === undefined ? DISK1 : options.head, calls: 0 }
+  const git: Git = { head: options.head === undefined ? DISK1 : options.head, calls: 0, ms: 0 }
   on('process.run', (_, e) => {
     if (e.argv[0] !== 'git' || !e.argv.includes('rev-parse')) return { deny: 'unexpected process' }
     git.calls++
+    if (git.ms > (e.init?.timeoutMs ?? 30_000)) throw new Error('fixture: git still running at its timeout')
     return git.head === null ? runResult(128, '') : runResult(0, `${git.head}\n`)
   })
   on('env.get', { name: 'CLAUDE_CONFIG_DIR' }, () => ({ value: CONFIG }))
   const env: string[] = []
+  const envValues: Array<{ name: string; value: string }> = []
   on('env.set', (_, e) => {
     const name = String((e as { name?: unknown }).name)
     env.push(name)
+    envValues.push({ name, value: String((e as { value?: unknown }).value) })
     return (options.gateFailure !== undefined && name === 'TRACK_GATE_SNAPSHOT' ? { deny: options.gateFailure } : { value: undefined }) as never
   })
   // The test's own classic.Stop hook is the bottom of the chain; session.start needs the host's registrations.
@@ -50,7 +55,7 @@ const world = (on: On, options: { owner?: string | null; ledger?: Record<string,
   on('ui.panes', () => ({ value: [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
-  return { ledger, turn, activity, pending, durability, store, git, env, setSession: (id: string) => { session = () => id }, sessionBy: (f: () => string) => { session = f } }
+  return { ledger, turn, activity, pending, durability, store, git, env, envValues, setSession: (id: string) => { session = () => id }, sessionBy: (f: () => string) => { session = f } }
 }
 
 const call = ($: Engine, extra: Record<string, unknown> = {}): Promise<Record<string, any>> =>
@@ -107,6 +112,18 @@ test('[I4a] a failing or changed git rev-parse never changes identity (no disk f
   expect(JSON.stringify(changed?.identity)).not.toContain(DISK2)
 })
 
+test('[D3] a git rev-parse that outlasts 2 s leaves observed_disk absent; identity unchanged', async ($, on) => {
+  const { git } = world(on)
+  git.ms = 1_999
+  const quick = bundleOf(await call($))
+  expect(quick?.observed_disk, 'D3 control: a git answering inside 2 s is shown').toBe(DISK1)
+  git.ms = 2_001
+  const slow = bundleOf(await call($))
+  expect(slow?.identity?.loaded).toBe(FINGERPRINT)
+  expect(slow?.observed_disk, 'D3: absent when git outlasts its 2 s timeout').toBeUndefined()
+  expect((await trackCommand($, 'status')).text ?? '').toContain(`track: loaded ${FINGERPRINT.slice(0, 8)} (disk unknown)`)
+})
+
 // Ring (D5, D6)
 
 test('[R1] a forced Stop snapshot failure appears as stop.snapshot_unavailable with the turn id', async ($, on) => {
@@ -131,6 +148,21 @@ test('[R2] 60 events keep the newest 50, newest last; each entry at most 512 byt
   for (const entry of ring) expect(bytes(JSON.stringify(entry))).toBeLessThanOrEqual(512)
 })
 
+test('[R2 cap] an event over 512 bytes is stored at most 512 UTF-8 bytes and flagged truncated', async ($, on) => {
+  const w = world(on, { gateFailure: 'fixture env refused' })
+  const long = `turn-${'x'.repeat(1_000)}`
+  w.turn.value = { currentId: long, gatedTurnId: null, eventOrder: 0 } as never
+  await stop($)
+  const ring: any[] = bundleOf(await call($))?.ring ?? []
+  const fed = ring.filter(e => e.code === 'stop.snapshot_unavailable')
+  expect(fed.length, `R2 cap: the long-turn event was fed (${JSON.stringify(ring).slice(0, 200)})`).toBeGreaterThan(0)
+  for (const entry of fed) {
+    expect(bytes(JSON.stringify(entry)), 'R2 cap: at most 512 UTF-8 bytes').toBeLessThanOrEqual(512)
+    expect(entry.truncated, 'R2 cap: the cut entry is flagged').toBe(true)
+    expect(long.startsWith(String(entry.turn_id ?? '')), 'R2 cap: the turn id is a prefix, never other text').toBe(true)
+  }
+})
+
 // Bundle (D7-D10, E-I3)
 
 test('[B1] a sentinel in a prompt, a question head, a pending excerpt and an error never enters the bundle', async ($, on) => {
@@ -147,6 +179,24 @@ test('[B1] a sentinel in a prompt, a question head, a pending excerpt and an err
   expect(String(r.result)).not.toContain('SENTINEL')
 })
 
+test('[B1/D7] a published gate enters the bundle only as the D7 projection: no head, no reason, no sentinel', async ($, on) => {
+  const w = world(on, {
+    ledger: { nextQuestionId: 2, questions: [{ id: 1, head: `${SENTINEL} question`, at: 1, turnId: 't1', status: 'open' }] },
+    pending: { inputs: [{ id: 1, head: `${SENTINEL} head`, excerpt: `${SENTINEL} excerpt`, textHash: 'h1', turnId: 't1' }], nextId: 2 },
+  })
+  await trackPrompt($, `${SENTINEL} at the start of a prompt`)
+  await stop($)
+  const published = w.envValues.filter(e => e.name === 'TRACK_GATE_SNAPSHOT').map(e => e.value)
+  expect(published.some(value => value.includes(SENTINEL)), 'B1/D7: the raw published snapshot carries the sentinel').toBe(true)
+  const r = await call($)
+  const gate = bundleOf(r)?.gate
+  expect(gate !== null && typeof gate === 'object', 'B1/D7: the cached gate is in the bundle').toBe(true)
+  expect(Object.keys(gate ?? {}).sort(), 'B1/D7: exactly the D7 gate keys').toEqual(['candidate_kinds', 'held', 'input_count', 'inputs_complete', 'open_count', 'truncated'])
+  expect(gate?.open_count).toBe(1)
+  expect(String(r.result)).not.toContain(SENTINEL)
+  expect(String(r.result)).not.toContain('SENTINEL')
+})
+
 test('[B2] multibyte ids and a 10 000-id banner fit 32 KiB UTF-8, flagged as truncated', async ($, on) => {
   const ids = Array.from({ length: 10_000 }, (_, i) => `任务-😀-${i}`)
   world(on, { activity: { isWorking: true, mainTurnId: 't1', agentCalls: [], askCalls: [], background: ids, tasks: ids } })
@@ -155,6 +205,9 @@ test('[B2] multibyte ids and a 10 000-id banner fit 32 KiB UTF-8, flagged as tru
   expect(body?.v).toBe(1)
   expect(bytes(String(r.result))).toBeLessThanOrEqual(32 * 1024)
   expect(body?.truncated).toBe(true)
+  expect(body?.activity?.background_ids_truncated, 'B2: the cut background ids are flagged').toBe(true)
+  expect(body?.activity?.task_ids_truncated, 'B2: the cut task ids are flagged').toBe(true)
+  expect(body?.activity?.task_ids?.length ?? 0, 'B2: task ids were cut').toBeLessThan(10_000)
 })
 
 test('[B3] 500 pending inputs and 50 open questions still fit, with true counts', async ($, on) => {
@@ -199,6 +252,20 @@ test('[B4/E-I3] a later owner never sees the prior owner\'s cached gate or ring'
   else expect(JSON.stringify({ ring: body.ring, gate: body.gate })).not.toContain('stop.snapshot_unavailable')
 })
 
+test('[B4/E-I3 gate] a later owner never sees the prior owner\'s successfully published gate', async ($, on) => {
+  const w = world(on)
+  await stop($)
+  const prior = bundleOf(await call($))
+  expect(prior?.gate !== null && typeof prior?.gate === 'object', 'E-I3: the prior owner\'s gate was published and cached').toBe(true)
+  w.setSession(OTHER)
+  w.ledger.value = { ...EMPTY, session_id: OTHER } as never
+  w.durability.value = { isUnsaved: false, reason: '', memorySession: OTHER } as never
+  const r = await call($)
+  const body = bundleOf(r)
+  if (body === undefined) expect(refusalOf(r)).toContain('track: diagnose')
+  else expect(body.gate, 'E-I3: no prior owner gate for the new owner').toBeNull()
+})
+
 test('[B5] read-only: atoms, env and files unchanged; no lease spawn; the gate is not republished', async ($, on) => {
   const w = world(on)
   const fsWrites: string[] = []
@@ -234,6 +301,20 @@ test('[B6] claims are stat only, for this session only; a planted other-session 
   expect(read, 'contents never read').toEqual([])
   expect(String(r.result)).not.toContain(planted)
   expect(String(r.result)).not.toContain(OTHER)
+})
+
+test('[B6 link] a symlinked claim file does not count as present (D9 lstat)', async ($, on) => {
+  world(on)
+  const name = async (kind: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([SESSION, 't1', kind])))), b => b.toString(16).padStart(2, '0')).join('')
+  const link = await name('untracked_edit')
+  on('fs.stat', (_, e) => {
+    const path = String((e as { path?: unknown }).path)
+    if (!path.startsWith(HOLDS)) return { deny: 'fixture: no such file' } as never
+    return { value: { kind: 'file', size: 64, mtimeMs: 1, isLink: path.endsWith(`/${link}`) } } as never
+  })
+  const claims: Array<{ name: string; present: boolean }> = bundleOf(await call($))?.claims ?? []
+  expect(claims.some(c => c.name !== link && c.present === true), 'B6 link control: a regular claim file is present').toBe(true)
+  expect(claims.filter(c => c.name === link && c.present === true), 'B6 link: the symlinked claim is not present').toEqual([])
 })
 
 // Exposure (D11)
