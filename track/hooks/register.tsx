@@ -5322,7 +5322,11 @@ export const register: Register = on => {
     const allLabel = compact ? 'all' : 'clear all'
     // While "clear all" is armed, both copies ask to confirm, in red, until the arm ends.
     const unfinishedSteps = l.steps.filter(s => s.status !== 'completed').length
-    const confirming = (await read($, clearArm)) !== null && unfinishedSteps > 0
+    const armedAt = await read($, clearArm)
+    const confirming = armedAt !== null && unfinishedSteps > 0
+    // The arm ends once no unfinished step is left, so later unfinished steps need a fresh first
+    // press. Only this arm is ended: a newer arm or a confirmed clear has already replaced it.
+    if (armedAt !== null && unfinishedSteps === 0) $.clock.after(0, () => { void update($, clearArm, at => (at === armedAt ? null : at)) })
     const confirmLabel = compact ? 'confirm' : `confirm — clear ${unfinishedSteps} unfinished step${unfinishedSteps === 1 ? '' : 's'}`
     const stepsLabel = confirming ? confirmLabel : allLabel
     const doneLabel = compact ? 'done' : 'clear completed'
