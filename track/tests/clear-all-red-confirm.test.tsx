@@ -19,7 +19,7 @@ const MIXED = [step('plan:1', 'Open one'), step('plan:2', 'Open two', 'in_progre
 const DONE = [step('plan:1', 'Done one', 'completed'), step('plan:2', 'Done two', 'completed')]
 const COPIES = ['clear-steps', 'clear-steps-bottom']
 
-const prepare = async ($: Engine, on: On, steps: Step[], trap?: Trap) => {
+const prepare = async ($: Engine, on: On, steps: Step[], trap?: Trap, columns = 60) => {
   const clock = mock.clock(on)
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, session_id: SESSION, steps })
   atomStore(on, 'turn', { currentId: null, gatedTurnId: null, eventOrder: 0 })
@@ -45,7 +45,7 @@ const prepare = async ($: Engine, on: On, steps: Step[], trap?: Trap) => {
   on('session.id', () => ({ value: SESSION }))
   on('session.messages', () => ({ value: [] }))
   on('ui.toast', (_, e) => { toasts.push(String(e.text)); return { value: undefined } })
-  const ui = (await $.ui.mount(pane('dock'))) as unknown as Drawn
+  const ui = (await $.ui.mount(pane('dock', columns))) as unknown as Drawn
   return { clock, ledger, toasts, ui }
 }
 
@@ -152,4 +152,39 @@ test('(i) a step reopened before the write is not cleared by one press', async (
 
   expect(trap.on).toBe(false)
   expect(ids(ledger)).toEqual(['plan:1', 'plan:2'])
+})
+
+// Refuter r2 (plan:16b): probe-resurrect, probe-compact and probe-dim from plan16b/refuter-r2/, as pins.
+test('(j) the arm ends when no unfinished step is left; new unfinished steps need a fresh arm', async ($, on) => {
+  const { ui, ledger, clock } = await prepare($, on, MIXED)
+  await ui.press({ key: 'clear-steps' })
+  expect(await redConfirms(ui)).toHaveLength(2)
+  ledger.value = { ...ledger.value, steps: MIXED.map(s => ({ ...s, status: 'completed' as const })) }
+  await ui.redraw()
+  expect(await redConfirms(ui)).toEqual([])
+  await clock.advance(2000)
+  ledger.value = { ...ledger.value, steps: [step('plan:4', 'New open four'), step('plan:5', 'New open five', 'in_progress')] }
+  await ui.redraw()
+  const shown = await redConfirms(ui)
+  await ui.press({ key: 'clear-steps' })
+
+  expect({ redAfterReappear: shown.length, idsAfterOnePress: ids(ledger) }).toEqual({ redAfterReappear: 0, idsAfterOnePress: ['plan:4', 'plan:5'] })
+})
+
+test('(k) a compact pane also asks to confirm, in red, on both copies', async ($, on) => {
+  const { ui, ledger } = await prepare($, on, MIXED, undefined, 36)
+  for (const text of await controlTexts(ui)) expect(text).toMatch(/all/)
+  await ui.press({ key: 'clear-steps' })
+
+  expect(ids(ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
+  for (const text of await controlTexts(ui)) expect(text).toMatch(/confirm/)
+  expect(await redConfirms(ui)).toHaveLength(2)
+})
+
+test('(l) the armed control is not drawn dim; the unarmed one is', async ($, on) => {
+  const { ui } = await prepare($, on, MIXED)
+  for (const key of COPIES) expect((await ui.find({ key }))?.props.dimColor).toBe(true)
+  await ui.press({ key: 'clear-steps' })
+
+  for (const key of COPIES) expect((await ui.find({ key }))?.props.dimColor).toBe(false)
 })
