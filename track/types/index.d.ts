@@ -108,6 +108,9 @@ export type Ledger = {
   steps: Step[]
   // Questions the user withdrew with ✕, told to the model once on the next prompt.
   withdrawn?: Array<{ id: number; head: string; session_id?: string }>
+  // Unfinished steps the user removed with a confirmed "clear all", told to the model once on the
+  // next prompt.
+  clearedSteps?: Array<{ id: string; head: string; session_id?: string }>
   // When the transcript was last compacted. Questions older than that are never dropped by the
   // rewind check, because compaction removes their tool calls too. Saved with the register, so a
   // resumed session keeps it.
@@ -211,6 +214,9 @@ declare module 'claude-code' {
       historyPending: { session_id: string; request_id: string; expect: { absent: true } | { seq: number; root_sha256: string } } | null
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
       reveal: Record<string, 'q' | 'a' | 'r' | undefined>
+      // When the steps' "clear all" was pressed with unfinished steps, waiting for a second press;
+      // null when not armed. Never saved.
+      clearArm: number | null
     }
   }
 }

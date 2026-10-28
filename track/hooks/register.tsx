@@ -635,6 +635,10 @@ const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
 const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: null, steps: null } as ScrollAt)
+// When the steps' "clear all" was pressed with unfinished steps; a second press within
+// CLEAR_ARM_MS clears. Pane state only, never saved.
+const clearArm = atom({ plugin: 'track', key: 'clearArm' } as const, null as number | null)
+const CLEAR_ARM_MS = 5000
 
 // The transcript draws a prompt row under the stored row's id with its last group zeroed
 // (observed on 2.1.289, see image-thumbs), so both sides key on the first four groups.
@@ -2954,6 +2958,9 @@ const savedLedger = (raw: unknown, owner?: string): Ledger | undefined => {
   const withdrawn = rows(l.withdrawn).filter(
     (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
   )
+  const clearedSteps = rows(l.clearedSteps).filter(
+    (c): c is { id: string; head: string } => typeof (c as { id?: unknown })?.id === 'string' && typeof (c as { head?: unknown })?.head === 'string',
+  )
   const restores = keepRestores(rows(l.restores).map(savedRestore).filter(isDefined), questions)
 
   return {
@@ -2963,6 +2970,7 @@ const savedLedger = (raw: unknown, owner?: string): Ledger | undefined => {
     questions,
     steps: capSteps(rows(l.steps).map(savedStep).filter(isDefined)),
     ...(withdrawn.length > 0 && { withdrawn }),
+    ...(clearedSteps.length > 0 && { clearedSteps }),
     ...(typeof l.compactedAt === 'number' && { compactedAt: l.compactedAt }),
     ...(restores.length > 0 && { restores }),
     ...(typeof l.restoredIds === 'object' && l.restoredIds !== null && { restoredIds: Object.fromEntries(Object.entries(l.restoredIds).filter(([, id]) => Number.isSafeInteger(id) && Number(id) > 0)) as Record<string, number> }),
@@ -2986,8 +2994,23 @@ const clearQuestions = async ($: EngineInterface): Promise<void> => {
   $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
 }
 
+// Clear all for steps (Ohad, 2026-10-28). With an unfinished step the first press only arms; a
+// second press within CLEAR_ARM_MS clears, and the unfinished steps it removed are told to the
+// model once on its next prompt, as withdrawn questions are. All completed: one press clears.
 const clearSteps = async ($: EngineInterface): Promise<void> => {
-  await update<Ledger>($, ledger, cur => ({ ...cur, steps: [] }))
+  const now = await $.clock.now()
+  const unfinished = (await read($, ledger)).steps.filter(s => s.status !== 'completed').length
+  const armedAt = await read($, clearArm)
+  if (unfinished > 0 && (armedAt === null || now - armedAt > CLEAR_ARM_MS)) {
+    await update($, clearArm, () => now)
+    $.ui.toast(`track: ${unfinished} unfinished step${unfinished === 1 ? '' : 's'}; press s again to clear all.`)
+    return
+  }
+  await update($, clearArm, () => null)
+  await update<Ledger>($, ledger, cur => {
+    const removed = cur.steps.filter(s => s.status !== 'completed').map(s => ({ id: s.id, head: s.subject }))
+    return { ...cur, steps: [], ...(removed.length > 0 && { clearedSteps: [...(cur.clearedSteps ?? []), ...removed] }) }
+  })
   await saveLedger($)
   $.ui.toast('track: steps cleared.')
 }
@@ -4062,6 +4085,16 @@ export const register: Register = on => {
         await update<Ledger>($, ledger, cur => {
           assertAdmitted()
           return { ...cur, withdrawn: [] }
+        })
+      }
+      // Unfinished steps the user removed with a confirmed "clear all", told once like a withdrawal.
+      const clearedSteps = l.clearedSteps ?? []
+      if (clearedSteps.length > 0) {
+        const named = clearedSteps.map(c => `${c.id} "${truncate(c.head, 60)}"`).join(', ')
+        lines.push(`track: the user cleared open steps ${named}; ${clearedSteps.length > 1 ? 'they are' : 'it is'} no longer tracked.`)
+        await update<Ledger>($, ledger, cur => {
+          assertAdmitted()
+          return { ...cur, clearedSteps: [] }
         })
       }
       const open = l.questions.filter(q => q.status === 'open' || q.status === 'deferred')
