@@ -1,0 +1,6 @@
+# Phase-A gate: reject new SDK/policy coupling and dependency cycles during Track extraction.
+[project]
+name = "track-architecture-check"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["archview @ git+https://github.com/LiorHalfon/arch-viewer@78bd7791279d4cf11992dbf2fe462d93edb2cad6"]
