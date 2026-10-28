@@ -73,6 +73,8 @@ for (const launcher of ['Bash', 'Agent'] as const) {
       await fixture.launch()
       if (removal === 'clear-all') {
         const ui = await $.ui.mount(pane('dock'))
+        // WO plan:16: an unfinished step needs a confirmed (second) press to clear.
+        await ui.press({ key: 'clear-steps' })
         await ui.press({ key: 'clear-steps' })
       } else if (removal === 'todo-drop') {
         await todos($, [{ content: 'Write the migration', status: 'pending' }])

@@ -518,8 +518,11 @@ test('clearing all questions empties them, withdraws the open ones and keeps the
 })
 
 test('clearing all steps empties them and keeps the questions', async ($, on) => {
+  mock.clock(on)
   const writes = captureLedger(on)
   const ui = await $.ui.mount(pane('dock'))
+  // WO plan:16: the step is unfinished, so clearing needs a confirmed (second) press.
+  await ui.press({ key: 'clear-steps' })
   await ui.press({ key: 'clear-steps' })
 
   const last = writes.at(-1)
@@ -1521,8 +1524,11 @@ test('scrolling the steps leaves the region the same height, so neither bar move
 })
 
 test('the bottom clear all empties the steps, like the one above them', async ($, on) => {
+  mock.clock(on)
   const writes = captureLedger(on)
   const ui = await $.ui.mount(pane('dock'))
+  // WO plan:16: the step is unfinished, so clearing needs a confirmed (second) press.
+  await ui.press({ key: 'clear-steps-bottom' })
   await ui.press({ key: 'clear-steps-bottom' })
 
   expect(writes.at(-1)?.steps ?? ['not cleared']).toHaveLength(0)
