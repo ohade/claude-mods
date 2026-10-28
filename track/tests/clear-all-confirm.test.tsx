@@ -9,7 +9,7 @@ import type { Ledger, Step } from '../types'
 // clears; the open steps it removed are named to the model once on its next prompt, like a
 // withdrawn question. With every step completed, one press still clears at once.
 
-type Pressable = { press: (q: { key: string }) => Promise<void> }
+type Pressable = { press: (q: { key: string }) => Promise<void>; find: (q: { key: string }) => Promise<{ text: string } | undefined> }
 type Cleared = Ledger & { clearedSteps?: Array<{ id: string; head: string }> }
 
 const step = (id: string, subject: string, status: Step['status'] = 'pending'): Step => ({ id, source: 'plan', subject, status })
@@ -44,7 +44,8 @@ test('a first press with unfinished steps keeps every step and says how to confi
   await ui.press({ key: 'clear-steps' })
 
   expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
-  expect(fixture.toasts.join('\n')).toMatch(/2 unfinished steps; press s again/)
+  // WO plan:16b: the confirmation is drawn in the pane, not toasted.
+  expect((await ui.find({ key: 'clear-steps' }))?.text).toMatch(/confirm.*2 unfinished steps/)
 })
 
 test('a second press inside the window clears every step', async ($, on) => {
@@ -58,12 +59,12 @@ test('a second press inside the window clears every step', async ($, on) => {
   expect(ids(fixture.ledger)).toEqual([])
 })
 
-test('a press after the 5-second window arms again instead of clearing', async ($, on) => {
+test('a press after the 10-second window arms again instead of clearing', async ($, on) => {
   const fixture = await prepare(on, MIXED)
   const ui = await mount($)
   await ui.press({ key: 'clear-steps' })
   expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
-  await fixture.clock.advance(5001)
+  await fixture.clock.advance(10001)
   await ui.press({ key: 'clear-steps' })
   expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
 
