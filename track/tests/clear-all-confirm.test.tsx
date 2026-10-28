@@ -62,6 +62,7 @@ test('a press after the 5-second window arms again instead of clearing', async (
   const fixture = await prepare(on, MIXED)
   const ui = await mount($)
   await ui.press({ key: 'clear-steps' })
+  expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
   await fixture.clock.advance(5001)
   await ui.press({ key: 'clear-steps' })
   expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
@@ -75,6 +76,7 @@ test('the next prompt names each removed open step once, never a completed one, 
   const fixture = await prepare(on, MIXED)
   const ui = await mount($)
   await ui.press({ key: 'clear-steps' })
+  expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
   await ui.press({ key: 'clear-steps' })
   await trackPrompt($, 'next')
   await trackPrompt($, 'after that')
@@ -93,6 +95,7 @@ test('the removed open steps are saved with the ledger and survive a reload', as
   const fixture = await prepare(on, MIXED)
   const ui = await mount($)
   await ui.press({ key: 'clear-steps' })
+  expect(ids(fixture.ledger)).toEqual(['plan:1', 'plan:2', 'plan:3'])
   await ui.press({ key: 'clear-steps' })
 
   const saved = (await fixture.pool.logical(fixture.store, `s:${SESSION}`) as { ledger: Cleared }).ledger
