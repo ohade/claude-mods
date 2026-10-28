@@ -636,9 +636,10 @@ const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 // Each region's first shown row; null follows the news (the newest question, the step at work).
 const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: null, steps: null } as ScrollAt)
 // When the steps' "clear all" was pressed with unfinished steps; a second press within
-// CLEAR_ARM_MS clears. Pane state only, never saved.
+// CLEAR_ARM_MS clears, and the pane draws the control as a red confirmation meanwhile. A timer
+// ends the arm, so the pane redraws without a key press. Pane state only, never saved.
 const clearArm = atom({ plugin: 'track', key: 'clearArm' } as const, null as number | null)
-const CLEAR_ARM_MS = 5000
+const CLEAR_ARM_MS = 10_000
 
 // The transcript draws a prompt row under the stored row's id with its last group zeroed
 // (observed on 2.1.289, see image-thumbs), so both sides key on the first four groups.
@@ -2999,18 +3000,23 @@ const clearQuestions = async ($: EngineInterface): Promise<void> => {
 // model once on its next prompt, as withdrawn questions are. All completed: one press clears.
 const clearSteps = async ($: EngineInterface): Promise<void> => {
   const now = await $.clock.now()
-  const unfinished = (await read($, ledger)).steps.filter(s => s.status !== 'completed').length
   const armedAt = await read($, clearArm)
-  if (unfinished > 0 && (armedAt === null || now - armedAt > CLEAR_ARM_MS)) {
+  const armed = armedAt !== null && now - armedAt < CLEAR_ARM_MS
+  let arming = false
+  // Decided on the steps this same write removes, so a step reopened meanwhile is never cleared
+  // without a confirming press (refuter R16 finding 7).
+  await update<Ledger>($, ledger, cur => {
+    const removed = cur.steps.filter(s => s.status !== 'completed').map(s => ({ id: s.id, head: s.subject }))
+    arming = removed.length > 0 && !armed
+    if (arming) return cur
+    return { ...cur, steps: [], ...(removed.length > 0 && { clearedSteps: [...(cur.clearedSteps ?? []), ...removed] }) }
+  })
+  if (arming) {
     await update($, clearArm, () => now)
-    $.ui.toast(`track: ${unfinished} unfinished step${unfinished === 1 ? '' : 's'}; press s again to clear all.`)
+    $.clock.after(CLEAR_ARM_MS, () => { void update($, clearArm, at => (at === now ? null : at)) })
     return
   }
   await update($, clearArm, () => null)
-  await update<Ledger>($, ledger, cur => {
-    const removed = cur.steps.filter(s => s.status !== 'completed').map(s => ({ id: s.id, head: s.subject }))
-    return { ...cur, steps: [], ...(removed.length > 0 && { clearedSteps: [...(cur.clearedSteps ?? []), ...removed] }) }
-  })
   await saveLedger($)
   $.ui.toast('track: steps cleared.')
 }
@@ -5314,14 +5320,19 @@ export const register: Register = on => {
       </Box>
     )
     const allLabel = compact ? 'all' : 'clear all'
+    // While "clear all" is armed, both copies ask to confirm, in red, until the arm ends.
+    const unfinishedSteps = l.steps.filter(s => s.status !== 'completed').length
+    const confirming = (await read($, clearArm)) !== null && unfinishedSteps > 0
+    const confirmLabel = compact ? 'confirm' : `confirm — clear ${unfinishedSteps} unfinished step${unfinishedSteps === 1 ? '' : 's'}`
+    const stepsLabel = confirming ? confirmLabel : allLabel
     const doneLabel = compact ? 'done' : 'clear completed'
     const clearButtons = (suffix: '' | '-bottom') => [
       ...(l.steps.length > 0
-        ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor hotkey="s" label={allLabel} onPress={() => clearSteps($)} />)]
+        ? [item(`item-clear-steps${suffix}`, <Button key={`clear-steps${suffix}`} plain dimColor={!confirming} hotkey="s" label={stepsLabel} onPress={() => clearSteps($)}>{confirming ? <Text color="error">{confirmLabel}</Text> : allLabel}</Button>)]
         : []),
       item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
     ]
-    const clearWidths = [l.steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)]
+    const clearWidths = [l.steps.length > 0 ? buttonWidth('s', stepsLabel) : 0, buttonWidth('c', doneLabel)]
     const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
 
     const work = workState(l, now)
