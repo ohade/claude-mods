@@ -33,7 +33,7 @@ const prepare = async ($: Engine, on: On) => {
   mock.clock(on)
   const ledger = atomStore<Ledger>(on, 'ledger', { ...EMPTY, v: 1, steps: [] })
   const turn = atomStore<Turn>(on, 'turn', { currentId: null, gatedTurnId: null, eventOrder: 0 })
-  atomStore<Activity>(on, 'activity', { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} })
+  const activity = atomStore<Activity>(on, 'activity', { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} })
   const pending = atomStore<Pending>(on, 'pending', { inputs: [], nextId: 1 })
   atomStore(on, 'scroll', { questions: null, steps: null })
   pluginStore(on)
@@ -58,7 +58,7 @@ const prepare = async ($: Engine, on: On) => {
     return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await start($, 't1')
-  return { ledger, turn, pending }
+  return { ledger, turn, pending, activity }
 }
 
 test('P1 the main turn keeps its freshness record across a subagent turn', async ($, on) => {
@@ -119,4 +119,24 @@ test('C1 control: a main turn.start still resets freshness, drops a spent input 
   expect(fixture.pending.value.inputs.map(i => [i.id, i.turnId])).toEqual([[2, 't2']])
   expect(fixture.ledger.value.prompts.map(p => p.turnId)).toEqual(['t2'])
   expect(fixture.ledger.value.questions.map(q => q.turnId)).toEqual(['t2'])
+})
+
+// A live background agent must not change how a MAIN turn.start resets and binds (refuter r1, m3).
+test('C2 control: a main turn.start with a background agent still running resets and binds as C1', async ($, on) => {
+  const fixture = await prepare($, on)
+  await invoke($, 'Edit')
+  await complete($, 't1')
+  fixture.activity.value = { ...fixture.activity.value, background: ['ag1'] }
+  fixture.pending.value = { inputs: [input(1, 't1', { label: 'not_question' }), input(2, null)], nextId: 3 }
+  fixture.ledger.value = { ...fixture.ledger.value, prompts: [prompt(null)], questions: [question(null)] }
+  await start($, 't2')
+
+  expect(fixture.turn.value.currentId).toBe('t2')
+  expect(fixture.turn.value.freshness?.turnId).toBe('t2')
+  expect(fixture.turn.value.freshness?.edits).toEqual([])
+  expect(fixture.pending.value.inputs.map(i => [i.id, i.turnId])).toEqual([[2, 't2']])
+  expect(fixture.ledger.value.prompts.map(p => p.turnId)).toEqual(['t2'])
+  expect(fixture.ledger.value.questions.map(q => q.turnId)).toEqual(['t2'])
+  expect(fixture.activity.value.isWorking).toBe(true)
+  expect(fixture.activity.value.mainTurnId).toBe('t2')
 })
