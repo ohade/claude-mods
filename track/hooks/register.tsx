@@ -29,6 +29,8 @@ import type { BlobFs } from './blob-store'
 import { diagnose } from './diagnose-flow'
 import type { DiagnosePorts } from './diagnose-flow'
 import type { GateProjection, RingEntry, RingValue } from './diagnose-bundle'
+import { AMBER_SHADES, GREY_SHADES, WAITING_BLUE, isDelegatedWork, workState } from './work-appearance'
+import { stepView } from './pane-step-view'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -116,18 +118,11 @@ const RULE = `track: For meaningful work or substantive questions, regardless of
 // instruction beside it.
 const STEPS_LINE = RULE
 
-// Banner state names; presentation is built by the pane's stack function.
-type WorkState = 'working' | 'agents' | 'tasks' | 'you' | 'paused' | 'unknown' | 'unsaved' | 'done'
 // The step in progress breathes while work runs: one phase every PULSE_MS, a
 // spinner and grey shades while the main session works, an hourglass and amber shades while it
 // waits on agents. The phase is $.state, so each tick redraws the pane alone.
 const PULSE_MS = 400
 const PULSE_PHASES = 12
-const SPINNER = ['◐', '◓', '◑', '◒'] as const
-const GREY_SHADES = ['#5f6670', '#7a828c', '#979fa9', '#b4bcc6', '#979fa9', '#7a828c'] as const
-const AMBER_SHADES = ['#7a5410', '#9a6c16', '#bb861d', '#dba126', '#bb861d', '#9a6c16'] as const
-// Ohad's waiting color, one value for the ◆ and the waiting row. Blue, not the permission token.
-const WAITING_BLUE = '#1a73e8'
 // The agents row's glyph pulses through light shades, never the row's own amber background.
 const AMBER_GLYPH = ['inverseText', '#f2d49b', '#e8bc63', '#f2d49b'] as const
 
@@ -403,26 +398,6 @@ const light = ($: EngineInterface, id: string, level: number) => update($, membe
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
 
-
-// Ownership is retained when parked; only an uncleared in-progress row signals active work.
-const isDelegatedWork = (step: Step): boolean => step.cleared !== true && step.delegated === true && step.status === 'in_progress'
-
-// Work activity is independent of whether another item needs the person's action.
-// Incomplete work without current runtime activity is paused or unknown.
-const workState = (l: Ledger, now: Activity): WorkState => {
-  const steps = visibleSteps(l.steps)
-  const unfinished = l.questions.some(q => q.cleared !== true && q.status !== 'answered') || steps.some(s => s.status !== 'completed')
-  if (now.agentCalls.length > 0) return 'agents'
-  const mainWorks = now.isWorking && now.askCalls.length === 0
-  const delegated = steps.some(isDelegatedWork)
-  if (delegated && !(mainWorks && steps.some(s => s.status === 'in_progress' && s.delegated !== true))) return 'agents'
-  if (mainWorks) return 'working'
-  if (now.background.length > 0) return 'agents'
-  if ((now.tasks ?? []).length > 0) return 'tasks'
-
-  if (steps.some(s => s.status === 'in_progress')) return 'unknown'
-  return unfinished ? 'paused' : 'done'
-}
 
 // Background work pulses even beside a user wait or a main turn. Main work alone pulses
 // only a step in progress; an open question dialog is not evidence of main work.
@@ -5090,65 +5065,21 @@ export const register: Register = on => {
             same left edge, a number S<n> by position, and green once done. */}
         {steps.slice(sStart, sEnd).map((s, shownAt) => {
           const index = sStart + shownAt
-          const color = s.status === 'completed' ? 'success' : undefined
           const lifecycle = s.status === 'paused' && s.note !== undefined && isLifecycleNote(s.note) ? s.note : undefined
-          // The step's mark is the row it sits on. A cancel or a shown refusal is ⊘, not the pause glyph.
-          const onWorking = s.status === 'in_progress' && s.delegated !== true && work === 'working'
-          const look =
-            lifecycle === 'cancelled by you' || lifecycle === 'refused'
-              ? { glyph: '⊘', glyphColor: 'subtle', textColor: 'subtle' }
-              : isDelegatedWork(s)
-                ? { glyph: '⧗', glyphColor: AMBER_SHADES[phase % AMBER_SHADES.length], textColor: AMBER_SHADES[phase % AMBER_SHADES.length] }
-                : s.status === 'waiting'
-                  ? { glyph: '◆', glyphColor: WAITING_BLUE, textColor: undefined }
-                  : onWorking
-                    ? { glyph: SPINNER[phase % SPINNER.length], glyphColor: GREY_SHADES[phase % GREY_SHADES.length], textColor: GREY_SHADES[phase % GREY_SHADES.length] }
-                    : s.status === 'paused'
-                      ? { glyph: '⏸', glyphColor: 'subtle', textColor: 'subtle' }
-                      : s.status === 'completed'
-                        ? { glyph: '●', glyphColor: color, textColor: color }
-                        : s.status === 'pending'
-                          ? { glyph: '○', glyphColor: color, textColor: color }
-                          : { glyph: '◐', glyphColor: undefined, textColor: undefined }
-
-          const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
-          const result = stepResults.get(s.id)
-          const resultKey = result?.resultRequestId === undefined ? undefined : `result:${result.resultRequestId}`
-          const resultControl = s.status === 'completed' && <Box key={`s-result-slot-${s.id}`} width={6} flexShrink={0}>
-            {result?.resultText === undefined ? <Text dimColor>[ R ]</Text> : <Button key={`r-${s.id}`} variant="primary" label="R" onPress={() => resultKey === undefined
-              ? toggleResult(result, index)
-              : jump($, [resultKey], 'start', resultKey, renderInstances.get(resultKey))} />}
-          </Box>
           const resultRaw = resultReveals.get(s.id)
           const headShown = fitLines(`S${index + 1}. ${s.subject}`, stepSubjectWidth(s), Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1)))
           const resultShown = resultRaw === undefined ? undefined : fitLines(resultRaw, stepWidth(s), Math.max(1, sRows - stepControlsRows(s) - wrappedLines(headShown, stepSubjectWidth(s))))
-          const text = (
-            <Box key={`s-text-${s.id}`} flexDirection="column" flexShrink={1} flexGrow={1} width={stepWidth(s)}>
-              <Box flexDirection="row" columnGap={1}>
-                {!compact && resultControl}
-                <Box width={stepSubjectWidth(s)} flexShrink={1}><Text color={look.textColor} wrap="wrap">{headShown}</Text></Box>
-              </Box>
-              {resultShown !== undefined && <Text key={`s-result-text-${s.id}`} wrap="wrap">{resultShown}</Text>}
-            </Box>
-          )
-          const clock = hasClock(s) && (
-            <Box key={`s-clock-${s.id}`} flexShrink={0} alignSelf={compact ? 'flex-end' : undefined}>
-              <Text dimColor color={s.endedAt === undefined ? look.textColor : undefined}>
-                {clockOf(s)}
-              </Text>
-            </Box>
-          )
-
-          const reason = lifecycle !== undefined && <Text key={`s-reason-${s.id}`} dimColor>{lifecycle}</Text>
+          // The follow-up note stays here: the pure view's source check reserves the word for state writes.
           const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
-          return (
-            <Box key={`row-s-${s.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
-              {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : [dot, text]}
-              {reason}
-              {follow}
-              {compact ? <Box flexDirection="row" columnGap={1}>{resultControl}{clock}</Box> : clock}
-            </Box>
-          )
+          return stepView({ Box, Button, Text }, {
+            step: s, index, lifecycle, phase, work, compact, rowIndent,
+            result: stepResults.get(s.id), headShown, resultShown,
+            width: stepWidth(s), subjectWidth: stepSubjectWidth(s),
+            clockLabel: hasClock(s) ? clockOf(s) : undefined,
+            follow,
+            onToggleResult: toggleResult,
+            onJumpResult: key => jump($, [key], 'start', key, renderInstances.get(key)),
+          })
         })}
         </Box>
         <Box flexGrow={1} />
