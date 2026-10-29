@@ -9,6 +9,10 @@ import { visibleSteps } from './steps'
 import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, isDefined, distinctIds, keepRestores } from './ledger-policy'
 import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm } from './ledger-text'
 import { savedLedger, savedQuestion, savedStep } from './stored-codecs'
+import { wrappedLines, fitLines } from './terminal-text'
+import { clampTo, windowOf, lastStart, flowRows, buttonWidth, clockText, questionLabels } from './pane-layout'
+import { bannerLine, collapseLine } from './banner-layout'
+import type { BannerCount, BannerParts, BannerRow } from './banner-layout'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
@@ -123,99 +127,6 @@ const WAITING_BLUE = '#1a73e8'
 // The agents row's glyph pulses through light shades, never the row's own amber background.
 const AMBER_GLYPH = ['inverseText', '#f2d49b', '#e8bc63', '#f2d49b'] as const
 
-type BannerCount = { kind: 'agents' | 'tasks'; n: number }
-type BannerParts = { label: string; brief: string; questions: string[]; steps: string[]; counts: BannerCount[] }
-type BannerRow = { key: string; glyph: string; words: string; background: string; glyphColor: string; parts: BannerParts }
-
-// A row is parts, not a sentence to parse. The glyph counts toward the width, in terminal columns.
-// Narrowing order: the shorter label (keeps the step ids), a labelled step count, then no label
-// (the glyph and color still name the row) with ids, then with the count. The shortest form is cut.
-const composeBanner = (label: string, steps: string[], parts: BannerParts): string => {
-  const { questions, counts } = parts
-  if (questions.length === 0 && steps.length === 0 && counts.length === 1 && ((counts[0]?.kind === 'tasks' && label === 'Tasks') || (counts[0]?.kind === 'agents' && label === 'Agents'))) {
-    return `${label} ${counts[0]!.n}`
-  }
-
-  return [label, ...questions, ...steps, ...counts.map(count => `${count.kind} ${count.n}`)].filter(part => part !== '').join(' · ')
-}
-const bannerFits = (glyph: string, body: string, width: number): boolean =>
-  columnsOf(glyph === '' ? body : `${glyph} ${body}`) <= width
-const stepCount = (steps: string[]): string[] => (steps.length > 0 ? [`steps ${steps.length}`] : steps)
-const bannerWords = (glyph: string, body: string): string => (glyph === '' ? body : ` ${body}`)
-const bannerLine = (glyph: string, parts: BannerParts, width: number): { glyph: string; words: string } => {
-  const full = composeBanner(parts.label, parts.steps, parts)
-  const brief = composeBanner(parts.brief, parts.steps, parts)
-  const counted = composeBanner(parts.brief, stepCount(parts.steps), parts)
-  const candidates = [full, brief, counted]
-  if (glyph !== '' && (parts.questions.length > 0 || parts.steps.length > 0 || parts.counts.length > 0)) {
-    candidates.push(composeBanner('', parts.steps, parts), composeBanner('', stepCount(parts.steps), parts))
-  }
-  const forms = candidates.filter((body, index) => body !== '' && candidates.indexOf(body) === index)
-  for (const body of forms) {
-    if (bannerFits(glyph, body, width)) return { glyph, words: bannerWords(glyph, body) }
-  }
-  const glyphCols = glyph === '' ? 0 : columnsOf(glyph) + 1
-  const shortest = forms.reduce((best, body) => (columnsOf(body) < columnsOf(best) ? body : best), full)
-
-  return { glyph, words: bannerWords(glyph, fitLines(shortest, Math.max(1, width - glyphCols), 1)) }
-}
-const collapseBrief = (row: BannerRow): string =>
-  row.key === 'banner-unsaved' ? 'Unsaved' : row.key === 'banner-unknown' ? 'Unknown' : row.parts.brief
-const collapseSegment = (row: BannerRow, mode: 'full' | 'brief' | 'count' | 'label'): string => {
-  const label = mode === 'full' ? row.parts.label : collapseBrief(row)
-  const steps = mode === 'count' ? stepCount(row.parts.steps) : row.parts.steps
-  const body = mode === 'label' ? label : composeBanner(label, steps, row.parts)
-
-  return row.glyph === '' ? body : `${row.glyph} ${body}`
-}
-// One line, priority unsaved, you, unknown, working, agents, paused. Shorten a label before
-// dropping its step ids. Then every state by its label alone, before any state is dropped; then
-// drop the lowest-priority segment behind a +n, never Unsaved or You.
-// Widths are terminal columns.
-const collapseLine = (rows: BannerRow[], width: number): BannerRow => {
-  const order = ['banner-unsaved', 'banner-you', 'banner-unknown', 'banner-working', 'banner-agents', 'banner-paused']
-  const ordered = [...rows].filter(row => row.key !== 'banner-idle').sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key))
-  const first = ordered[0]
-  const empty: BannerParts = { label: '', brief: '', questions: [], steps: [], counts: [] }
-  if (first === undefined) return { key: 'banner-line', glyph: '', words: '', background: 'success', glyphColor: 'inverseText', parts: empty }
-  const asLine = (text: string, row: BannerRow): BannerRow => ({ ...row, key: 'banner-line', glyph: '', words: text, glyphColor: 'inverseText' })
-  const modes: Array<'full' | 'brief' | 'count'> = ordered.map(() => 'full')
-  const joined = () => ordered.map((row, index) => collapseSegment(row, modes[index] ?? 'full')).join(' · ')
-  let text = joined()
-  while (columnsOf(text) > width) {
-    const briefAt = modes.findIndex((mode, index) => mode === 'full' && collapseSegment(ordered[index]!, 'brief') !== collapseSegment(ordered[index]!, 'full'))
-    if (briefAt >= 0) {
-      modes[briefAt] = 'brief'
-      text = joined()
-      continue
-    }
-    const countAt = modes.findIndex((mode, index) => mode !== 'count' && (ordered[index]?.parts.steps.length ?? 0) > 0)
-    if (countAt >= 0) {
-      modes[countAt] = 'count'
-      text = joined()
-      continue
-    }
-    break
-  }
-  if (columnsOf(text) <= width) return asLine(text, first)
-  const kept = [...ordered]
-  let dropped = 0
-  const lineOf = (mode: 'count' | 'label') => [...kept.map(row => collapseSegment(row, mode)), ...(dropped > 0 ? [`+${dropped}`] : [])].join(' · ')
-  for (;;) {
-    for (const mode of ['count', 'label'] as const) {
-      if (columnsOf(lineOf(mode)) <= width) return asLine(lineOf(mode), kept[0] ?? first)
-    }
-    const victim = kept.length > 1 ? [...kept].reverse().find(row => row.key !== 'banner-you' && row.key !== 'banner-unsaved') : undefined
-    if (victim === undefined) break
-    kept.splice(kept.indexOf(victim), 1)
-    dropped += 1
-  }
-  const suffix = dropped > 0 ? ` · +${dropped}` : ''
-  const body = kept.map(row => collapseSegment(row, 'label')).join(' · ')
-  const room = width - columnsOf(suffix)
-
-  return asLine(room >= 1 ? `${fitLines(body, room, 1)}${suffix}` : fitLines(`+${dropped}`, width, 1), kept[0] ?? first)
-}
 const pulsing: { timer?: Timer } = {}
 // Each step row ends in its wall clock. It moves every second under an hour, then once a minute.
 const TICK_MS = 1000
@@ -240,33 +151,6 @@ const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0
 // state write and one redraw, not one per tick (one write per tick made the pane lag).
 const SCROLL_FLUSH_MS = 30
 const pendingScroll: { questions: number; steps: number; timer?: Timer } = { questions: 0, steps: 0 }
-// A stored position never runs past the last one that shows anything (observed: 733 for 20 steps).
-const clampTo = (last: number, value: number): number => Math.min(last, Math.max(0, value))
-
-// The rows from `start` whose lines fit `rows`: [start, end).
-const windowOf = (lines: number[], rows: number, start: number): [number, number] => {
-  let end = start
-  let used = 0
-  while (rows > 0 && end < lines.length && used + (lines[end] ?? 1) <= rows) {
-    used += lines[end] ?? 1
-    end++
-  }
-
-  return [start, rows > 0 && end === start && start < lines.length ? start + 1 : end]
-}
-
-// The first row from which the list's last rows fill `rows`.
-const lastStart = (lines: number[], rows: number): number => {
-  let start = lines.length
-  let used = 0
-  while (start > 0 && used + (lines[start - 1] ?? 1) <= rows) {
-    used += lines[start - 1] ?? 1
-    start--
-  }
-
-  return Math.min(start, Math.max(0, lines.length - 1))
-}
-
 // Model-facing data only: real tool ids, all open statuses, and the saved owner/blocker note.
 const openStepsOf = (steps: Step[]): Array<Pick<Step, 'id' | 'status' | 'subject' | 'note'>> =>
   visibleSteps(steps).filter(s => s.status !== 'completed')
@@ -298,77 +182,6 @@ const newPlanStep = (id: string, subject: string): Step => ({
 const sameResultOwner = (current: Step, saved: Step): boolean =>
   current.id === saved.id && current.source === saved.source && current.sourceId === saved.sourceId &&
   current.subject === saved.subject && current.taskId === saved.taskId
-
-// Whole minutes below an hour, <1m below a minute; retain the hour/minute form.
-const clockText = (ms: number): string => {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  const hours = Math.floor(total / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-
-  return hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : total < 60 ? '<1m' : `${minutes}m`
-}
-
-// Lines `text` takes word-wrapped at `width` columns, as the terminal wraps it: a word that does
-// not fit starts a new line, and a word longer than a line is broken.
-const segmenter = new Intl.Segmenter('und', { granularity: 'grapheme' })
-const graphemesOf = (text: string): string[] => Array.from(segmenter.segment(text), part => part.segment)
-// Conservative terminal widths: emoji clusters and East Asian wide glyphs use
-// two columns. Combining marks stay with their base through Intl.Segmenter.
-const columnsOf = (text: string): number => graphemesOf(text).reduce((sum, cluster) => sum + (
-  /^[\p{Mark}\p{Cf}]+$/u.test(cluster) ? 0
-    : /[\p{Extended_Pictographic}\p{Regional_Indicator}\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6]/u.test(cluster) ? 2 : 1
-), 0)
-const wrappedLines = (text: string, width: number): number => {
-  let lines = 1
-  let used = 0
-  for (const word of text.split(' ')) {
-    const columns = columnsOf(word)
-    if (used > 0 && used + 1 + columns <= width) {
-      used += 1 + columns
-    } else if (columns > 0) {
-      const extra = Math.floor((columns - 1) / width)
-      lines += (used > 0 ? 1 : 0) + extra
-      used = columns - extra * width
-    }
-  }
-
-  return lines
-}
-
-// Rows a header or bar takes when its items wrap at `width`: each item stays whole, `gap` apart.
-const flowRows = (items: number[], width: number, gap: number): number => {
-  let rows = 1
-  let used = 0
-  for (const item of items.filter(w => w > 0)) {
-    if (used > 0 && used + gap + item > width) {
-      rows++
-      used = item
-    } else {
-      used = used === 0 ? item : used + gap + item
-    }
-  }
-
-  return rows
-}
-
-// The columns a button takes: the engine draws a hotkey button as "q: label".
-const buttonWidth = (hotkey: string, label: string): number => hotkey.length + 2 + label.length
-
-// A row's text, cut with an ellipsis to the lines it may take: for a row taller than its whole
-// region, whose last lines no scroll could reach.
-const fitLines = (text: string, width: number, lines: number): string => {
-  const most = Math.max(1, lines)
-  if (wrappedLines(text, width) <= most) {
-    return text
-  }
-  const clusters = graphemesOf(text)
-  let cut = Math.min(clusters.length, Math.max(1, width * most - 1))
-  while (cut > 0 && wrappedLines(`${clusters.slice(0, cut).join('').trimEnd()}…`, width) > most) {
-    cut--
-  }
-
-  return `${clusters.slice(0, cut).join('').trimEnd()}…`
-}
 
 const hidden = (above: number, below: number): string =>
   [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
@@ -2709,13 +2522,6 @@ const restoreNotice = (r: Restore): string => [
 ].join('\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
 
 const restoreKey = (q: Question, kind: 'q' | 'a'): string => `restored-${kind}:${q.restoredBy}:${q.id}`
-
-// Human labels follow the full uncleared list, not the scroll window. Stored and
-// model-facing ids stay permanent; an old transcript row falls back to that id.
-const questionLabels = (questions: readonly Question[]): ((id: number | string) => string) => {
-  const labels = new Map(visibleQuestions(questions).map((q, index) => [q.id, `Q${index + 1}`]))
-  return id => labels.get(Number(id)) ?? `Q${id}`
-}
 
 const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface['ui']['resolve']>, r: Restore, label: (id: number) => string): Promise<RenderElement> => {
   const { Box, Text } = ui
