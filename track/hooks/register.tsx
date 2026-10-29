@@ -8,7 +8,7 @@ import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } from './turn-policy'
 import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, isDefined, distinctIds, keepRestores } from './ledger-policy'
-import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm } from './ledger-text'
+import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm, utf8Bytes } from './ledger-text'
 import { savedLedger, savedQuestion, savedStep } from './stored-codecs'
 import { wrappedLines, fitLines } from './terminal-text'
 import { clampTo, windowOf, lastStart, flowRows, buttonWidth, clockText, questionLabels } from './pane-layout'
@@ -26,6 +26,9 @@ import { readBlob } from './blob-store'
 import { BUILD_IDENTITY } from './build-identity'
 import { identityOf } from './identity-read'
 import type { BlobFs } from './blob-store'
+import { diagnose } from './diagnose-flow'
+import type { DiagnosePorts } from './diagnose-flow'
+import type { GateProjection, RingEntry, RingValue } from './diagnose-bundle'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -732,7 +735,6 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
 }
 
 type SavedIndex = Record<string, { at: number; bytes: number; unfinished?: boolean }>
-const utf8Bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length
 const persistence = { queue: Promise.resolve(), failure: '' }
 const savedRevisions = new Map<string, number>()
 type SaveRecovery = { previous: unknown; previousBlobText?: string; bucket: unknown; previousHead: unknown; head: SessionHead; previousIndex: unknown; index: unknown }
@@ -752,8 +754,6 @@ const gateWrites = { queue: Promise.resolve() }
 // Failure-intake D5/D6: the newest events, memory only (a reload or restart loses them). Each entry
 // holds ids, counts, enums and booleans from its site's locals, never text. `owner` is the session
 // last known to own Track's rows when the event fired; diagnose shows only the asking owner's events.
-type RingValue = string | number | boolean | null | ReadonlyArray<string | number>
-type RingEntry = { at: number; code: string; turn_id?: string; meta: Record<string, RingValue>; truncated?: true }
 const RING_SIZE = 50
 const RING_ENTRY_BYTES = 512
 const eventRing: Array<{ owner: string | undefined; entry: RingEntry }> = []
@@ -788,7 +788,6 @@ const noteEvent = ($: EngineInterface, code: string, meta: Record<string, RingVa
 }
 // Failure-intake D10: the projection of the last snapshot publishGate wrote, kept in memory after its
 // env write so diagnose never republishes the gate. Only ids, counts, kinds and flags.
-type GateProjection = { session_id: string; gate: { open_count: number; input_count: number; inputs_complete: boolean; candidate_kinds: string[]; held: string[]; truncated: boolean } }
 const gateCache = { last: undefined as GateProjection | undefined }
 
 const freshTurn = (turnId: string): StepFreshness => ({ turnId, edits: [], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] })
@@ -2883,9 +2882,6 @@ const identityLine = async ($: EngineInterface): Promise<string> =>
   `track: loaded ${LOADED_IDENTITY.loaded === 'unknown' ? 'unknown' : LOADED_IDENTITY.loaded.slice(0, 8)} (disk ${(await observedDisk($))?.slice(0, 8) ?? 'unknown'})`
 
 const DIAGNOSE = 'mcp__track__diagnose'
-const DIAGNOSE_BYTES = 32 * 1024
-const DIAGNOSE_OWNER = 'track: diagnose needs an admitted owner'
-const DIAGNOSE_MAIN_LOOP = 'track: diagnose is main-loop only'
 const INPUT_CLAIM_KIND = 'uncovered_input'
 // stop-gate.py claim_name: sha256 of the compact JSON [session, turn, kind].
 const claimName = (session: string, turnId: string, kind: string): Promise<string> => sha256Hex(JSON.stringify([session, turnId, kind]))
@@ -2916,88 +2912,25 @@ const claimStats = async ($: EngineInterface, session: string, turnId: string | 
   return stats
 }
 
-type Bundle = Record<string, any>
-// D8: the whole serialized answer is at most 32 KiB UTF-8. The ring is trimmed oldest first, then each
-// id array in a fixed order keeps its longest fitting prefix; every trimmed array is flagged beside it.
-const fitBundle = (bundle: Bundle): string => {
-  const fits = () => utf8Bytes(bundle) <= DIAGNOSE_BYTES
-  while (!fits() && bundle.ring.length > 0) {
-    bundle.ring.shift()
-    bundle.ring_truncated = true
-    bundle.truncated = true
-  }
-  const arrays: Array<[Bundle, string]> = [[bundle.activity, 'background_ids'], [bundle.activity, 'task_ids'],
-    [bundle.turn.freshness ?? {}, 'completed_ids'], [bundle.turn.freshness ?? {}, 'waiting_ids'], [bundle, 'claims']]
-  for (const [holder, field] of arrays) {
-    if (fits()) break
-    const full = holder[field]
-    if (!Array.isArray(full) || full.length === 0) continue
-    holder[`${field}_truncated`] = true
-    bundle.truncated = true
-    let low = 0
-    let high = full.length - 1
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2)
-      holder[field] = full.slice(0, middle)
-      if (fits()) low = middle
-      else high = middle - 1
-    }
-    holder[field] = full.slice(0, low)
-  }
-  if (fits()) return JSON.stringify(bundle)
-  return JSON.stringify({ v: 1, identity: bundle.identity, session_id: bundle.session_id, truncated: true })
-}
-
-// D7-D11: a read-only bundle for failure intake. It never takes or switches ownership, never
-// republishes the gate and writes no atom, env value, file or lease.
-const diagnose = async ($: EngineInterface, e: { agentId?: string }): Promise<{ result: string } | { deny: string }> => {
-  if (e.agentId !== undefined) return { deny: DIAGNOSE_MAIN_LOOP }
-  const epoch = ownership.epoch
-  let id: string
-  try { id = await $.session.id() } catch { return { deny: DIAGNOSE_OWNER } }
-  const isAdmitted = async (): Promise<boolean> => {
+// D7-D11: diagnose-flow's native reads, built per call. isAdmitted reads `ownership` on each of its
+// two calls; the durability read happens only when the ledger names no owner.
+const diagnosePorts = ($: EngineInterface): DiagnosePorts => ({
+  epoch: () => ownership.epoch,
+  sessionId: () => $.session.id(),
+  isAdmitted: async (epoch, id) => {
     if (ownership.running !== undefined || ownership.epoch !== epoch) return false
     return ((await read($, ledger)).session_id ?? (await read($, durability)).memorySession) === id
-  }
-  if (!(await isAdmitted())) return { deny: DIAGNOSE_OWNER }
-  const l = await read($, ledger)
-  const t = await read($, turn)
-  const a = await read($, activity)
-  const p = await read($, pending)
-  const disk = await observedDisk($)
-  const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
-  const visible = visibleSteps(l.steps)
-  const byStatus: Record<string, number> = {}
-  for (const step of visible) byStatus[step.status] = (byStatus[step.status] ?? 0) + 1
-  const heldInputs = p.inputs.filter(input => input.held === true).map(input => input.id)
-  let claims: Array<{ name: string; kind: string; present: boolean }> | null
-  try { claims = await claimStats($, id, t.currentId, heldInputs) } catch { claims = null }
-  const cached = gateCache.last
-  const bundle: Bundle = {
-    v: 1,
-    identity: LOADED_IDENTITY,
-    ...(disk !== undefined && { observed_disk: disk }),
-    session_id: id,
-    ledger: { questions: l.questions.filter(q => q.cleared !== true).length, open: l.questions.filter(q => q.cleared !== true && q.status === 'open').length,
-      steps: visible.length, by_status: byStatus },
-    turn: { current_id: t.currentId, gated: t.currentId !== null && t.gatedTurnId === t.currentId,
-      freshness: fresh === undefined ? null : { turn_id: fresh.turnId, edits: fresh.edits.length, bash: fresh.bash.length, steps: fresh.steps.length,
-        completed_ids: fresh.completed.map(row => row.id), waiting_ids: [...fresh.waiting], held: [...fresh.held], nudged: [...fresh.nudged] } },
-    activity: { is_working: a.isWorking === true, main_turn_id: a.mainTurnId ?? null, background_ids: [...a.background], task_ids: [...(a.tasks ?? [])], launch_seq: a.launchSeq ?? 0 },
-    pending: { count: p.inputs.length, held_count: heldInputs.length, covered_count: p.inputs.filter(input => input.covered !== undefined).length },
-    // E-I3: another owner's cached gate or events are never shown; null means none for this owner.
-    gate: cached?.session_id === id ? { ...cached.gate } : null,
-    claims,
-    ring: eventRing.filter(row => row.owner === id).map(row => ({ ...row.entry, meta: { ...row.entry.meta } })),
-    truncated: false,
-  }
-  const text = fitBundle(bundle)
-  // D10: an owner change during the call refuses; it never mixes two owners' rows.
-  let now: string
-  try { now = await $.session.id() } catch { return { deny: DIAGNOSE_OWNER } }
-  if (now !== id || !(await isAdmitted())) return { deny: DIAGNOSE_OWNER }
-  return { result: text }
-}
+  },
+  readLedger: () => read($, ledger),
+  readTurn: () => read($, turn),
+  readActivity: () => read($, activity),
+  readPending: () => read($, pending),
+  observedDisk: () => observedDisk($),
+  claimStats: (session, turnId, heldInputs) => claimStats($, session, turnId, heldInputs),
+  cachedGate: () => gateCache.last,
+  events: () => eventRing,
+  identity: LOADED_IDENTITY,
+})
 
 export const register: Register = on => {
   // Per-call eligibility crosses the handler/save boundary, then leaves memory.
@@ -3278,7 +3211,7 @@ export const register: Register = on => {
     return { result: JSON.stringify({ ...bucket.checkpoint, open_steps: openStepsOf(bucket.ledger.steps) }) }
   })
 
-  on('tool.call', { tool: DIAGNOSE }, async ($, e) => diagnose($, e))
+  on('tool.call', { tool: DIAGNOSE }, async ($, e) => diagnose(diagnosePorts($), e))
 
   on('tool.call', { tool: LOOKUP_ROWS }, async ($, e) => {
     if (e.references !== undefined && (!Array.isArray(e.references) || e.references.length > 64 || !e.references.every(reference => typeof reference === 'string' && /^[SQ]\d+$/i.test(reference)))) {

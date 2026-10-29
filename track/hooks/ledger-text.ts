@@ -30,3 +30,6 @@ export const norm = (title: string): string =>
     .replace(/[^\p{L}\p{N}\s]/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
+
+// Serialized UTF-8 size: the unit of every byte budget.
+export const utf8Bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length
