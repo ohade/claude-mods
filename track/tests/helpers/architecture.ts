@@ -27,6 +27,13 @@ for (const file of compiler.fileNames.filter(name => !name.endsWith('.d.ts'))) {
     if (specifier === undefined || !ts.isStringLiteral(specifier)) continue
     const name = specifier.text
     if (name !== 'claude-code' && !name.startsWith('claude-code/') && name !== 'claude-code-tools' && name !== 'claude-code-mcp') continue
+    // Step-view release gate: native constructors cross as types, never capabilities.
+    const clause = ts.isImportDeclaration(statement) ? statement.importClause : undefined
+    const bindings = clause?.namedBindings
+    if (relative(root, file) === 'hooks/pane-elements.ts' && name === 'claude-code' &&
+      clause?.isTypeOnly === true && clause.name === undefined && bindings !== undefined &&
+      ts.isNamedImports(bindings) && bindings.elements.length === 1 &&
+      bindings.elements[0]!.name.text === 'ElementTable' && bindings.elements[0]!.propertyName === undefined) continue
     const line = source.getLineAndCharacterOfPosition(statement.getStart(source)).line + 1
     sdkImports.push(`${relative(root, file)}:${line}: SDK import ${name} must stay in the native adapter`)
   }
