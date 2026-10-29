@@ -1,4 +1,4 @@
-import type { RetentionStore } from './retention'
+import type { RetentionStore } from './retention-records'
 
 // TRACK-21 Refuter-2 M4 (2026-10-11): full body scans under the store
 // lock blocked other owners. A pending key repairs a crash-left size update.
