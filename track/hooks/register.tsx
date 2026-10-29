@@ -6,6 +6,7 @@ import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, mat
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
+import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } from './turn-policy'
 import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, isDefined, distinctIds, keepRestores } from './ledger-policy'
 import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm } from './ledger-text'
 import { savedLedger, savedQuestion, savedStep } from './stored-codecs'
@@ -193,7 +194,6 @@ const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // sentence; the stored result is checked when the text does not start with one. A deny can carry
 // a refusal with no error flag. Only a leading BOM or whitespace is ignored. A sentence after
 // other text is not a cancel.
-const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|was|were|can|could|do|does|did|should|would|will|u)$/i
 // CC-179, 2026-10-10: a rejected or unrelated Track call counted as tracking a question, one
 // excerpt was kept and every later prompt overwrote it. Each question-like main prompt is now a
 // pending input until an accepted row covers it: a question created or reused for it, or new steps.
@@ -206,20 +206,6 @@ const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|wa
 const MAX_INPUTS = 50
 // How long Stop waits for a Haiku label already in flight.
 const STOP_JOIN_MS = 2000
-// A main prompt the gate may judge, trimmed, or absent for a slash command, a doorbell, terminal
-// input, a notification or a peer's message. A subagent hand-back comes in under the peer origin
-// and is model output, not the person's question; recordPrompt skips it for the same reason.
-const gateable = (text: string, originKind: string | undefined): string | undefined => {
-  const trimmed = text.trim()
-  if (trimmed === '' || trimmed.startsWith('/') || trimmed.startsWith(': AMQ doorbell')) return undefined
-  if (trimmed.startsWith('<bash-') || trimmed.startsWith('<local-command') || trimmed.startsWith('<task-notification')) return undefined
-  if (originKind === 'task-notification' || originKind === 'peer') return undefined
-  return trimmed
-}
-// The CC-154 wording check: a question mark, or a question word first. It misses Hebrew and
-// "explain X", and takes "can you send it?" for a question.
-const looksLikeQuestion = (trimmed: string): boolean =>
-  trimmed.includes('?') || QUESTION_FIRST.test(trimmed.split(/\s+/)[0] ?? '')
 // CC-179 step 3: Haiku labels each gateable prompt when /track classifier is on. Off by default
 // until a real benchmark measured its labels, delay and cost. The request is track-bench's
 // (lib/classifier.js at f73d53b), so the benchmark measures this call. A reply that is not exactly
@@ -235,9 +221,6 @@ const CLASSIFIER = {
 }
 // TODO(CC-179): one label per message cannot count two questions inside it; that needs span
 // extraction (Codex's plan, out of scope here).
-// Whether an input needs a question row: Haiku's label when it gave one, else the wording check.
-const needsQuestion = (i: PendingInput): boolean =>
-  i.label === 'question' || (i.label !== 'not_question' && i.wording !== false)
 const USER_CANCEL = "The user doesn't want to take this action right now"
 const USER_REJECT = "The user doesn't want to proceed with this tool use. The tool use was rejected"
 const PERMISSION_DENIED = /^Permission to use \S+ has been denied\b/
@@ -321,17 +304,6 @@ const rememberLaunch = (a: Activity, id: string): Pick<Activity, 'launchSeq' | '
   const launchNumbers = [...(a.launchNumbers ?? []).filter(row => row.task !== id), { task: id, seq }]
   while (launchNumbers.length > OWNER_CAP) launchNumbers.shift()
   return { launchSeq: seq, launchNumbers }
-}
-// TRACK-27 refuter 6: a reused id can name different work. Launch identity is
-// authoritative when present; only tasks without a launch row use the legacy id map.
-const ownerTasksForStep = (a: Activity, step: Step): string[] => {
-  const launches = new Map((a.launchOwners ?? []).map(row => [row.task, row.steps] as const))
-  const subject = norm(step.subject)
-  return [...new Set([...Object.keys(a.owners ?? {}), ...launches.keys()])].filter(task => {
-    const identities = launches.get(task)
-    return identities === undefined ? a.owners?.[task]?.includes(step.id) === true
-      : identities.some(row => row.id === step.id && row.subject === subject)
-  })
 }
 const dropFinishedOwners = async ($: EngineInterface, token?: OwnerToken): Promise<void> => {
   const steps = (await read($, ledger)).steps
@@ -822,27 +794,6 @@ const gateCache = { last: undefined as GateProjection | undefined }
 const freshTurn = (turnId: string): StepFreshness => ({ turnId, edits: [], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] })
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
-// Full stored responses, not the capped pane preview, supply waiting requests.
-const waitingArrowIds = (text: string, stepIds: ReadonlySet<string>): string[] => {
-  const ids: string[] = []
-  let fence: { char: string; size: number } | undefined
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/\r$/, '')
-    const boundary = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
-    if (fence !== undefined) {
-      if (boundary?.[1]?.[0] === fence.char && boundary[1].length >= fence.size && boundary[2]?.trim() === '') fence = undefined
-    } else if (boundary !== null && !(boundary[1]![0] === '`' && boundary[2]!.includes('`'))) {
-      fence = { char: boundary[1]![0]!, size: boundary[1]!.length }
-    } else {
-      // The id runs to the first ": ", so `todo:ship it` and `restored:task:7` both parse;
-      // only an id that names a visible step counts.
-      const arrow = /^ {0,3}👉[ \t]+(\S.*?):[ \t]+(\S.*)$/.exec(line)
-      if (arrow !== null && stepIds.has(arrow[1]!)) ids.push(arrow[1]!)
-    }
-  }
-  return distinctIds(ids)
-}
-
 // TRACK-27: a successful native call must actually address a tracked row.
 const stepReceiptIds = (tool: string, input: Record<string, unknown>, result: unknown, before: Ledger, after: Ledger): string[] => {
   const output = result as { task?: { id?: unknown }; success?: unknown; newTodos?: unknown } | undefined
@@ -1068,19 +1019,6 @@ const GATE_SNAPSHOT_BYTES = 16 * 1024
 const MINIMAL_INPUT_BYTES = 100
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
-
-const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidate[] => {
-  const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
-  const visible = visibleSteps(l.steps)
-  const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
-    .map(row => ({ kind: 'premature_completion', ...row }))
-  const stale: FreshnessCandidate[] = typeof t.currentId !== 'string' ? [] : visible.filter(step => step.status === 'in_progress' && step.activeTurnId === t.currentId && step.delegated !== true)
-    .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: ownerTasksForStep(a, step) }))
-  const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
-    .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
-  // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
-  return [...completed, ...stale, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
-}
 
 const minimalInputReason = (input: PendingInput): string => {
   // 2026-10-26: internal input ids are not shown to the model. Keep an excerpt,
@@ -2648,10 +2586,6 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
     $.ui.log('track: prompt tracking stopped: session owner changed during the call.', { to: 'debug' })
   }
 }
-
-// The inputs of the turn: bound to it, or not yet bound to any turn.
-const ofTurn = (inputs: PendingInput[], currentId: string): PendingInput[] =>
-  inputs.filter(i => i.turnId === currentId || i.turnId === null)
 
 // Haiku labels in flight, by input id, so Stop can wait briefly for one. Module memory: a reload
 // stops the managed timer, and the input falls back to the wording check.

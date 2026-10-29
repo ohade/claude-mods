@@ -22,13 +22,14 @@ baseline = "archview-baseline.json"
 "pane-layout.ts" = ["pane-order.ts"]
 "pane-order.ts" = ["steps.ts"]
 "reconcile.ts" = ["checkpoint.ts"]
-"register.tsx" = ["answer-blocks.ts", "banner-layout.ts", "blob-store.ts", "build-identity.ts", "checkpoint.ts", "deploy-drift.ts", "identity-read.ts", "ledger-policy.ts", "ledger-text.ts", "pane-layout.ts", "pane-order.ts", "reconcile.ts", "retention.ts", "size-index.ts", "steps.ts", "stored-codecs.ts", "terminal-text.ts", "transcript-baseline.ts"]
+"register.tsx" = ["answer-blocks.ts", "banner-layout.ts", "blob-store.ts", "build-identity.ts", "checkpoint.ts", "deploy-drift.ts", "identity-read.ts", "ledger-policy.ts", "ledger-text.ts", "pane-layout.ts", "pane-order.ts", "reconcile.ts", "retention.ts", "size-index.ts", "steps.ts", "stored-codecs.ts", "terminal-text.ts", "transcript-baseline.ts", "turn-policy.ts"]
 "retention.ts" = ["checkpoint.ts", "size-index.ts"]
 "size-index.ts" = ["retention.ts"]
 "steps.ts" = []
 "stored-codecs.ts" = ["ledger-policy.ts", "ledger-text.ts", "reconcile.ts"]
 "terminal-text.ts" = []
 "transcript-baseline.ts" = []
+"turn-policy.ts" = ["ledger-policy.ts", "ledger-text.ts", "steps.ts"]
 
 [archview.externals]
 "answer-blocks.ts" = []
@@ -50,6 +51,7 @@ baseline = "archview-baseline.json"
 "stored-codecs.ts" = []
 "terminal-text.ts" = []
 "transcript-baseline.ts" = []
+"turn-policy.ts" = []
 
 [[archview.forbidden]]
 from = "*"
