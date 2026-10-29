@@ -1,4 +1,4 @@
-import type { Ledger, Step } from '../types'
+import type { Ledger, Question, Restore, Step } from '../types'
 
 export const MAX_STEPS = 300
 // Reasons the pane shows only while a step stays paused. Leaving paused drops them.
@@ -50,3 +50,28 @@ export const hasClock = (s: Step): boolean => s.startedAt !== undefined && (
 )
 
 export const runningClocks = (l: Ledger): Step[] => l.steps.filter(s => s.cleared !== true && s.status === 'in_progress' && hasClock(s))
+
+// paused: started, then parked; waiting: needs the person's answer.
+export const STEP_STATUSES = ['pending', 'in_progress', 'completed', 'paused', 'waiting'] as const
+
+export const QUESTION_STATUSES = ['open', 'answered', 'deferred'] as const
+
+export const MAX_PROMPTS = 200
+
+export const MAX_QUESTIONS = 200
+
+// Recent inactive restore rows. A record that still owns a shown question's
+// target stays too; the question and store budgets bound those active copies.
+export const MAX_RESTORES = 3
+
+export const isDefined = <T,>(value: T | undefined): value is T => value !== undefined
+
+export const distinctIds = (ids: string[]): string[] => [...new Set(ids)].slice(-MAX_STEPS)
+
+// Keep the acknowledged transcript snapshots needed by uncleared rows before
+// pruning recent history. Rendering never saves or reads the transcript.
+export const keepRestores = (restores: Restore[], questions: Question[]): Restore[] => {
+  const active = new Set(questions.filter(q => q.cleared !== true).map(q => q.restoredBy).filter(isDefined))
+  const recent = new Set(restores.filter(r => !active.has(r.by)).slice(-MAX_RESTORES))
+  return restores.filter(r => active.has(r.by) || recent.has(r))
+}

@@ -6,7 +6,9 @@ import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, mat
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
-import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote } from './ledger-policy'
+import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, isDefined, distinctIds, keepRestores } from './ledger-policy'
+import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm } from './ledger-text'
+import { savedLedger, savedQuestion, savedStep } from './stored-codecs'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
@@ -58,23 +60,7 @@ const REORDER_STEPS = 'mcp__track__reorder_steps'
 // A Claude Code session id; restore_tracker reads only the store key of a real one.
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_PLAN_STEPS = 30
-// paused: started, then parked; waiting: needs the person's answer.
-const STEP_STATUSES = ['pending', 'in_progress', 'completed', 'paused', 'waiting'] as const
-const QUESTION_STATUSES = ['open', 'answered', 'deferred'] as const
 
-// Caps: heads are short, lists are bounded, so the ledger stays small in $.state and $.store.
-// Long enough to keep a question whole; the pane wraps it rather than cutting it.
-const HEAD_CHARS = 200
-const MAX_PROMPTS = 200
-const MAX_QUESTIONS = 200
-// An answer is kept for the next session to read, cut to this many characters. With
-// MAX_QUESTIONS it bounds the answers in one register near 200 KB, well inside STORE_BUDGET.
-const ANSWER_CHARS = 1000
-// Results use the same saved-text budget; the native source retains full words.
-const RESULT_CHARS = ANSWER_CHARS
-// Recent inactive restore rows. A record that still owns a shown question's
-// target stays too; the question and store budgets bound those active copies.
-const MAX_RESTORES = 3
 // A restored question's turn: no turn of this session has it, so the Stop gate never holds a
 // turn for it and turn.start does not claim it.
 const RESTORED_TURN = 'restored'
@@ -596,12 +582,6 @@ const CLEAR_ARM_MS = 10_000
 // The UserMessage render later writes the real requestId over this provisional key.
 const rowKey = (id: string): string => id.split('-').slice(0, 4).join('-')
 
-// The first line of a prompt, without image tags, cut to HEAD_CHARS.
-const headOf = (text: string): string => {
-  const line = text.replace(/\[Image #\d+\]/g, '').trim().split('\n')[0] ?? ''
-
-  return truncate(line, HEAD_CHARS)
-}
 
 // "1 step", "2 steps".
 const counted = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
@@ -614,10 +594,6 @@ const textOf = (content: ReadonlyArray<{ type: string; text?: unknown }>): strin
 // are not the person's, and would hide a slash command from the check on the head.
 const MIDTURN_FRAME = /^\s*(<system-reminder>\s*)?The user sent a new message while you were working:\s*/
 
-const truncate = (text: string, width: number): string => {
-  const points = Array.from(text)
-  return points.length > width ? `${points.slice(0, Math.max(1, width - 1)).join('')}…` : text
-}
 
 // Ring glyph for a completion fraction; `○ —` when there is nothing to count.
 const ring = (done: number, total: number): string => {
@@ -628,15 +604,6 @@ const ring = (done: number, total: number): string => {
   return `${glyph} ${done} of ${total} · ${pct}%`
 }
 
-// A title for matching: lowercase, without a leading number or checkbox, punctuation, or
-// repeated spaces. A Task links to the plan step whose normalized title is the same.
-const norm = (title: string): string =>
-  title
-    .toLowerCase()
-    .replace(/^\s*(?:\d+[.)]|[-*+]\s*\[[ x]\])\s*/, '')
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim()
 
 
 const statusGlyph = (q: Question): string => (q.status === 'answered' ? '●' : q.status === 'deferred' ? '◌' : '○')
@@ -647,11 +614,7 @@ const light = ($: EngineInterface, id: string, level: number) => update($, membe
 
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
-const isDefined = <T,>(value: T | undefined): value is T => value !== undefined
 
-// `{ [key]: value }` when value is a string, else nothing: an optional text field of a saved row.
-const textField = <K extends string>(key: K, value: unknown): Partial<Record<K, string>> =>
-  typeof value === 'string' ? ({ [key]: value } as Record<K, string>) : {}
 
 // Ownership is retained when parked; only an uncleared in-progress row signals active work.
 const isDelegatedWork = (step: Step): boolean => step.cleared !== true && step.delegated === true && step.status === 'in_progress'
@@ -1044,7 +1007,6 @@ type GateProjection = { session_id: string; gate: { open_count: number; input_co
 const gateCache = { last: undefined as GateProjection | undefined }
 
 const freshTurn = (turnId: string): StepFreshness => ({ turnId, edits: [], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] })
-const distinctIds = (ids: string[]): string[] => [...new Set(ids)].slice(-MAX_STEPS)
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
 // Full stored responses, not the capped pane preview, supply waiting requests.
@@ -2707,76 +2669,9 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
   return run
 }
 
-// A saved prompt or question as a fresh row, or undefined when the row is not one.
-const savedPrompt = (row: unknown): Prompt | undefined => {
-  if (typeof row !== 'object' || row === null) {
-    return undefined
-  }
-  const r = row as Record<string, unknown>
-  if (typeof r.rowKey !== 'string' || typeof r.head !== 'string' || typeof r.at !== 'number') {
-    return undefined
-  }
 
-  return { rowKey: r.rowKey, head: headOf(r.head), at: r.at, turnId: typeof r.turnId === 'string' ? r.turnId : null, ...textField('requestId', r.requestId) }
-}
 
-// A saved native A-marker's provenance, kept so a reload compares equal in the three-way merge.
-const savedMarker = (m: Record<string, unknown>): Pick<Question, 'answerMarker'> | undefined =>
-  typeof m.turnId === 'string' && m.turnId !== '' && typeof m.order === 'number' && Number.isSafeInteger(m.order) && m.order >= 0
-    ? { answerMarker: { turnId: m.turnId, order: m.order } }
-    : undefined
 
-const savedQuestion = (row: unknown): Question | undefined => {
-  if (typeof row !== 'object' || row === null) {
-    return undefined
-  }
-  const r = row as Record<string, unknown>
-  const status = QUESTION_STATUSES.find(one => one === r.status)
-  if (typeof r.id !== 'number' || typeof r.head !== 'string' || typeof r.at !== 'number' || status === undefined) {
-    return undefined
-  }
-
-  return {
-    id: r.id,
-    head: headOf(r.head),
-    at: r.at,
-    turnId: typeof r.turnId === 'string' ? r.turnId : null,
-    status,
-    ...textField('rowKey', r.rowKey),
-    ...textField('askedRequestId', r.askedRequestId),
-    ...textField('answerRequestId', r.answerRequestId),
-    ...textField('answeredBy', r.answeredBy),
-    ...textField('answerTurnId', r.answerTurnId),
-    ...(typeof r.answerTextHash === 'string' && /^[0-9a-f]{64}$/.test(r.answerTextHash) && { answerTextHash: r.answerTextHash }),
-    ...(typeof r.answerOrder === 'number' && Number.isSafeInteger(r.answerOrder) && r.answerOrder >= 0 && { answerOrder: r.answerOrder }),
-    ...textField('answerKey', r.answerKey),
-    ...(typeof r.answerMarker === 'object' && r.answerMarker !== null && savedMarker(r.answerMarker as Record<string, unknown>)),
-    ...textField('trackedBy', r.trackedBy),
-    ...(typeof r.trackedOrder === 'number' && Number.isSafeInteger(r.trackedOrder) && r.trackedOrder >= 0 && { trackedOrder: r.trackedOrder }),
-    ...textField('restoredFrom', r.restoredFrom),
-    ...textField('restoredBy', r.restoredBy),
-    ...textField('sourceId', r.sourceId),
-    ...(typeof r.note === 'string' && { note: r.note.slice(0, HEAD_CHARS) }),
-    ...(typeof r.answerText === 'string' && { answerText: truncate(r.answerText, ANSWER_CHARS) }),
-    ...(typeof r.answeredAt === 'number' && { answeredAt: r.answeredAt }),
-    ...(r.cleared === true && { cleared: true as const }),
-  }
-}
-
-// A saved restore row's record, or undefined when the row is not one.
-const savedRestore = (row: unknown): Restore | undefined => {
-  if (typeof row !== 'object' || row === null) {
-    return undefined
-  }
-  const r = row as Record<string, unknown>
-  if (typeof r.by !== 'string' || typeof r.from !== 'string' || typeof r.steps !== 'number' || !Array.isArray(r.questions)) {
-    return undefined
-  }
-
-  return { by: r.by, from: r.from, steps: r.steps,
-    ...(typeof r.visibleSteps === 'number' && Number.isSafeInteger(r.visibleSteps) && r.visibleSteps >= 0 && r.visibleSteps <= r.steps && { visibleSteps: r.visibleSteps }),
-    questions: r.questions.map(savedQuestion).filter(isDefined).slice(-MAX_QUESTIONS), ...(r.display === 'user' && { display: 'user' as const }) }
-}
 
 // A question from another session's register, under this session's id `id`. Its old row links
 // and turn are dropped: those rows are in the old transcript. `by` is the restore call whose row
@@ -2795,13 +2690,6 @@ const asRestored = (q: Question, id: number, from: string, by: string | undefine
   ...(by !== undefined && { restoredBy: by }),
 })
 
-// Keep the acknowledged transcript snapshots needed by uncleared rows before
-// pruning recent history. Rendering never saves or reads the transcript.
-const keepRestores = (restores: Restore[], questions: Question[]): Restore[] => {
-  const active = new Set(questions.filter(q => q.cleared !== true).map(q => q.restoredBy).filter(isDefined))
-  const recent = new Set(restores.filter(r => !active.has(r.by)).slice(-MAX_RESTORES))
-  return restores.filter(r => active.has(r.by) || recent.has(r))
-}
 
 // Old notices must remain byte-identical: their acknowledgement is a native
 // render target. Only newly generated records carry the current-row count.
@@ -2857,76 +2745,7 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
   return <Box flexDirection="column"><Text bold>{`Restored from the previous session: ${count}, ${counted(r.questions.length, 'question')}`}</Text>{rows}</Box>
 }
 
-// A saved step as a fresh Step, or undefined when the row is not one: restore_tracker reads rows
-// another session saved, and copies only the fields a step has.
-const savedStep = (row: unknown): Step | undefined => {
-  if (typeof row !== 'object' || row === null) {
-    return undefined
-  }
-  const r = row as Record<string, unknown>
-  const source = (['task', 'todo', 'plan'] as const).find(one => one === r.source)
-  const status = STEP_STATUSES.find(one => one === r.status)
-  if (typeof r.id !== 'string' || typeof r.subject !== 'string' || source === undefined || status === undefined) {
-    return undefined
-  }
 
-  return {
-    id: r.id,
-    source,
-    subject: headOf(r.subject),
-    status,
-    ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
-    ...(r.cleared === true ? { cleared: true as const } : {}),
-    ...(r.delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }),
-    ...(status === 'in_progress' && typeof r.activeTurnId === 'string' && { activeTurnId: r.activeTurnId }),
-    ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
-    ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),
-    ...textField('sourceId', r.sourceId),
-    ...(typeof r.note === 'string' && { note: r.note }),
-    ...(r.followUp === true ? { followUp: true as const } : {}),
-    ...(status === 'completed' && typeof r.resultText === 'string' && r.resultText.trim() !== '' && {
-      resultText: r.resultText.slice(0, RESULT_CHARS),
-      ...(typeof r.resultTextHash === 'string' && /^[0-9a-f]{64}$/.test(r.resultTextHash) && { resultTextHash: r.resultTextHash }),
-      ...textField('resultRequestId', r.resultRequestId),
-      ...textField('resultTurnId', r.resultTurnId),
-      ...(typeof r.resultAt === 'number' && Number.isFinite(r.resultAt) && { resultAt: r.resultAt }),
-    }),
-  }
-}
-
-// A saved bucket's register, or undefined when it is not one of this version: a resume reads what
-// an earlier version or a damaged store left. Only well-formed rows are kept, and the next
-// question id stays above every id kept or withdrawn.
-const savedLedger = (raw: unknown, owner?: string): Ledger | undefined => {
-  const bucket = raw as { v?: unknown; ledger?: Record<string, unknown> | null } | undefined
-  const l = bucket?.ledger
-  if (bucket?.v !== 1 || typeof l !== 'object' || l === null) {
-    return undefined
-  }
-  if (owner !== undefined) assertLedgerOwner(l, owner)
-  const rows = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
-  const questions = capRows(rows(l.questions).map(savedQuestion).filter(isDefined), MAX_QUESTIONS, q => q.status === 'answered')
-  const withdrawn = rows(l.withdrawn).filter(
-    (w): w is { id: number; head: string } => typeof (w as { id?: unknown })?.id === 'number' && typeof (w as { head?: unknown })?.head === 'string',
-  )
-  const clearedSteps = rows(l.clearedSteps).filter(
-    (c): c is { id: string; head: string } => typeof (c as { id?: unknown })?.id === 'string' && typeof (c as { head?: unknown })?.head === 'string',
-  )
-  const restores = keepRestores(rows(l.restores).map(savedRestore).filter(isDefined), questions)
-
-  return {
-    v: 1,
-    nextQuestionId: questionHighWater({ nextQuestionId: Math.max(1, typeof l.nextQuestionId === 'number' ? l.nextQuestionId : 1), questions, withdrawn }),
-    prompts: rows(l.prompts).map(savedPrompt).filter(isDefined).slice(-MAX_PROMPTS),
-    questions,
-    steps: capSteps(rows(l.steps).map(savedStep).filter(isDefined)),
-    ...(withdrawn.length > 0 && { withdrawn }),
-    ...(clearedSteps.length > 0 && { clearedSteps }),
-    ...(typeof l.compactedAt === 'number' && { compactedAt: l.compactedAt }),
-    ...(restores.length > 0 && { restores }),
-    ...(typeof l.restoredIds === 'object' && l.restoredIds !== null && { restoredIds: Object.fromEntries(Object.entries(l.restoredIds).filter(([, id]) => Number.isSafeInteger(id) && Number(id) > 0)) as Record<string, number> }),
-  }
-}
 
 // Clear all, per section. Unlike Clear completed, the rows leave and the ring restarts. Open
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
