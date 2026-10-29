@@ -94,7 +94,7 @@ assert.equal(proposeRestore(ledger({ questions: [q(1)] }), opts({ beforeOwner: n
 assert.equal(proposeRestore(ledger({ session_id: 'foreign' }), opts({ beforeOwner: null, destination: 'dest' })).next.session_id, 'dest')
 assert.equal(proposeRestore(ledger({ questions: [q(1)], session_id: 'dest' }), opts({ beforeOwner: null, destination: 'dest' })).refusal, undefined)
 const currentPlan = ledger({ steps: [step('existing')] })
-const refusal = proposeRestore(currentPlan, opts({ steps: [step('incoming')] }))
+const refusal = proposeRestore(currentPlan, opts({ steps: [step('incoming', 'pending', { sourceId: 'source:incoming' })] }))
 assert.equal(refusal.refusal, 'track: this session already has 1 steps; nothing changed. Pass replace: true to replace them.')
 assert.equal(refusal.next, currentPlan)
 assert.deepEqual(refusal.restored, [])

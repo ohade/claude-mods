@@ -8,7 +8,7 @@ type RestoreOptions = {
   steps: Step[]
   questions: Question[]
   replace: boolean
-  beforeOwner: string | undefined
+  beforeOwner: string | null | undefined
   destination: string | undefined
   mechanical: boolean
   toolUseId: string | undefined
