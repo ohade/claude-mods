@@ -1845,8 +1845,7 @@ const applyRestored = async ($: EngineInterface, context: WriteContext, id: stri
 type HistoryExpect = { absent: true } | { seq: number; root_sha256: string }
 type HistoryRoot = { seq: number; generation: string | null; checkpoint: Checkpoint | null }
 type HistoryView = { root?: HistoryRoot; rootHash?: string; durable?: Ledger }
-type HistoryRun = { kind: 'ok'; response: Record<string, unknown> } | { kind: 'refused'; reason: string } | { kind: 'pending'; cause: string }
-type HistoryOp = 'bind' | 'read' | 'save' | 'resolve' | 'collect'
+import type { HistoryRun, HistoryOp } from './history-receipts'
 const HISTORY_REQUEST_LIMIT = 3 * 1024 * 1024
 const historyPending = atom({ plugin: 'track', key: 'historyPending' } as const, null as PluginState['track']['historyPending'])
 const historyBinding = { store: undefined as string | undefined }
@@ -1872,21 +1871,7 @@ const saveFailureText = (subject: string): string => {
   const cause = savePendingCause()
   return cause === undefined ? `${subject} is unsaved — ${persistence.failure}` : `${subject} save outcome pending — ${cause}`
 }
-const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
-const isRootSeq = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 1
-const isRootHash = (value: unknown): boolean => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
-// The fields a mutating op's ok receipt must carry: a save names the root it
-// wrote; a resolve names the current root, or nulls both when there is none.
-// A mutation that exits 0 without them may still have committed, so it is
-// pending rather than ok. Bind and read keep their own checks.
-const okReceiptValid = (op: HistoryOp, response: Record<string, unknown>): boolean => {
-  if (op === 'save') return isRootSeq(response.seq) && isRootHash(response.root_sha256)
-  if (op === 'resolve') {
-    return 'seq' in response && 'root_sha256' in response &&
-      ((response.seq === null && response.root_sha256 === null) || (isRootSeq(response.seq) && isRootHash(response.root_sha256)))
-  }
-  return true
-}
+import { classifyHistoryReceipt, isPlainObject } from './history-receipts'
 // A pending outcome may have committed, so it never reads as "unsaved".
 class HistoryOutcomePending extends Error {}
 
@@ -1899,18 +1884,7 @@ const runHistory = async ($: EngineInterface, op: HistoryOp, request: Record<str
   try {
     result = await $.process.run(['python3', `${$.plugin.root}/hooks/history.py`, op], { stdin: JSON.stringify(request), timeoutMs: 8000, env: { CLAUDE_CONFIG_DIR: config } })
   } catch (error) { return { kind: 'pending', cause: `history ${op} did not answer: ${reason(error)}` } }
-  if (result.isStdoutTruncated === true) return { kind: 'pending', cause: `history ${op} receipt was truncated` }
-  if (result.isStderrTruncated === true) return { kind: 'pending', cause: `history ${op} stderr was truncated` }
-  let response: unknown
-  try { response = result.stdout.endsWith('\n') && !result.stdout.slice(0, -1).includes('\n') ? JSON.parse(result.stdout) : undefined }
-  catch { response = undefined }
-  if (!isPlainObject(response) || response.protocol !== 3 || response.op !== op ||
-      ('request_id' in request && response.request_id !== request.request_id)) return { kind: 'pending', cause: `history ${op} receipt is incompatible (exit ${result.exitCode})` }
-  if (result.exitCode === 0 && response.ok === true) {
-    return okReceiptValid(op, response) ? { kind: 'ok', response } : { kind: 'pending', cause: `history ${op} receipt is incompatible (exit 0)` }
-  }
-  if (result.exitCode === 1 && response.ok === false && response.phase === 'precommit' && typeof response.reason === 'string') return { kind: 'refused', reason: response.reason }
-  return { kind: 'pending', cause: typeof response.reason === 'string' ? response.reason : `history ${op} exit ${result.exitCode}` }
+  return classifyHistoryReceipt(op, request, result)
 }
 
 // The nonce is written under its own grant and is the only engine-store value
