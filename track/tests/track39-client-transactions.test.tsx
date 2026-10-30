@@ -325,6 +325,62 @@ test('TRACK-39 P1b classifier on and off complete after the classifier, size ind
   expect(unconfirmed(f.lines)).toEqual([])
 })
 
+for (const fault of ['refused-set', 'readback-mismatch'] as const) {
+  test(`R5 classifier ${fault} closes without a completion request and retries under a fresh grant`, async ($, on) => {
+    let refused = false
+    const f = fixture(on, { refuseSet: key => {
+      if (fault !== 'refused-set' || key !== 'classifier' || refused) return
+      refused = true
+      return 'fixture classifier write refused'
+    } })
+    if (fault === 'readback-mismatch') f.store.faults.mismatchAfterSet = 'classifier'
+    const result = await drive(f, command($, 'classifier on'))
+    expect(result).toBe(`track: the classifier setting was not saved — ${fault === 'refused-set' ? 'track: $.store.set: fixture classifier write refused' : 'indexed store read-back mismatch: classifier'}`)
+    expect(protocolViolations(f.locks)).toEqual([])
+    const failed = ownerOf(f.locks, 'set:classifier')!
+    expect(completion(f.locks, failed)).toEqual(NO_REQUEST)
+    expect(f.locks.timeline.includes(`close:${failed.id}`)).toBe(true)
+    expect(orderViolations(f.locks.timeline)).toEqual([])
+    expect(await drive(f, command($, 'classifier off'))).toBe(OFF)
+    const retry = f.locks.grants.at(-1)!
+    expect(retry.id === failed.id).toBe(false)
+    expect(f.locks.timeline.indexOf(`close:${failed.id}`) < f.locks.timeline.indexOf(`grant:${retry.id}`)).toBe(true)
+    expect(completion(f.locks, failed)).toEqual(NO_REQUEST)
+    expect(completion(f.locks, retry)).toEqual(COMPLETED)
+    expect(f.store.held.get('classifier')).toEqual({ isOn: false })
+    expect(orderViolations(f.locks.timeline)).toEqual([])
+  })
+}
+
+test('R5 a held classifier write holds back its request and the queued checkpoint grant', async ($, on) => {
+  const f = fixture(on, { holdSet: /^classifier$/ })
+  const classifying = command($, 'classifier on')
+  let saving: ReturnType<typeof startCheckpoint> | undefined
+  let held = { waiting: false, requests: -1, writes: -1 }
+  try {
+    await f.clock.settle()
+    saving = startCheckpoint($)
+    await f.clock.settle()
+    held = { waiting: f.hold.waiting, requests: f.locks.requests.length,
+      writes: f.locks.timeline.filter(event => event === 'spawn:write').length }
+  } finally {
+    f.hold.release()
+    await drive(f, classifying).catch(() => undefined)
+    if (saving !== undefined) await drive(f, saving.result!).catch(() => undefined)
+  }
+  expect(held).toEqual({ waiting: true, requests: 0, writes: 1 })
+  expect(await classifying).toBe(ON)
+  expect((await saving?.result)?.ok).toBe(true)
+  expect(protocolViolations(f.locks)).toEqual([])
+  const classifier = ownerOf(f.locks, 'set:classifier')!
+  const save = ownerOf(f.locks, `set:s:${SESSION}`)!
+  expect(classifier.id === save.id).toBe(false)
+  expect(f.locks.timeline.indexOf(`close:${classifier.id}`) < f.locks.timeline.indexOf(`grant:${save.id}`)).toBe(true)
+  expect(completion(f.locks, classifier)).toEqual(COMPLETED)
+  expect(completion(f.locks, save)).toEqual(COMPLETED)
+  expect(orderViolations(f.locks.timeline)).toEqual([])
+})
+
 test('TRACK-39 P1b the read-only classifier query starts no helper and writes nothing', async ($, on) => {
   const f = fixture(on, { records: { classifier: { isOn: true } } })
   expect(await drive(f, command($, 'classifier'))).toBe(ON)

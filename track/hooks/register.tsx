@@ -1673,21 +1673,9 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
 
 const saveClassifierSetting = async ($: EngineInterface, isOn: boolean): Promise<void> => {
   const run = persistence.queue.then(async () => {
-    let lock: LockStream | undefined
-    let context: WriteContext | undefined
-    try {
-      const session = await $.session.id()
-      await ensureWriter($, session)
-      lock = await acquireLock($, 'write', session)
-      context = writeContext(lock)
-      await writeVerified($, context, CLASSIFIER_KEY, { isOn })
-    } catch (error) {
-      if (context !== undefined) context.tainted = true
-      throw error
-    } finally {
-      if (context !== undefined) await finishWrite($, context)
-      else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log('track: classifier lock cleanup failed: ' + reason(error), { to: 'debug' }))
-    }
+    const session = await $.session.id()
+    await ensureWriter($, session)
+    await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }), 'classifier')
   })
   persistence.queue = run.catch(() => undefined)
   await run
@@ -1878,7 +1866,7 @@ const readHistory = async ($: EngineInterface, store: string, id: string): Promi
 }
 
 // Runs `work` under its own write grant and confirms the grant's completion.
-const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>): Promise<void> => {
+const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>, cleanupLabel: 'writer' | 'classifier' = 'writer'): Promise<void> => {
   let lock: LockStream | undefined
   let context: WriteContext | undefined
   try {
@@ -1890,7 +1878,7 @@ const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteC
     throw error
   } finally {
     if (context !== undefined) await finishWrite($, context)
-    else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: writer lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
+    else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: ${cleanupLabel} lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
   }
 }
 
