@@ -18,9 +18,11 @@ for (const line of source.match(/^import .*$/gm) ?? []) {
   assert.match(line, line.startsWith('import type ') ? /from '\.\.\/types'$/ : /^import \{ (?:distinctIds|norm|visibleSteps) \} from '\.\/(?:ledger-policy|ledger-text|steps)'$/)
 }
 for (const symbol of ['minimalInputReason', 'uncoveredBlock']) {
-  assert.match(composition, new RegExp(`^const ${symbol}\\b`, 'm'), `${symbol} stays native`)
+  assert.doesNotMatch(composition, new RegExp(`^const ${symbol}\\b`, 'm'), `${symbol} belongs to Stop guidance`)
   assert.doesNotMatch(source, new RegExp(`^(?:export )?const ${symbol}\\b`, 'm'))
 }
+
+assert.match(composition, /import \{ minimalInputReason, uncoveredBlock \} from '\.\/stop-guidance'/)
 
 // Dynamic import follows the named boundary assertion for structural assertion-red.
 const { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } = await import('../../hooks/turn-policy')

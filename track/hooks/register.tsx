@@ -7,6 +7,7 @@ import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps } from './steps'
 import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } from './turn-policy'
+import { minimalInputReason, uncoveredBlock } from './stop-guidance'
 import { cancelReasonOf, cancelOwner } from './cancel-policy'
 import { launchOwner, agentLaunchOwner, canFollowUp, ownersForLiveSteps, rememberOwner, rememberLaunch } from './task-ownership'
 import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, distinctIds, keepRestores } from './ledger-policy'
@@ -899,19 +900,9 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
 type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 const GATE_SNAPSHOT_BYTES = 16 * 1024
-const MINIMAL_INPUT_BYTES = 100
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
 
-const minimalInputReason = (input: PendingInput): string => {
-  // 2026-10-26: internal input ids are not shown to the model. Keep an excerpt,
-  // bounded by serialized bytes as well as points so Unicode stays in the reserve.
-  for (let width = 20; width >= 1; width--) {
-    const reason = `track: "${truncate(input.excerpt, width)}" needs ${TRACK_QUESTION}.`
-    if (utf8Bytes({ id: input.id, reason }) < MINIMAL_INPUT_BYTES) return reason
-  }
-  throw new Error('bounded Stop input reason exceeded')
-}
 
 const fitInputReason = (snapshot: GateSnapshot, index: number, reason: string): boolean => {
   const row = snapshot.inputs[index]!
@@ -941,7 +932,7 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
       // not hide an input from the command hook when classic.Stop is skipped.
       // Reserve every id before budgeting freshness; longer repair wording is optional.
       // 50 minimal rows under 100 bytes each reserve about 5 KB of the 16 KB snapshot budget.
-      inputs: inputs.map(i => ({ id: i.id, reason: minimalInputReason(i) })),
+      inputs: inputs.map(i => ({ id: i.id, reason: minimalInputReason(i, TRACK_QUESTION) })),
       inputs_complete: inputs.length === uncovered.length,
       candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [],
       // The command Stop hook copies this into its task inventory: a launch numbered above it is newer.
@@ -955,7 +946,7 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
     // Only candidate loss sets truncated; input completeness is a separate fact.
     const compact: number[] = []
     for (let index = inputs.length - 1; index >= 0; index--) {
-      if (!fitInputReason(snapshot, index, uncoveredBlock([inputs[index]!]))) compact.push(index)
+      if (!fitInputReason(snapshot, index, uncoveredBlock([inputs[index]!], ANSWER))) compact.push(index)
     }
     for (const index of compact) fitInputReason(snapshot, index,
       `track: Register "${truncate(inputs[index]!.excerpt, 40)}" with ${TRACK_QUESTION}, source_text = its first line.`)
@@ -1205,7 +1196,7 @@ const claimUncoveredInputs = async ($: EngineInterface, payload: { session_id?: 
     return { held: diagnostic === '' }
   } catch (error) {
     nudgeFed($, 'claim', await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`))
-    return { held: true, block: uncoveredBlock(inputs) }
+    return { held: true, block: uncoveredBlock(inputs, ANSWER) }
   }
 }
 
@@ -2375,28 +2366,6 @@ const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source
   })
 }
 
-// The Stop message for the inputs no row covered, quoting each one's first 80 characters. It names
-// only repairs that cover, preserving existing work when the request reuses it. Steps never cover
-// an input Haiku labelled a question (CC-185, 2026-10-11: the message offered track_steps for those).
-const uncoveredBlock = (inputs: PendingInput[]): string => {
-  const quoted = (some: PendingInput[]) => some.map(i => `"${i.excerpt}"`).join('; ')
-  const labelled = inputs.filter(i => i.label === 'question')
-  const worded = inputs.filter(i => i.label !== 'question')
-  const parts: string[] = []
-  if (worded.length > 0) {
-    const tail = `${ANSWER}; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.`
-    parts.push(worded.length === 1
-      ? `track: a prompt looks like a question (${quoted(worded)}) but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${tail}`
-      : `track: these prompts look like questions (${quoted(worded)}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
-  }
-  if (labelled.length > 0) {
-    const tail = `${ANSWER}. If it is a request already tracked as steps, mark that question deferred with a note naming the step. Then finish.`
-    parts.push(labelled.length === 1
-      ? `track: the classifier labelled a prompt a question (${quoted(labelled)}) and no question row covers it; steps never cover a labelled question. Call mcp__track__track_question with source_text = its first line, ${tail}`
-      : `track: the classifier labelled these prompts questions (${quoted(labelled)}) and no question row covers them; steps never cover a labelled question. Call mcp__track__track_question for each with source_text = its first line, ${tail}`)
-  }
-  return parts.join(' ')
-}
 
 const classifierOn = async ($: EngineInterface): Promise<boolean> => {
   try {
