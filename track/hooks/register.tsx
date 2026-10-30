@@ -5,7 +5,7 @@ import type { Activity, FreshnessCandidate, FreshnessKind, Ledger, Pane, Pending
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
-import { visibleSteps } from './steps'
+import { visibleSteps, openStepsOf, openPlanSteps, sameResultOwner } from './steps'
 import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } from './turn-policy'
 import { minimalInputReason, uncoveredBlock } from './stop-guidance'
 import { cancelReasonOf, cancelOwner } from './cancel-policy'
@@ -156,12 +156,7 @@ const regions = { qTop: 0, qBottom: 0, sTop: 0, sBottom: 0, qStart: 0, sStart: 0
 // state write and one redraw, not one per tick (one write per tick made the pane lag).
 const SCROLL_FLUSH_MS = 30
 const pendingScroll: { questions: number; steps: number; timer?: Timer } = { questions: 0, steps: 0 }
-// Model-facing data only: real tool ids, all open statuses, and the saved owner/blocker note.
-const openStepsOf = (steps: Step[]): Array<Pick<Step, 'id' | 'status' | 'subject' | 'note'>> =>
-  visibleSteps(steps).filter(s => s.status !== 'completed')
-    .map(({ id, status, subject, note }) => ({ id, status, subject, ...(note !== undefined && { note }) }))
 
-const openPlanSteps = (steps: Step[]): ReturnType<typeof openStepsOf> => openStepsOf(steps.filter(s => s.source === 'plan'))
 const refusePlanReplacement = (steps: ReturnType<typeof openPlanSteps>) => {
   const rows = steps.map(s => `${s.id} ${JSON.stringify(s.subject)} (${s.status})`).join('; ')
   return { result: `Cannot replace unfinished plan steps: ${rows}. Reuse them or insert with after; pass replace: true only for an intentional replacement.` }
@@ -184,9 +179,6 @@ const openStepsContext = (steps: Step[]): string => {
 const newPlanStep = (id: string, subject: string): Step => ({
   id, source: 'plan', subject, status: 'pending', sourceId: `plan:${crypto.randomUUID()}`,
 })
-const sameResultOwner = (current: Step, saved: Step): boolean =>
-  current.id === saved.id && current.source === saved.source && current.sourceId === saved.sourceId &&
-  current.subject === saved.subject && current.taskId === saved.taskId
 
 const hidden = (above: number, below: number): string =>
   [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
