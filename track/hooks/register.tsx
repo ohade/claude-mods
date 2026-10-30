@@ -33,6 +33,8 @@ import type { DiagnosePorts } from './diagnose-flow'
 import type { GateProjection, RingEntry, RingValue } from './diagnose-bundle'
 import { AMBER_SHADES, GREY_SHADES, WAITING_BLUE, isDelegatedWork, workState } from './work-appearance'
 import { stepView } from './pane-step-view'
+import { questionView } from './pane-question-view'
+import type { QuestionRow } from './pane-question-view'
 import { NOT_SAVED, counted, restoreStepCount, restoreNotice, restoreKey } from './restore-records'
 import { restoreSource } from './restore-source'
 import { proposeRestore } from './restore-proposal'
@@ -4710,60 +4712,34 @@ export const register: Register = on => {
           const answerInstance = q.answerKey === undefined ? restoreInstance
             : q.answerKey === q.answeredBy ? q.answerKey : renderInstances.get(q.answerKey)
 
-          const dot = (
-            <Text color={color} dimColor={q.status === 'deferred'}>
-              {statusGlyph(q)}
-            </Text>
-          )
-          const markers = (
-            <Box key={`q-markers-${q.id}`} width={13} flexShrink={0} flexDirection="row" columnGap={1}>
-              <Box key={`q-question-slot-${q.id}`} width={6} flexShrink={0}>
-                {restoredOnly && !savedQuestion
-                  ? <Button key={`q-${q.id}`} dimColor label="Q" onPress={() => undefined} />
-                  : restoredOnly
-                    ? <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => toggleReveal(q.id, 'q', index)} />
-                    : askedAt === undefined
-                      ? <Text dimColor>[ Q ]</Text>
-                      : <Button key={`q-${q.id}`} hotkey={ready ? undefined : hotkey} label="Q" onPress={() => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance)} />}
-              </Box>
-              <Box key={`q-answer-slot-${q.id}`} width={6} flexShrink={0}>
-                {nativeAnswer || !restoredOnly
-                  ? !hasAnswerAnchor
-                    ? <Text color="subtle" dimColor>[ A ]</Text>
-                    : <Button key={`a-${q.id}`} variant={ready ? 'primary' : undefined} dimColor={ready ? undefined : true} hotkey={ready ? hotkey : undefined} label="A" onPress={() => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined} />
-                  : !savedAnswer
-                    ? <Button key={`a-${q.id}`} dimColor label="A" onPress={() => undefined} />
-                    : <Button key={`a-${q.id}`} variant={answered ? 'primary' : undefined} hotkey={ready ? hotkey : undefined} label="A" onPress={() => toggleReveal(q.id, 'a', index)} />}
-              </Box>
-            </Box>
-          )
+          const questionControl: QuestionRow['question'] = restoredOnly && !savedQuestion
+            ? { dimColor: true, onPress: () => undefined }
+            : restoredOnly
+              ? { hotkey: ready ? undefined : hotkey, onPress: () => toggleReveal(q.id, 'q', index) }
+              : askedAt === undefined
+                ? undefined
+                : { hotkey: ready ? undefined : hotkey, onPress: () => jump($, [questionKey ?? askedAt], 'start', questionKey, questionKey === undefined ? undefined : restoreInstance) }
+          const answerControl: QuestionRow['answer'] = nativeAnswer || !restoredOnly
+            ? !hasAnswerAnchor
+              ? undefined
+              : { variant: ready ? 'primary' : undefined, dimColor: ready ? undefined : true, hotkey: ready ? hotkey : undefined, onPress: () => ready ? jump($, answerIds, 'start', answerKey, answerInstance) : undefined }
+            : !savedAnswer
+              ? { dimColor: true, onPress: () => undefined }
+              : { variant: answered ? 'primary' : undefined, hotkey: ready ? hotkey : undefined, onPress: () => toggleReveal(q.id, 'a', index) }
           const headBudget = Math.max(1, qRows - qControlsRows)
           const headShown = fitLines(`${questionLabel(q.id)}. ${q.head}`, qWidth, headBudget)
           const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
           // A short region still draws one cut line. An empty press is not an answer.
           const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - wrappedLines(headShown, qWidth))
           const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
-          const text = (
-            <Box key={`q-text-${q.id}`} flexDirection="column" flexShrink={1} width={qWidth}>
-              <Text color={color} dimColor={q.status === 'deferred'} wrap="wrap">
-                {headShown}
-              </Text>
-              {revealShown !== undefined && <Box key={`reveal-${opened[String(q.id)]}-${q.id}`}><Text>{revealShown}</Text></Box>}
-            </Box>
-          )
-          const remove = <Button key={`del-${q.id}`} plain dimColor label="✕" onPress={() => withdraw($, q.id)} />
-
-          // The text gets the pane's width when its fixed jump column would crowd it out.
-          // Both layouts use the same controls and sources; the extra row is budgeted above.
-          return (
-            <Box key={`row-q-${q.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
-              {/* Native Fragment is a column Box, so arrays keep row children flat. */}
-              {compact ? [
-                <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>,
-                <Box flexDirection="row" columnGap={1}>{markers}{remove}</Box>,
-              ] : [dot, markers, text, remove]}
-            </Box>
-          )
+          return questionView({ Box, Button, Text }, {
+            id: q.id, glyph: statusGlyph(q), color, dim: q.status === 'deferred',
+            compact, rowIndent, width: qWidth, headShown,
+            // revealRaw above supplies text only for the question and answer sides.
+            reveal: revealShown === undefined ? undefined : { side: opened[String(q.id)] as 'q' | 'a', text: revealShown },
+            question: questionControl, answer: answerControl,
+            onWithdraw: () => withdraw($, q.id),
+          })
         })}
         </Box>
         <Text dimColor>{'─'.repeat(width)}</Text>

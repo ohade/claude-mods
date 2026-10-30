@@ -1,7 +1,7 @@
 // FIXTURE: render descriptions. Observed 2026-10-08: A looked ready before
 // answer text existed, including an older restored answer with no saved text.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, atomStore, pane } from './kit'
+import { EMPTY, atomStore, logs, pane } from './kit'
 import type { On } from './kit'
 
 const setup = (on: On, question: Record<string, unknown>) => {
@@ -14,12 +14,17 @@ const setup = (on: On, question: Record<string, unknown>) => {
 
 test('an answer acknowledgement without answer text stays faded in wide and narrow panes', async ($, on) => {
   setup(on, { answerRequestId: 'toolu_ack' })
+  const debug = logs(on)
   for (const width of [17, 60]) {
     const ui = await $.ui.mount(pane('dock', width, 30))
     const button = await ui.find({ key: 'a-1' })
     expect(button?.props.dimColor).toBe(true)
     expect(button?.props.variant).not.toBe('primary')
     expect((await ui.find({ key: 'q-markers-1' }))?.props.width).toBe(13)
+    await ui.press({ key: 'a-1' })
+    expect(debug.filter(line => line.startsWith('track: jump'))).toEqual([])
+    expect(debug.some(line => line.includes('cannot jump'))).toBe(false)
+    expect(await ui.find({ key: 'reveal-a-1' })).toBeUndefined()
     await ui.unmount()
   }
 })

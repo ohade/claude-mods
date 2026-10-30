@@ -272,6 +272,22 @@ test('the restore row still shows the answers after the questions are cleared fr
 })
 
 // A restored question's rows are in the old transcript; the restore row is where it shows here.
+test('mounted Q/A callbacks keep their rendered restore host after another host draws', async ($, on) => {
+  mock.clock(on)
+  setUp(on)
+  const lines = logs(on)
+  await restore($, { from_session: OLD })
+  await $.ui.mount({ ...restoreRow, requestId: 'restore-host-a' } as never)
+  const ui = await $.ui.mount(pane('dock', 60, 40))
+  await $.ui.mount({ ...restoreRow, requestId: 'restore-host-b' } as never)
+  await ui.press({ key: 'q-2' })
+  await ui.press({ key: 'a-2' })
+  expect(lines.filter(line => line.startsWith('track: jump'))).toEqual([
+    'track: jump {"to":{"requestId":"restore-host-a"},"block":"start"}',
+    'track: jump {"to":{"requestId":"restore-host-a"},"block":"start"}',
+  ])
+})
+
 test('[ A ] of a restored question reveals the observed restore row', async ($, on) => {
   mock.clock(on)
   setUp(on)

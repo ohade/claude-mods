@@ -1,10 +1,23 @@
 // FIXTURE: 2026-10-08 A landed on Q1 answered instead of the answer.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
 
 const UUID = '11111111-2222-4333-8444-555555555555'
 const DRAWN = '11111111-2222-4333-8444-000000000000'
 const KEY = '11111111-2222-4333-8444'
+
+test('the same question dispatches Q and A to distinct native targets', async ($, on) => {
+  mock.clock(on)
+  atomStore(on, 'ledger', { ...EMPTY, questions: [{ id: 1, head: 'Question', at: 1, turnId: 't', status: 'answered', askedRequestId: 'question-host', answerKey: 'answer-host', answeredBy: 'answer-host', answerText: 'Answer' }] })
+  const debug = logs(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'q-1' })
+  await ui.press({ key: 'a-1' })
+  expect(debug.filter(line => line.startsWith('track: jump'))).toEqual([
+    'track: jump {"to":{"requestId":"question-host"},"block":"start"}',
+    'track: jump {"to":{"requestId":"answer-host"},"block":"start"}',
+  ])
+})
 
 test('answer-before-mark links and highlights only the real answer row', async ($, on) => {
   const clock = mock.clock(on)

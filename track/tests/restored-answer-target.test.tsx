@@ -11,6 +11,21 @@ const NOTICE = {
   props: { text: `Track source snapshot from session ${FROM}: 0 steps, 2 questions\nRestore status is confirmed by the tool receipt.\nQ1 answered: Question 1\nAnswer 1 😀\nQ2 answered: Question 2\nAnswer 2 😀`, command: null },
 }
 
+test('a same-side restored reveal toggles closed and Q then shows the question', async ($, on) => {
+  mock.clock(on)
+  atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 3, questions: QUESTIONS })
+  const debug = logs(on)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'a-2' })
+  expect((await ui.find({ key: 'reveal-a-2' }))?.text).toContain('Answer 2')
+  await ui.press({ key: 'a-2' })
+  expect(await ui.find({ key: 'reveal-a-2' })).toBeUndefined()
+  await ui.press({ key: 'q-2' })
+  expect((await ui.find({ key: 'reveal-q-2' }))?.text).toContain('Question 2')
+  expect(await ui.find({ key: 'reveal-a-2' })).toBeUndefined()
+  expect(debug.filter(line => line.startsWith('track: jump'))).toEqual([])
+})
+
 test('restored A shows the saved answer in the pane and does not toast', async ($, on) => {
   mock.clock(on)
   atomStore(on, 'ledger', { ...EMPTY, nextQuestionId: 3, questions: QUESTIONS, restores: [{ by: BY, from: FROM, steps: 0, questions: QUESTIONS }] })
