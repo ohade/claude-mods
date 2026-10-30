@@ -68,6 +68,14 @@ const fixture = (on: On, options: Options = {}) => {
     guardStates: options.guardStates, refuseSet: options.refuseSet, beforeLockSpawn: options.beforeLockSpawn,
     splitLockReceipt: options.splitLockReceipt, locks: options.locks,
   })
+  on('state.set', { plugin: 'track', key: ['durability'] }, async (_, e, next) => {
+    const result = await next(e)
+    const value = e.value as { isUnsaved?: boolean; reason?: string }
+    if (result.deny === undefined && result.value.isSet && value.isUnsaved) {
+      store.locks.timeline.push(`durability:unsaved:${value.reason}`)
+    }
+    return result
+  })
   // Blob reads are recorded before the pool's own read provider answers them.
   on('fs.read', { path: /\/state\/track\/blobs\/[0-9a-f]{64}\.json$/ }, (_, e, next) => {
     store.locks.timeline.push(`read:${e.path}`)
@@ -483,6 +491,9 @@ test('TRACK-39 P1b a refused head write never completes, even after its rollback
   // The rollback ran under the same grant and succeeded: the body it wrote is gone again.
   const window = windowOf(f.locks, grant)
   expect(window.indexOf(`delete:s:${SESSION}`) > window.indexOf(`set:h:${SESSION}`)).toBe(true)
+  const failure = window.findIndex(event => event.startsWith('durability:unsaved:') && event.includes('fixture head write refused'))
+  expect(failure > window.indexOf(`delete:s:${SESSION}`)).toBe(true)
+  expect(f.locks.timeline.indexOf(`close:${grant.id}`) > f.locks.timeline.indexOf(window[failure]!)).toBe(true)
   expect(f.store.held.has(`s:${SESSION}`)).toBe(false)
   expect(completion(f.locks, grant)).toEqual(NO_REQUEST)
   const saved = await drive(f, checkpoint($))
@@ -490,6 +501,37 @@ test('TRACK-39 P1b a refused head write never completes, even after its rollback
   const next = f.locks.grants.at(-1)!
   expect(next.id === grant.id).toBe(false)
   expect(completion(f.locks, next)).toEqual(COMPLETED)
+  expect(orderViolations(f.locks.timeline)).toEqual([])
+})
+
+test('R5 failed resume publishes its reason before closing and repairs under a fresh retry grant', async ($, on) => {
+  const question = { id: 1, head: 'acknowledged history', at: 1, turnId: null, status: 'open' as const }
+  const before = { ...EMPTY, session_id: SESSION, nextQuestionId: 2, questions: [question] }
+  const after = { ...before, nextQuestionId: 3, questions: [question, { ...question, id: 2, head: 'saved before the head write' }] }
+  const prior = await describeCheckpoint(before as never, SESSION)
+  const body = { v: 1, session_id: SESSION, generation: GENERATION, savedAt: 1, ledger: after, checkpoint: await describeCheckpoint(after as never, SESSION, prior) }
+  let refused = false
+  const f = fixture(on, { records: { [`s:${SESSION}`]: body, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation: GENERATION, checkpoint: prior } },
+    refuseSet: key => {
+      if (key !== `h:${SESSION}` || refused) return
+      refused = true
+      return 'fixture resume head refused'
+    } })
+  on('classic.SessionStart', () => ({}))
+  await drive(f, $.classic.SessionStart({ source: 'resume', session_id: SESSION } as never))
+  expect(refused).toBe(true)
+  const failed = ownerOf(f.locks, `set:h:${SESSION}`)!
+  const window = windowOf(f.locks, failed)
+  expect(window.some(event => event.startsWith('durability:unsaved:resume:') && event.includes('fixture resume head refused'))).toBe(true)
+  expect(completion(f.locks, failed)).toEqual(NO_REQUEST)
+  expect(f.locks.timeline.includes(`close:${failed.id}`)).toBe(true)
+  await drive(f, $.classic.SessionStart({ source: 'resume', session_id: SESSION } as never))
+  const retry = f.locks.grants.at(-1)!
+  expect(retry.id === failed.id).toBe(false)
+  expect(f.locks.timeline.indexOf(`close:${failed.id}`) < f.locks.timeline.indexOf(`grant:${retry.id}`)).toBe(true)
+  expect(completion(f.locks, retry)).toEqual(COMPLETED)
+  expect(f.store.held.get(`h:${SESSION}`)).toEqual({ v: 1, session_id: SESSION, generation: GENERATION, checkpoint: body.checkpoint })
+  expect(protocolViolations(f.locks)).toEqual([])
   expect(orderViolations(f.locks.timeline)).toEqual([])
 })
 

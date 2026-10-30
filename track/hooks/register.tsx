@@ -1524,12 +1524,25 @@ const cleanupOwned = async ($: EngineInterface, context: WriteContext, id: strin
 const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boolean> => {
   let saved = false
   const run = persistence.queue.then(async () => {
-  let lock: LockStream | undefined
-  let context: WriteContext | undefined
   let id: string | undefined
+  const saveFailure = async (error: unknown, context: WriteContext | undefined): Promise<void> => {
+    // A stale caller did not attempt a save and cannot mark the new owner's ledger unsaved.
+    if (error instanceof OwnerChanged) throw error
+    if (context !== undefined) context.tainted = true
+    persistence.failure = reason(error)
+    if (context !== undefined && id !== undefined) {
+      try { await recoverSave($, context, id) }
+      catch (recoveryError) { persistence.failure += `; recovery pending: ${reason(recoveryError)}` }
+    }
+    await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: persistence.failure }))
+    $.ui.log(`track: unsaved; save failed: ${persistence.failure}`, { to: 'debug' })
+    noteEvent($, 'save.failed', { phase: 'legacy' })
+    $.ui.toast(`track: unsaved — ${persistence.failure}`)
+  }
+  let intent: PluginState['track']['durability']
   try {
     assertOwner(token)
-    const intent = await read($, durability)
+    intent = await read($, durability)
     id = await $.session.id()
     assertOwner(token)
     if (token?.owner !== undefined && id !== token.owner) throw new OwnerChanged()
@@ -1541,8 +1554,13 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
       const routed = await saveRouted($, id, intent, token)
       if (routed !== 'legacy') { saved = routed; return }
     }
-    lock = await acquireLock($, 'write', id)
-    context = writeContext(lock)
+  } catch (error) {
+    await saveFailure(error, undefined)
+    return
+  }
+  const session = id
+  await inOwnGrant($, session, async context => {
+    const id = session
     await recoverSave($, context, id)
     if (await recoverCleanup(retentionStore($, context), id, { owner: true })) await resumeLedger($, context, id)
     else await clearOwnedClocks(retentionStore($, context), id)
@@ -1648,23 +1666,7 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
       ? { ...cur, baseline: { session_id: id!, ledger: current, checkpoint, generation }, isUnsaved: true, reason: memoryChanged ? 'ledger save pending' : cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
       : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
     if (fallbackCause !== undefined) $.ui.toast(`track: saved inline because blob storage is unavailable: ${fallbackCause}`)
-  } catch (error) {
-    // A stale caller did not attempt a save and cannot mark the new owner's ledger unsaved.
-    if (error instanceof OwnerChanged) throw error
-    if (context !== undefined) context.tainted = true
-    persistence.failure = reason(error)
-    if (context !== undefined && id !== undefined) {
-      try { await recoverSave($, context, id) }
-      catch (recoveryError) { persistence.failure += `; recovery pending: ${reason(recoveryError)}` }
-    }
-    await update($, durability, cur => ({ ...cur, isUnsaved: true, reason: persistence.failure }))
-    $.ui.log(`track: unsaved; save failed: ${persistence.failure}`, { to: 'debug' })
-    noteEvent($, 'save.failed', { phase: 'legacy' })
-    $.ui.toast(`track: unsaved — ${persistence.failure}`)
-  } finally {
-    if (context !== undefined) await finishWrite($, context)
-    else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: writer lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
-  }
+  }, 'writer', saveFailure)
   })
   persistence.queue = run.catch(() => undefined)
   await run
@@ -1866,7 +1868,8 @@ const readHistory = async ($: EngineInterface, store: string, id: string): Promi
 }
 
 // Runs `work` under its own write grant and confirms the grant's completion.
-const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>, cleanupLabel: 'writer' | 'classifier' = 'writer'): Promise<void> => {
+const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>, cleanupLabel: 'writer' | 'classifier' = 'writer',
+  onFailure?: (error: unknown, context: WriteContext | undefined) => Promise<void>, rawClose: 'log' | 'propagate' = 'log'): Promise<void> => {
   let lock: LockStream | undefined
   let context: WriteContext | undefined
   try {
@@ -1874,11 +1877,18 @@ const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteC
     context = writeContext(lock)
     await work(context)
   } catch (error) {
+    if (onFailure !== undefined) {
+      await onFailure(error, context)
+      return
+    }
     if (context !== undefined) context.tainted = true
     throw error
   } finally {
     if (context !== undefined) await finishWrite($, context)
-    else if (lock !== undefined) await closeLock(lock).catch(error => $.ui.log(`track: ${cleanupLabel} lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
+    else if (lock !== undefined) {
+      if (rawClose === 'propagate') await closeLock(lock)
+      else await closeLock(lock).catch(error => $.ui.log(`track: ${cleanupLabel} lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
+    }
   }
 }
 
@@ -2068,23 +2078,22 @@ const historySnapshot = async ($: EngineInterface, id: string): Promise<{ checkp
 
 const resumeOwned = async ($: EngineInterface, id: string): Promise<void> => {
   const run = persistence.queue.then(async () => {
-    let lock: LockStream | undefined
-    let context: WriteContext | undefined
-    try {
-      if (await historyEnabled($) && await resumeRouted($, id) === 'v3') return
-      await ensureWriter($, id)
-      lock = await acquireLock($, 'write', id)
-      context = writeContext(lock)
-      await recoverSave($, context, id)
-      await resumeLedger($, context, id)
-    } catch (error) {
+    const resumeFailure = async (error: unknown, context: WriteContext | undefined): Promise<void> => {
       if (context !== undefined) context.tainted = true
       await update($, durability, current => ({ ...current, isUnsaved: true, reason: `resume: ${reason(error)}` }))
       throw error
-    } finally {
-      if (context !== undefined) await finishWrite($, context)
-      else if (lock !== undefined) await closeLock(lock)
     }
+    try {
+      if (await historyEnabled($) && await resumeRouted($, id) === 'v3') return
+      await ensureWriter($, id)
+    } catch (error) {
+      await resumeFailure(error, undefined)
+      return
+    }
+    await inOwnGrant($, id, async context => {
+      await recoverSave($, context, id)
+      await resumeLedger($, context, id)
+    }, 'writer', resumeFailure, 'propagate')
   })
   persistence.queue = run.catch(() => undefined)
   await run
