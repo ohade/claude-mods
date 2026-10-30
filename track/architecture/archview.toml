@@ -10,6 +10,7 @@ fail_on_cycles = true
 baseline = "archview-baseline.json"
 
 [archview.allowed]
+"tool-contracts.ts" = []
 "answer-blocks.ts" = []
 "banner-layout.ts" = ["terminal-text.ts"]
 "blob-store.ts" = []
@@ -30,7 +31,7 @@ baseline = "archview-baseline.json"
 "pane-step-view.tsx" = ["pane-elements.ts", "work-appearance.ts"]
 "question-identity.ts" = []
 "reconcile.ts" = ["checkpoint.ts", "question-identity.ts"]
-"register.tsx" = ["answer-blocks.ts", "banner-layout.ts", "blob-store.ts", "build-identity.ts", "cancel-policy.ts", "checkpoint.ts", "deploy-drift.ts", "diagnose-bundle.ts", "diagnose-flow.ts", "history-receipts.ts", "identity-read.ts", "ledger-policy.ts", "ledger-text.ts", "pane-layout.ts", "pane-order.ts", "pane-question-view.tsx", "pane-step-view.tsx", "reconcile.ts", "restore-proposal.ts", "restore-records.ts", "restore-source.ts", "retention.ts", "save-journal.ts", "size-index.ts", "steps.ts", "stored-codecs.ts", "task-ownership.ts", "terminal-text.ts", "transcript-baseline.ts", "turn-policy.ts", "work-appearance.ts"]
+"register.tsx" = ["answer-blocks.ts", "banner-layout.ts", "blob-store.ts", "build-identity.ts", "cancel-policy.ts", "checkpoint.ts", "deploy-drift.ts", "diagnose-bundle.ts", "diagnose-flow.ts", "history-receipts.ts", "identity-read.ts", "ledger-policy.ts", "ledger-text.ts", "pane-layout.ts", "pane-order.ts", "pane-question-view.tsx", "pane-step-view.tsx", "reconcile.ts", "restore-proposal.ts", "restore-records.ts", "restore-source.ts", "retention.ts", "save-journal.ts", "size-index.ts", "steps.ts", "stored-codecs.ts", "task-ownership.ts", "terminal-text.ts", "tool-contracts.ts", "transcript-baseline.ts", "turn-policy.ts", "work-appearance.ts"]
 "restore-proposal.ts" = ["ledger-policy.ts", "reconcile.ts", "restore-records.ts"]
 "restore-records.ts" = ["reconcile.ts"]
 "restore-source.ts" = ["ledger-policy.ts", "stored-codecs.ts"]
@@ -52,6 +53,7 @@ baseline = "archview-baseline.json"
 "work-appearance.ts" = ["steps.ts"]
 
 [archview.externals]
+"tool-contracts.ts" = []
 "answer-blocks.ts" = []
 "banner-layout.ts" = []
 "blob-store.ts" = []
