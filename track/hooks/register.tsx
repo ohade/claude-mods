@@ -36,6 +36,8 @@ import { stepView } from './pane-step-view'
 import { NOT_SAVED, counted, restoreStepCount, restoreNotice, restoreKey } from './restore-records'
 import { restoreSource } from './restore-source'
 import { proposeRestore } from './restore-proposal'
+import { SAVED_INDEX, commitSave, nextIndex, patchCompacted, rollbackSave, savedIndex } from './save-journal'
+import type { SaveJournal, SaveRecovery, SavedIndex, SavedReads } from './save-journal'
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -62,8 +64,6 @@ const autoOpen = { isScheduled: false }
 // the size budget only the oldest CLOSED sessions are evicted (TRACK-31).
 // Leave space below the engine's 4 MiB limit for verified metadata and rollback.
 const STORE_BUDGET = 3 * 1024 * 1024
-// The store key of the buckets' index: per session id, when its bucket was saved and its size.
-const SAVED_INDEX = 'saved'
 const TRACK_QUESTION = 'mcp__track__track_question'
 const MARK_ANSWERED = 'mcp__track__mark_answered'
 const MARK_STEP = 'mcp__track__mark_step'
@@ -617,10 +617,8 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
   })
 }
 
-type SavedIndex = Record<string, { at: number; bytes: number; unfinished?: boolean }>
 const persistence = { queue: Promise.resolve(), failure: '' }
 const savedRevisions = new Map<string, number>()
-type SaveRecovery = { previous: unknown; previousBlobText?: string; bucket: unknown; previousHead: unknown; head: SessionHead; previousIndex: unknown; index: unknown }
 const saveRecoveries = new Map<string, SaveRecovery>()
 const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type WriteGrant = { config: string; token: string; id: string; nonce: string }
@@ -1266,85 +1264,36 @@ const readBodySnapshot = async ($: EngineInterface, key: string, initialRaw: unk
   }
 }
 
-// Existing entries are verified save metadata. Read only newly discovered
-// bodies; capacity uses the separate byte-size index for all stored keys.
-// A v:2 body is metadata here: its blob is not read, it counts as unfinished,
-// and it is sized by its raw stored value.
-const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
-  const keys = await $.store.keys()
-  const cached = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
-  const index: SavedIndex = {}
-  for (const key of keys.filter(k => k.startsWith('s:'))) {
-    const id = key.slice(2)
-    if (cached?.[id] !== undefined && Number.isFinite(cached[id].at) && Number.isSafeInteger(cached[id].bytes) && cached[id].bytes >= 0) {
-      index[id] = cached[id]
-      continue
-    }
-    const bucket = (await $.store.get(key)) as { savedAt?: unknown; ledger?: Ledger } | undefined
-    const l = bucket?.ledger
-    const unfinished = !Array.isArray(l?.questions) || !Array.isArray(l?.steps) || l.questions.some(q => q.cleared !== true && q.status !== 'answered') || l.steps.some(s => s.cleared !== true && s.status !== 'completed')
-    index[id] = { at: typeof bucket?.savedAt === 'number' ? bucket.savedAt : 0, bytes: utf8Bytes({ [key]: bucket ?? null }) + 1, unfinished }
+// The save journal's store capabilities: reads stay raw, and each write takes a new guarded retention store.
+const storeReads = ($: EngineInterface): SavedReads => ({ read: key => $.store.get(key), keys: () => $.store.keys() })
+const saveJournal = ($: EngineInterface, context: WriteContext): SaveJournal => ({ ...storeReads($),
+  set: (key, value) => retentionStore($, context).set(key, value), delete: key => retentionStore($, context).delete(key),
+  writeVerified: (key, value) => writeVerified($, context, key, value), taint: () => { context.tainted = true },
+  restoreBlob: (pointer, text) => restorePreviousBlob($, context, pointer, text) })
+
+// A v:2 recovery first proves the prior blob its old pointer names, publishing it again if the file is gone.
+const restorePreviousBlob = async ($: EngineInterface, context: WriteContext, pointer: { checksum?: unknown; bytes?: unknown } | undefined, text: string | undefined): Promise<void> => {
+  if (text === undefined) throw blobFailure('previous blob text unavailable for recovery')
+  const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
+  if (ref.checksum !== pointer?.checksum || ref.bytes !== pointer?.bytes) {
+    throw blobFailure('previous blob text does not match its pointer')
   }
-  return index
+  const config = await configDir($)
+  if (!config?.startsWith('/')) throw blobFailure('blob directory unavailable')
+  const dir = `${config}/state/track/blobs`
+  const fs = blobFs($)
+  if (await fs.read(`${dir}/${ref.checksum}.json`) !== undefined) {
+    if (await readBlob(fs, dir, ref) !== text) throw blobFailure('previous blob changed or invalid; existing file was kept')
+  } else {
+    const publication = await publishLedgerBlob($, context, text, ref)
+    if (publication !== undefined) throw new Error('unavailable' in publication ? publication.unavailable : publication.rejected)
+  }
 }
 
-// A failed acknowledgement restores only this writer's attempted values, under the
-// same store lock. Keep the recovery in memory if the store also refuses rollback.
+// A sealed writer refuses recovery before the recovery map is read; rollbackSave owns the undo order.
 const recoverSave = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
   assertWriteOpen(context)
-  const recovery = saveRecoveries.get(id)
-  if (recovery === undefined) return
-  const previous = recovery.previous as { v?: unknown; ledger_blob?: { checksum?: unknown; bytes?: unknown } } | undefined
-  if (previous?.v === 2) {
-    const text = recovery.previousBlobText
-    if (text === undefined) throw blobFailure('previous blob text unavailable for recovery')
-    const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
-    if (ref.checksum !== previous.ledger_blob?.checksum || ref.bytes !== previous.ledger_blob?.bytes) {
-      throw blobFailure('previous blob text does not match its pointer')
-    }
-    const config = await configDir($)
-    if (!config?.startsWith('/')) throw blobFailure('blob directory unavailable')
-    const dir = `${config}/state/track/blobs`
-    const fs = blobFs($)
-    if (await fs.read(`${dir}/${ref.checksum}.json`) !== undefined) {
-      if (await readBlob(fs, dir, ref) !== text) throw blobFailure('previous blob changed or invalid; existing file was kept')
-    } else {
-      const publication = await publishLedgerBlob($, context, text, ref)
-      if (publication !== undefined) throw new Error('unavailable' in publication ? publication.unavailable : publication.rejected)
-    }
-  }
-  const failures: string[] = []
-  const key = `s:${id}`
-  try {
-    const current = await $.store.get(key)
-    if (!sameValue(current, recovery.previous)) {
-      if (!sameValue(current, recovery.bucket)) throw new Error('save recovery kept a changed durable ledger; reload this session before writing')
-      if (recovery.previous === undefined) await retentionStore($, context).delete(key)
-      else await retentionStore($, context).set(key, recovery.previous)
-      if (!sameValue(await $.store.get(key), recovery.previous)) throw new Error('save recovery read-back did not match the prior ledger')
-    }
-  } catch (error) { context.tainted = true; failures.push(reason(error)) }
-  try {
-    const headKey = `h:${id}`
-    const currentHead = await $.store.get(headKey)
-    if (!sameValue(currentHead, recovery.previousHead)) {
-      if (!sameValue(currentHead, recovery.head)) throw new Error('save recovery kept a changed durable head')
-      await writeVerified($, context, headKey, recovery.previousHead)
-    }
-  } catch (error) { context.tainted = true; failures.push(reason(error)) }
-  try {
-    const index = await $.store.get(SAVED_INDEX)
-    if (!sameValue(index, recovery.previousIndex)) {
-      // The index is a cache. Rebuild a changed one from actual buckets, keeping
-      // another session's entries instead of treating metadata as ownership.
-      const restoredIndex = sameValue(index, recovery.index) ? recovery.previousIndex : await savedIndex($)
-      if (restoredIndex === undefined) await retentionStore($, context).delete(SAVED_INDEX)
-      else await retentionStore($, context).set(SAVED_INDEX, restoredIndex)
-      if (!sameValue(await $.store.get(SAVED_INDEX), restoredIndex)) throw new Error('save recovery could not verify the rebuilt index')
-    }
-  } catch (error) { context.tainted = true; failures.push(reason(error)) }
-  if (failures.length > 0) throw new Error(failures.join('; '))
-  saveRecoveries.delete(id)
+  await rollbackSave(saveJournal($, context), saveRecoveries, id)
 }
 
 // The hooks compiler requires engine calls to stay in this module. Imported
@@ -1459,11 +1408,6 @@ const compactBody = ($: EngineInterface, context: WriteContext, onCompacted?: (s
   const stored = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
   if (stored !== undefined && Object.hasOwn(stored, session)) await writeVerified($, context, SAVED_INDEX, { ...stored, [session]: { ...stored[session], bytes } })
   return 'compacted'
-}
-
-// A caller's planned index takes a compacted session's new raw size in place.
-const patchCompacted = (index: SavedIndex) => (session: string, bytes: number): void => {
-  if (Object.hasOwn(index, session)) index[session] = { ...index[session]!, bytes }
 }
 
 // Over budget, first compacts other CLOSED sessions' bodies (see compactBody),
@@ -1677,11 +1621,7 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
       catch (error) { context.tainted = true; $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
     }
     const nextHead: SessionHead = { v: 1, session_id: id, generation, checkpoint }
-    const bytes = utf8Bytes({ [`s:${id}`]: bucket }) + 1
-    const others = Object.entries(await savedIndex($))
-      .filter(([other]) => other !== id)
-      .sort(([, a], [, b]) => a.at - b.at)
-    const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
+    const index = await nextIndex(storeReads($), id, bucket)
     const replacements = { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }
     if (fallbackCause === undefined) {
       const evicted = await ensureCapacity($, context, id, replacements, STORE_BUDGET, [], undefined, undefined, patchCompacted(index))
@@ -1690,13 +1630,7 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
       try { await checkCapacity(retentionStore($, context), replacements, STORE_BUDGET) }
       catch (error) { throw new Error(`blob storage is unavailable: ${fallbackCause}; inline fallback does not fit: ${reason(error)}`, { cause: error }) }
     }
-    saveRecoveries.set(id, { previous, previousBlobText, bucket, previousHead, head: nextHead, previousIndex: await $.store.get(SAVED_INDEX), index })
-    await retentionStore($, context).set(`s:${id}`, bucket)
-    const verified = await $.store.get(`s:${id}`) as typeof bucket | undefined
-    if (JSON.stringify(verified) !== JSON.stringify(bucket)) throw new Error('save read-back did not match the acknowledged ledger')
-    await writeVerified($, context, `h:${id}`, nextHead)
-    await retentionStore($, context).set(SAVED_INDEX, index)
-    if (!sameValue(await $.store.get(SAVED_INDEX), index)) throw new Error('save index read-back did not match')
+    await commitSave(saveJournal($, context), saveRecoveries, id, { previous, previousBlobText, bucket, previousHead, head: nextHead, index })
     let memoryChanged = false
     await updateLedger($, cur => {
       memoryChanged = !sameValue(cur, memory)
@@ -2237,7 +2171,7 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       }
       normalized.push(isKept ? { key: record.key, value: currentView, head, stored: current, isKept } : { key: record.key, value, head, stored: value, isKept })
     }
-    const index = await savedIndex($)
+    const index = await savedIndex(storeReads($))
     for (const record of normalized) {
       const bucket = record.value as { savedAt: number; ledger: Ledger }
       const unfinished = bucket.ledger.questions.some(q => q.cleared !== true && q.status !== 'answered') || bucket.ledger.steps.some(s => s.cleared !== true && s.status !== 'completed')
