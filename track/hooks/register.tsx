@@ -487,7 +487,7 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
   if (change === 'compacted') {
     // Keep every row and judge only later work, as the session.compact handler does.
     // Without an earlier read this cannot be told from a rewind.
-    await update<Ledger>($, ledger, cur => ({ ...cur, compactedAt: Date.now() }))
+    await updateLedger($, cur => ({ ...cur, compactedAt: Date.now() }))
     return true
   }
   if (!l.questions.some(q =>
@@ -500,7 +500,7 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
   const observed = new Map(l.questions.map(q => [q.id, q]))
   const observedSteps = new Map(l.steps.map(step => [step.id, step]))
   let changed = false
-  await update<Ledger>($, ledger, cur => {
+  await updateLedger($, cur => {
     const compactedAt = cur.compactedAt ?? 0
     const questions = cur.questions.flatMap(q => {
       const old = observed.get(q.id)
@@ -578,7 +578,7 @@ const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
   if (q === undefined) {
     return
   }
-  await update<Ledger>($, ledger, cur => ({
+  await updateLedger($, cur => ({
     ...cur,
     questions: cur.questions.filter(one => one.id !== id),
     withdrawn: [...(cur.withdrawn ?? []), { id, head: q.head }],
@@ -1105,7 +1105,7 @@ const finishTasks = async ($: EngineInterface, pick: (a: Activity) => string[], 
   const targets = (await read($, ledger)).steps.filter(s => ownerIds.includes(s.id) && s.followUp !== true && canFollowUp(s))
   if (targets.length === 0) return undefined
   const wanted = new Set(targets.map(s => s.id))
-  await update<Ledger>($, ledger, cur => {
+  await updateLedger($, cur => {
     assertAdmitted()
     return { ...cur, steps: cur.steps.map(s => wanted.has(s.id) ? { ...s, followUp: true as const } : s) }
   })
@@ -1558,7 +1558,7 @@ const preserveConflict = async ($: EngineInterface, context: WriteContext, id: s
 
 const adoptAfterConflict = async ($: EngineInterface, context: WriteContext, id: string, memory: Ledger, baseline: Baseline | undefined, durable: Ledger, checkpoint: Checkpoint | undefined, generation: string | undefined): Promise<string> => {
   const key = await preserveConflict($, context, id, memory, baseline, { checkpoint, generation })
-  await update($, ledger, current => {
+  await updateLedger($, current => {
     if (!sameValue(current, memory)) throw new Error('ledger changed during conflict recovery; archive was kept')
     return durable
   })
@@ -1698,7 +1698,7 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
     await retentionStore($, context).set(SAVED_INDEX, index)
     if (!sameValue(await $.store.get(SAVED_INDEX), index)) throw new Error('save index read-back did not match')
     let memoryChanged = false
-    await update($, ledger, cur => {
+    await updateLedger($, cur => {
       memoryChanged = !sameValue(cur, memory)
       return memoryChanged ? reconcileLedger(memory, current, cur, id!) : current
     })
@@ -1789,7 +1789,7 @@ const applyRestored = async ($: EngineInterface, context: WriteContext, id: stri
         const pristine = sameValue(memory, EMPTY_LEDGER)
         if (!pristine) await preserveVersion($, context, id, 'session-switch', { source_session: memoryOwner, ledger: memory })
         const stale = memory
-        await update($, ledger, current => {
+        await updateLedger($, current => {
           if (!sameValue(current, stale)) throw new Error('ledger changed during session switch; current ledger was kept')
           return pristine ? current : { ...EMPTY_LEDGER, session_id: id }
         })
@@ -1823,7 +1823,7 @@ const applyRestored = async ($: EngineInterface, context: WriteContext, id: stri
             return
           }
         }
-        await update($, ledger, current => {
+        await updateLedger($, current => {
           if (!sameValue(current, memory)) throw new Error('ledger changed during resume; both snapshots were kept')
           return reconciled
         })
@@ -2032,7 +2032,7 @@ const commitHistorySave = async ($: EngineInterface, store: string, id: string, 
 const acknowledgeHistorySave = async ($: EngineInterface, id: string, memory: Ledger, current: Ledger, saved: { checkpoint: Checkpoint; generation: string }, intended: PluginState['track']['durability']): Promise<void> => {
   const { checkpoint, generation } = saved
   let memoryChanged = false
-  await update($, ledger, cur => {
+  await updateLedger($, cur => {
     memoryChanged = !sameValue(cur, memory)
     return memoryChanged ? reconcileLedger(memory, current, cur, id) : current
   })
@@ -2314,7 +2314,7 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
 // counting up, so a later Q<n> never reuses one the model saw.
 const clearQuestions = async ($: EngineInterface): Promise<void> => {
-  await update<Ledger>($, ledger, cur => ({
+  await updateLedger($, cur => ({
     ...cur,
     questions: [],
     withdrawn: [
@@ -2332,20 +2332,23 @@ const clearQuestions = async ($: EngineInterface): Promise<void> => {
 // model once on its next prompt, as withdrawn questions are. All completed: one press clears.
 const clearSteps = async ($: EngineInterface): Promise<void> => {
   const now = await $.clock.now()
-  const armedAt = await read($, clearArm)
+  // Read with its version, so the arm below goes live only if nothing wrote clearArm since this read.
+  const held = await $.state.get({ plugin: 'track', key: 'clearArm' })
+  const armedAt = held.value ?? null
   const armed = armedAt !== null && now - armedAt < CLEAR_ARM_MS
   let arming = false
   // Decided on the steps this same write removes, so a step reopened meanwhile is never cleared
   // without a confirming press (refuter R16 finding 7).
-  await update<Ledger>($, ledger, cur => {
+  await updateLedger($, cur => {
     const removed = cur.steps.filter(s => s.status !== 'completed').map(s => ({ id: s.id, head: s.subject }))
     arming = removed.length > 0 && !armed
     if (arming) return cur
     return { ...cur, steps: [], ...(removed.length > 0 && { clearedSteps: [...(cur.clearedSteps ?? []), ...removed] }) }
   })
   if (arming) {
-    await update($, clearArm, () => now)
-    $.clock.after(CLEAR_ARM_MS, () => { void update($, clearArm, at => (at === now ? null : at)) })
+    // One compare-and-set, never retried: a reset that landed meanwhile wins and this press arms nothing.
+    const { isSet } = await $.state.set({ plugin: 'track', key: 'clearArm' }, now, { ifVersion: held.version })
+    if (isSet) $.clock.after(CLEAR_ARM_MS, () => { void update($, clearArm, at => (at === now ? null : at)) })
     return
   }
   await update($, clearArm, () => null)
@@ -2635,10 +2638,17 @@ const assertOwner = (token: OwnerToken | undefined, current?: Ledger): void => {
   if (token !== undefined && (!isOwnerCurrent(token) || current?.session_id !== undefined && current.session_id !== token.owner)) throw new OwnerChanged()
 }
 
+// The only ledger writer. A write that leaves no unfinished step ends the clear-all arm before returning.
+const updateLedger = async ($: EngineInterface, change: (current: Ledger) => Ledger): Promise<Ledger> => {
+  const written = await update<Ledger>($, ledger, change)
+  if (written.steps.filter(s => s.status !== 'completed').length === 0) await update($, clearArm, () => null)
+  return written
+}
+
 // Check inside the atom's synchronous decision, including every compare-and-set retry.
 // No lock spans engine execution: nested events can still select their own session.
 const updateOwnedLedger = ($: EngineInterface, token: OwnerToken | undefined, change: (current: Ledger) => Ledger): Promise<Ledger> =>
-  update($, ledger, current => {
+  updateLedger($, current => {
     assertOwner(token, current)
     return change(current)
   })
@@ -3087,7 +3097,7 @@ export const register: Register = on => {
       // Keep this message's observation. A later turn-atom write must never
       // replace its text while leaving this message's UUID on the answer.
       let changed = false
-      await update<Ledger>($, ledger, cur => {
+      await updateLedger($, cur => {
         changed = false
         const pending = cur.questions.filter(q => q.status === 'answered' && q.answerText !== undefined &&
           (q.answerTextHash !== undefined ? q.answerTextHash === answer.textHash : q.answerText === text) &&
@@ -3130,7 +3140,7 @@ export const register: Register = on => {
     if (blocks.length === 0) return stored
     const completed = await Promise.all(blocks.map(async block => ({ ...block, hash: await checksumOf(block.text) })))
     let changed = false
-    await update<Ledger>($, ledger, cur => {
+    await updateLedger($, cur => {
       changed = false
       const questions = cur.questions.map(q => {
         const block = completed.find(one => one.id === q.id)
@@ -3168,7 +3178,7 @@ export const register: Register = on => {
       }))
     }
     await update($, activity, a => ({ ...a, isWorking: true, mainTurnId: e.turnId }))
-    await update($, ledger, l => ({
+    await updateLedger($, l => ({
       ...l,
       prompts: l.prompts.map(p => (p.turnId === null ? { ...p, turnId: e.turnId } : p)),
       questions: l.questions.map(q => (q.turnId === null ? { ...q, turnId: e.turnId } : q)),
@@ -3350,7 +3360,7 @@ export const register: Register = on => {
       if (withdrawn.length > 0) {
         const named = withdrawn.map(w => `question:${w.id} "${truncate(w.head, 60)}"`).join(', ')
         lines.push(`track: the user withdrew ${named}; do not answer ${withdrawn.length > 1 ? 'them' : 'it'}.`)
-        await update<Ledger>($, ledger, cur => {
+        await updateLedger($, cur => {
           assertAdmitted()
           return { ...cur, withdrawn: [] }
         })
@@ -3360,7 +3370,7 @@ export const register: Register = on => {
       if (clearedSteps.length > 0) {
         const named = clearedSteps.map(c => `${c.id} "${truncate(c.head, 60)}"`).join(', ')
         lines.push(`track: the user cleared open steps ${named}; ${clearedSteps.length > 1 ? 'they are' : 'it is'} no longer tracked.`)
-        await update<Ledger>($, ledger, cur => {
+        await updateLedger($, cur => {
           assertAdmitted()
           return { ...cur, clearedSteps: [] }
         })
@@ -3479,7 +3489,7 @@ export const register: Register = on => {
   on('session.compact', async ($, e, next) => {
     const compacted = await next(e)
     if (e.agentId === undefined && !('skip' in compacted)) {
-      await update<Ledger>($, ledger, l => ({ ...l, compactedAt: Date.now() }))
+      await updateLedger($, l => ({ ...l, compactedAt: Date.now() }))
       // The transcript before compaction is no baseline for the one after it.
       transcriptBaseline = undefined
       baselineGeneration++
@@ -3506,7 +3516,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       if (e.isAborted) {
         const now = await $.clock.now()
-        await update<Ledger>($, ledger, l => ({ ...l, steps: l.steps.map(s => {
+        await updateLedger($, l => ({ ...l, steps: l.steps.map(s => {
           if (s.cleared === true || s.status !== 'in_progress' || s.delegated === true || s.activeTurnId !== e.turnId) return s
           return { ...withStatus(s, 'paused', now), note: s.note ? `${s.note}; interrupted` : 'interrupted' }
         }) }))
@@ -3544,7 +3554,7 @@ export const register: Register = on => {
       return row
     }
     $.clock.after(0, () => {
-      void update($, ledger, cur => ({
+      void updateLedger($, cur => ({
         ...cur,
         prompts: cur.prompts.map(p => (p.rowKey === key ? { ...p, requestId: e.requestId } : p)),
         questions: cur.questions.map(q => (q.rowKey === key ? { ...q, askedRequestId: e.requestId } : q)),
@@ -4234,7 +4244,7 @@ export const register: Register = on => {
     writer.lease = null
     writer.session = ''
     if (e.reason === 'clear') {
-      await update<Ledger>($, ledger, () => EMPTY_LEDGER)
+      await updateLedger($, () => EMPTY_LEDGER)
       await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
       await update($, activity, () => IDLE)
     }
@@ -4485,7 +4495,7 @@ export const register: Register = on => {
     }
     const sDone = steps.filter(s => s.status === 'completed').length
     const clearAnsweredQuestions = async () => {
-      await update($, ledger, cur => ({
+      await updateLedger($, cur => ({
         ...cur,
         questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
       }))
@@ -4493,7 +4503,7 @@ export const register: Register = on => {
       await saveLedger($)
     }
     const clearCompletedSteps = async () => {
-      await update($, ledger, cur => ({
+      await updateLedger($, cur => ({
         ...cur,
         steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
       }))
