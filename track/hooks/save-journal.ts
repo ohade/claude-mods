@@ -1,9 +1,9 @@
 // Save journal: owns the legacy save's s:/h:/'saved' acknowledgement and its exact undo.
 // Every store capability arrives as an ordinary callback from the native adapter.
 import type { Ledger } from '../types'
-import type { SessionHead } from './reconcile'
+import type { SessionHead } from './durable-record'
 import { utf8Bytes } from './ledger-text'
-import { sameRecord } from './retention-records'
+import { sameRecord } from './durable-record'
 
 export const SAVED_INDEX = 'saved'
 export type SavedIndex = Record<string, { at: number; bytes: number; unfinished?: boolean }>

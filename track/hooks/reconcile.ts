@@ -1,10 +1,9 @@
 import type { Baseline, Ledger } from '../types'
-import type { Checkpoint } from './checkpoint'
 
 // TRACK-21 (2026-10-11): reload adopted a durable revision while retaining
 // unrelated nonempty memory, making a later save silently overwrite newer rows.
 export type { Baseline } from '../types'
-export type SessionHead = { v: 1; session_id: string; generation: string; checkpoint: Checkpoint; closedAt?: number }
+export type { SessionHead } from './durable-record'
 // TRACK-35 (2026-10-23): reload key order duplicated an unchanged ledger blob.
 // Compare complete JSON content; code-unit order keeps distinct Unicode keys distinct.
 const canonical = (value: unknown): string | undefined => JSON.stringify(value, (_, entry) =>

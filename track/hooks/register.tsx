@@ -23,7 +23,9 @@ import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensur
 import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
 import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerContent } from './reconcile'
-import type { Baseline, SessionHead } from './reconcile'
+import type { Baseline } from './reconcile'
+import { sessionHead, bodyMatchesHead, sameRecord as sameValue } from './durable-record'
+import type { SessionHead } from './durable-record'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
 import { readBlob } from './blob-store'
@@ -624,7 +626,6 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
 const persistence = { queue: Promise.resolve(), failure: '' }
 const savedRevisions = new Map<string, number>()
 const saveRecoveries = new Map<string, SaveRecovery>()
-const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 type WriteGrant = { config: string; token: string; id: string; nonce: string }
 type LockStream = HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 type WriteContext = { stream: LockStream; grant: WriteGrant; phase: 'open' | 'sealed'; tainted: boolean }
@@ -1421,21 +1422,6 @@ const ensureCapacity = async ($: EngineInterface, context: WriteContext, id: str
       await writeVerified($, context, SAVED_INDEX, Object.fromEntries(Object.entries(stored).filter(([other]) => other !== session)))
     } }))
 
-const sessionHead = (raw: unknown, id: string): SessionHead | undefined => {
-  if (raw === undefined) return undefined
-  const clock = raw as { v?: number; session_id?: string; retentionOnly?: boolean }
-  if (clock?.v === 1 && clock.session_id === id && clock.retentionOnly === true &&
-      Object.keys(clock).every(key => ['v', 'session_id', 'retentionOnly', 'closedAt'].includes(key))) return undefined
-  const head = raw as SessionHead
-  if (head?.v !== 1 || head.session_id !== id || typeof head.generation !== 'string' ||
-      !Number.isSafeInteger(head.checkpoint?.revision) || head.checkpoint.revision < 1 ||
-      typeof head.checkpoint.checksum !== 'string') throw new Error('durable session head is invalid; history was kept')
-  return head
-}
-
-// Called after repairHead has validated any generation-less legacy body.
-const bodyMatchesHead = (body: { generation?: string; checkpoint?: Checkpoint }, head: SessionHead): boolean =>
-  (body.generation === undefined || body.generation === head.generation) && sameValue(body.checkpoint, head.checkpoint)
 
 // Under the owner's lease and store lock, complete a torn next-revision write
 // or accept a checksummed legacy successor after preserving the prior head.

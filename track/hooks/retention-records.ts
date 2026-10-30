@@ -1,3 +1,6 @@
+import { sameRecord } from './durable-record'
+export { sameRecord } from './durable-record'
+
 export type RetentionStore = {
   get: (key: string) => Promise<unknown>
   set: (key: string, value: unknown) => Promise<unknown>
@@ -24,7 +27,6 @@ export type CleanupRecovery = { v: 1; session_id: string; entries: RecoveryEntry
 export type ExpiryIntent = { v: 2; mode: 'expiry' | 'eviction'; session_id: string; closedAt: number; entries: Array<{ key: string; checksum: string; bytes: number }> }
 export const recoveryAfter = (entry: RecoveryEntry): unknown => entry.stamp === undefined ? entry.after : { ...entry.before as Value, ...entry.stamp }
 export const recoveryKey = (session: string): string => `cleanup:${session}`
-export const sameRecord = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right)
 
 export const writeVerified = async (store: RetentionStore, key: string, value: unknown): Promise<void> => {
   if (value === undefined) await store.delete(key)

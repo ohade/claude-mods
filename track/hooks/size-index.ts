@@ -1,3 +1,4 @@
+import { sameRecord as same } from './durable-record'
 import type { RetentionStore } from './retention-records'
 
 // TRACK-21 Refuter-2 M4 (2026-10-11): full body scans under the store
@@ -5,7 +6,6 @@ import type { RetentionStore } from './retention-records'
 export const SIZE_INDEX = 'capacitySizes'
 type SizeIndex = { v: 1; sizes: Record<string, number>; pending?: string }
 export const entryBytes = (key: string, value: unknown): number => new TextEncoder().encode(JSON.stringify({ [key]: value })).length - 2
-const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right)
 const indexOf = (sizes: Map<string, number>, pending?: string): SizeIndex => ({
   v: 1, sizes: Object.fromEntries([...sizes].filter(([key]) => key !== SIZE_INDEX)),
   ...(pending !== undefined && { pending }),

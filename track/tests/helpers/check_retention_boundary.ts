@@ -6,9 +6,9 @@ import { existsSync, readFileSync } from 'node:fs'
 // Body pins come from 2ec5385 hooks/retention.ts: per module, blank and import
 // lines dropped, a leading `export ` stripped. Moves keep bytes and order.
 const modules = {
-  records: { cap: 100, sha: '2cf84e74860a7eb05472e6295702d57b28b814ca6220f365b9bdcc1548f992e2', imports: [],
+  records: { cap: 100, sha: '7e614a22c7636232450584066df247f7505d1be62c8586e2f7b9560f415d6565', imports: ['./durable-record'],
     owns: ['RetentionStore', 'HOUR', 'CLOSED_TTL', 'BATCH', 'WORK_MS', 'CLEANUP', 'SESSION_ID', 'Guard', 'Probe', 'Value', 'RecoveryEntry', 'CleanupRecovery', 'ExpiryIntent',
-      'recoveryAfter', 'recoveryKey', 'sameRecord', 'writeVerified', 'ownedKeys', 'validClock', 'RECORD_KEY', 'sessionOf', 'hasAmbiguousIdentity', 'isInlineV1Body', 'isImported', 'expiryClockOf'] },
+      'recoveryAfter', 'recoveryKey', 'writeVerified', 'ownedKeys', 'validClock', 'RECORD_KEY', 'sessionOf', 'hasAmbiguousIdentity', 'isInlineV1Body', 'isImported', 'expiryClockOf'] },
   expiry: { cap: 100, sha: '2c1404c74c672887292ad5e66a7fa35c63d71ee2979f5dd47c62a05bfe12dda9', imports: ['./checkpoint', './retention-records', './size-index'],
     owns: ['deletionIntent', 'SwitchArchive', 'switchSource', 'holdArchiveSources', 'finishExpiry'] },
   eviction: { cap: 100, sha: 'cf3b4b0cf5c40bd0cc79dffc8eb0e31a9325706069476a71af9f1658ad40244d', imports: ['./retention-expiry', './retention-records'],
@@ -35,6 +35,8 @@ const specifiers = (source: string) => source.split('\n').filter(line => line.st
 }).sort()
 
 const sources = Object.fromEntries(Object.keys(modules).map(name => [name, read(`retention-${name}`)]))
+const equalityForward = "export { sameRecord } from './durable-record'"
+assert.ok(sources.records!.split('\n').includes(equalityForward), 'records forwards the one durable comparison owner')
 const compat = read('retention')
 for (const [name, spec] of Object.entries(modules)) {
   const source = sources[name]!
@@ -45,7 +47,9 @@ for (const [name, spec] of Object.entries(modules)) {
     for (const [other, text] of Object.entries(sources)) if (other !== name) assert.ok(!declares(text, symbol), `${symbol} is declared only in retention-${name}.ts`)
     assert.ok(!declares(compat, symbol), `retention.ts does not declare ${symbol}`)
   }
-  const body = source.split('\n').filter(line => line.trim() !== '' && !line.startsWith('import ')).map(line => line.replace(/^export /, '')).join('\n')
+  // records pin is the original body minus ONLY the moved sameRecord declaration.
+  // Its exact required forwarding line is wiring, checked above and by durable-record's gate.
+  const body = source.split('\n').filter(line => line.trim() !== '' && !line.startsWith('import ') && !(name === 'records' && line === equalityForward)).map(line => line.replace(/^export /, '')).join('\n')
   assert.equal(createHash('sha256').update(body).digest('hex'), spec.sha, `retention-${name}.ts moves its baseline bodies, comments and order unchanged`)
 }
 
