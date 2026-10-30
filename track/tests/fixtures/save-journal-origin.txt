@@ -1,0 +1,89 @@
+// Existing entries are verified save metadata. Read only newly discovered
+// bodies; capacity uses the separate byte-size index for all stored keys.
+// A v:2 body is metadata here: its blob is not read, it counts as unfinished,
+// and it is sized by its raw stored value.
+const savedIndex = async ($: EngineInterface): Promise<SavedIndex> => {
+  const keys = await $.store.keys()
+  const cached = await $.store.get(SAVED_INDEX) as SavedIndex | undefined
+  const index: SavedIndex = {}
+  for (const key of keys.filter(k => k.startsWith('s:'))) {
+    const id = key.slice(2)
+    if (cached?.[id] !== undefined && Number.isFinite(cached[id].at) && Number.isSafeInteger(cached[id].bytes) && cached[id].bytes >= 0) {
+      index[id] = cached[id]
+      continue
+    }
+    const bucket = (await $.store.get(key)) as { savedAt?: unknown; ledger?: Ledger } | undefined
+    const l = bucket?.ledger
+    const unfinished = !Array.isArray(l?.questions) || !Array.isArray(l?.steps) || l.questions.some(q => q.cleared !== true && q.status !== 'answered') || l.steps.some(s => s.cleared !== true && s.status !== 'completed')
+    index[id] = { at: typeof bucket?.savedAt === 'number' ? bucket.savedAt : 0, bytes: utf8Bytes({ [key]: bucket ?? null }) + 1, unfinished }
+  }
+  return index
+}
+
+// A failed acknowledgement restores only this writer's attempted values, under the
+// same store lock. Keep the recovery in memory if the store also refuses rollback.
+const recoverSave = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {
+  assertWriteOpen(context)
+  const recovery = saveRecoveries.get(id)
+  if (recovery === undefined) return
+  const previous = recovery.previous as { v?: unknown; ledger_blob?: { checksum?: unknown; bytes?: unknown } } | undefined
+  if (previous?.v === 2) {
+    const text = recovery.previousBlobText
+    if (text === undefined) throw blobFailure('previous blob text unavailable for recovery')
+    const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
+    if (ref.checksum !== previous.ledger_blob?.checksum || ref.bytes !== previous.ledger_blob?.bytes) {
+      throw blobFailure('previous blob text does not match its pointer')
+    }
+    const config = await configDir($)
+    if (!config?.startsWith('/')) throw blobFailure('blob directory unavailable')
+    const dir = `${config}/state/track/blobs`
+    const fs = blobFs($)
+    if (await fs.read(`${dir}/${ref.checksum}.json`) !== undefined) {
+      if (await readBlob(fs, dir, ref) !== text) throw blobFailure('previous blob changed or invalid; existing file was kept')
+    } else {
+      const publication = await publishLedgerBlob($, context, text, ref)
+      if (publication !== undefined) throw new Error('unavailable' in publication ? publication.unavailable : publication.rejected)
+    }
+  }
+  const failures: string[] = []
+  const key = `s:${id}`
+  try {
+    const current = await $.store.get(key)
+    if (!sameValue(current, recovery.previous)) {
+      if (!sameValue(current, recovery.bucket)) throw new Error('save recovery kept a changed durable ledger; reload this session before writing')
+      if (recovery.previous === undefined) await retentionStore($, context).delete(key)
+      else await retentionStore($, context).set(key, recovery.previous)
+      if (!sameValue(await $.store.get(key), recovery.previous)) throw new Error('save recovery read-back did not match the prior ledger')
+    }
+  } catch (error) { context.tainted = true; failures.push(reason(error)) }
+  try {
+    const headKey = `h:${id}`
+    const currentHead = await $.store.get(headKey)
+    if (!sameValue(currentHead, recovery.previousHead)) {
+      if (!sameValue(currentHead, recovery.head)) throw new Error('save recovery kept a changed durable head')
+      await writeVerified($, context, headKey, recovery.previousHead)
+    }
+  } catch (error) { context.tainted = true; failures.push(reason(error)) }
+  try {
+    const index = await $.store.get(SAVED_INDEX)
+    if (!sameValue(index, recovery.previousIndex)) {
+      // The index is a cache. Rebuild a changed one from actual buckets, keeping
+      // another session's entries instead of treating metadata as ownership.
+      const restoredIndex = sameValue(index, recovery.index) ? recovery.previousIndex : await savedIndex($)
+      if (restoredIndex === undefined) await retentionStore($, context).delete(SAVED_INDEX)
+      else await retentionStore($, context).set(SAVED_INDEX, restoredIndex)
+      if (!sameValue(await $.store.get(SAVED_INDEX), restoredIndex)) throw new Error('save recovery could not verify the rebuilt index')
+    }
+  } catch (error) { context.tainted = true; failures.push(reason(error)) }
+  if (failures.length > 0) throw new Error(failures.join('; '))
+  saveRecoveries.delete(id)
+}
+// A caller's planned index takes a compacted session's new raw size in place.
+const patchCompacted = (index: SavedIndex) => (session: string, bytes: number): void => {
+  if (Object.hasOwn(index, session)) index[session] = { ...index[session]!, bytes }
+}
+    const bytes = utf8Bytes({ [`s:${id}`]: bucket }) + 1
+    const others = Object.entries(await savedIndex($))
+      .filter(([other]) => other !== id)
+      .sort(([, a], [, b]) => a.at - b.at)
+    const index = { ...Object.fromEntries(others), [id]: { at: bucket.savedAt, bytes } }
