@@ -12,10 +12,10 @@ for (const name of ['pane-row-metrics.ts', 'pane-viewport-model.ts']) {
   assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:EngineInterface|Runtime|atom|memberOf|update|Date|crypto|process)\b|\$(?!\{)/)
 }
 const hash = (source: string) => createHash('sha256').update(source).digest('hex')
-for (const [name, expected] of [['register.tsx', '4bf06998a9c00e5949be0b4358cdf4f7789f6e8526ceda540d92ba85be37b4d5'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
+for (const [name, expected] of [['register.tsx', 'ad6346342dc8d7a684ea992e8bb6c5fea2b93e08a5ee8a39bbd1ae30cbf36a94'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
   assert.equal(hash(readFileSync(hook(name), 'utf8')), expected, `${name}: exact planned extraction, all native effects unchanged`)
 }
-assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '6fde94ecd05e8bdb91c239b9e54472920b5d6068c817a92345158b341587fbad', 'exact architecture additions only')
+assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '4491808c8cf5c13a136e8e79d6c13c78f4cd17009d022d337dba4b8101c09359', 'exact architecture additions only')
 const { paneRowMetrics } = await import('../../hooks/pane-row-metrics')
 const { paneViewport } = await import('../../hooks/pane-viewport-model')
 checkViewport(input => {

@@ -17,10 +17,11 @@ import { toolContracts } from './tool-contracts'
 import { readHistoryView } from './history-view'
 import type { HistoryView } from './history-view'
 import { wrappedLines, fitLines } from './terminal-text'
-import { clampTo, clockText, questionLabels, buttonWidth, HEADER_GAP } from './pane-layout'
+import { clampTo, clockText, questionLabels, buttonWidth } from './pane-layout'
 import { paneRowMetrics } from './pane-row-metrics'
 import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
+import { paneRootView, paneItem } from './pane-root-view'
 import type { BannerRow } from './banner-layout'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
@@ -4302,11 +4303,7 @@ export const register: Register = on => {
     // later one win, and both do the same thing. Each is an item of its own, so a narrow pane wraps
     // between them instead of cutting one.
     // A header or bar item keeps its width; the header wraps between items.
-    const item = (key: string, child: RenderElement) => (
-      <Box key={key} flexShrink={0}>
-        {child}
-      </Box>
-    )
+    const item = (key: string, child: RenderElement) => paneItem({ Box, Button, Text }, key, child)
     const allLabel = compact ? 'all' : 'clear all'
     // While "clear all" is armed, both copies ask to confirm, in red, until the arm ends.
     const unfinishedSteps = l.steps.filter(s => s.status !== 'completed').length
@@ -4362,31 +4359,9 @@ export const register: Register = on => {
       qLast,
       sLast,
     })
-    return (
-      <Box flexDirection="column" height={bodyRows} overflow="hidden">
-        {/* The title as a centered header bar, rules filling the width. */}
-        <Box key="title" flexDirection="row" justifyContent="center" marginBottom={roomy ? 1 : 0}>
-          <Text dimColor>{'─'.repeat(titleSide)}</Text>
-          <Text bold color="claude">
-            {titleLabel}
-          </Text>
-          <Text dimColor>{'─'.repeat(Math.max(0, width - titleLabel.length - titleSide))}</Text>
-        </Box>
-        <Box key="questions-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
-          {item('questions-word', <Text bold>Questions</Text>)}
-          {item('questions-ring', <Text color={qDone === questions.length && questions.length > 0 ? 'success' : 'warning'}>{qRing}</Text>)}
-          {/* The engine draws "q: label", so the gap is the header's, not padding in the label. */}
-          {l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />)}
-          {l.questions.length > 0 && item('questions-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />)}
-          {qHidden !== '' && item('questions-hidden', <Text dimColor>{qHidden}</Text>)}
-        </Box>
-        <Box key="questions" flexDirection="column" height={qRows} overflow="hidden">
-        {questions.length === 0 && (
-          <Text dimColor wrap="wrap">
-            {qEmpty}
-          </Text>
-        )}
-        {questions.slice(qStart, qEnd).map((q, shownAt) => {
+    const questionClear = l.questions.length > 0 && item('questions-clear', <Button key="clear-questions" plain dimColor hotkey="q" label={allLabel} onPress={() => clearQuestions($)} />)
+    const answeredClear = l.questions.length > 0 && item('questions-clear-answered', <Button key="clear-answered" plain dimColor hotkey="a" label={doneLabel} onPress={clearAnsweredQuestions} />)
+    const questionRows = questions.slice(qStart, qEnd).map((q, shownAt) => {
           const index = qStart + shownAt
           // The question is text, green once answered (a Button takes no color, so the question
           // is not one); the jumps are short buttons, [ Q ] to the prompt and [ A ] to the answer,
@@ -4445,24 +4420,9 @@ export const register: Register = on => {
             question: questionControl, answer: answerControl,
             onWithdraw: () => withdraw($, q.id),
           })
-        })}
-        </Box>
-        <Text dimColor>{'─'.repeat(width)}</Text>
-        <Box key="steps-header" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP}>
-          {item('steps-word', <Text bold>Steps</Text>)}
-          {item('steps-ring', <Text color={sDone === steps.length && steps.length > 0 ? 'success' : 'warning'}>{sRing}</Text>)}
-          {l.steps.length > 0 && clearButtons('')}
-          {sHidden !== '' && item('steps-hidden', <Text dimColor>{sHidden}</Text>)}
-        </Box>
-        <Box key="steps" flexDirection="column" height={sRows} overflow="hidden">
-        {steps.length === 0 && (
-          <Text dimColor wrap="wrap">
-            {sEmpty}
-          </Text>
-        )}
-        {/* Steps read like questions: the same dots (○ pending, ◐ in progress, ● done), the
-            same left edge, a number S<n> by position, and green once done. */}
-        {steps.slice(sStart, sEnd).map((s, shownAt) => {
+        })
+    const stepHeaderControls = l.steps.length > 0 && clearButtons('')
+    const stepRows = steps.slice(sStart, sEnd).map((s, shownAt) => {
           const index = sStart + shownAt
           const lifecycle = s.status === 'paused' && s.note !== undefined && isLifecycleNote(s.note) ? s.note : undefined
           const resultRaw = resultReveals.get(s.id)
@@ -4479,23 +4439,8 @@ export const register: Register = on => {
             onToggleResult: toggleResult,
             onJumpResult: key => jump($, [key], 'start', key, renderInstances.get(key)),
           })
-        })}
-        </Box>
-        <Box flexGrow={1} />
-        <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={roomy ? 1 : 0}>
-          {clearButtons('-bottom')}
-          {hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
-        </Box>
-        {/* One row per active state. The wrapper keeps the old banner seat; only the amber glyph pulses. */}
-        <Box key="banner" width={width} flexDirection="column" justifyContent="center" backgroundColor={bannerRows.at(-1)?.background ?? 'success'}>
-          {bannerRows.map(row => (
-            <Box key={row.key} width={width} justifyContent="center" backgroundColor={row.background}>
-              {row.glyph !== '' && <Text key={`${row.key}-glyph`} color={row.glyphColor} bold>{row.glyph}</Text>}
-              <Text key={`${row.key}-words`} color="inverseText" bold>{row.words}</Text>
-            </Box>
-          ))}
-        </Box>
-      </Box>
-    )
+        })
+    const bottomControls = clearButtons('-bottom')
+    return paneRootView({ Box, Button, Text }, { width, bodyRows, roomy, titleLabel, titleSide, qDone, qTotal: questions.length, qRing, qHidden, qRows, qEmpty, sDone, sTotal: steps.length, sRing, sHidden, sRows, sEmpty, questionClear, answeredClear, stepHeaderControls, bottomControls, questionRows, stepRows, hints, bannerRows })
   })
 }
