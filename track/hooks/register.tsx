@@ -14,6 +14,8 @@ import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, 
 import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm, utf8Bytes } from './ledger-text'
 import { savedLedger } from './stored-codecs'
 import { toolContracts } from './tool-contracts'
+import { readHistoryView } from './history-view'
+import type { HistoryView } from './history-view'
 import { wrappedLines, fitLines } from './terminal-text'
 import { clampTo, windowOf, lastStart, flowRows, buttonWidth, clockText, questionLabels } from './pane-layout'
 import { bannerLine, collapseLine } from './banner-layout'
@@ -1739,8 +1741,6 @@ const applyRestored = async ($: EngineInterface, context: WriteContext, id: stri
 // only writer under state/track/v3 and takes the store flock itself, so no
 // history call runs while this module holds a write grant.
 type HistoryExpect = { absent: true } | { seq: number; root_sha256: string }
-type HistoryRoot = { seq: number; generation: string | null; checkpoint: Checkpoint | null }
-type HistoryView = { root?: HistoryRoot; rootHash?: string; durable?: Ledger }
 import type { HistoryRun, HistoryOp } from './history-receipts'
 const HISTORY_REQUEST_LIMIT = 3 * 1024 * 1024
 const historyPending = atom({ plugin: 'track', key: 'historyPending' } as const, null as PluginState['track']['historyPending'])
@@ -1767,7 +1767,7 @@ const saveFailureText = (subject: string): string => {
   const cause = savePendingCause()
   return cause === undefined ? `${subject} is unsaved — ${persistence.failure}` : `${subject} save outcome pending — ${cause}`
 }
-import { classifyHistoryReceipt, isPlainObject } from './history-receipts'
+import { classifyHistoryReceipt } from './history-receipts'
 // A pending outcome may have committed, so it never reads as "unsaved".
 class HistoryOutcomePending extends Error {}
 
@@ -1818,24 +1818,8 @@ const bindHistory = async ($: EngineInterface, id: string): Promise<string> => {
 
 // A valid or damaged root decides the route; only an absent root defers to an
 // existing legacy record, so a v3 session never falls back to legacy content.
-const readHistory = async ($: EngineInterface, store: string, id: string): Promise<HistoryView | 'legacy'> => {
-  const readRun = await runHistory($, 'read', { v: 3, op: 'read', store, session_id: id })
-  if (readRun.kind !== 'ok') throw new Error(readRun.kind === 'refused' ? readRun.reason : `v3 history read failed: ${readRun.cause}`)
-  const { response } = readRun
-  if (response.state === 'absent') {
-    return await $.store.get(`s:${id}`) !== undefined || await $.store.get(`h:${id}`) !== undefined ? 'legacy' : {}
-  }
-  const root = response.root as HistoryRoot | undefined
-  if (response.state !== 'valid' || !isPlainObject(root) || !Number.isSafeInteger(root.seq) || typeof response.root_sha256 !== 'string' ||
-      (response.ledger_text !== null && typeof response.ledger_text !== 'string')) throw new Error('v3 history read receipt is incompatible')
-  if (response.ledger_text === null) return { root, rootHash: response.root_sha256 }
-  let parsed: unknown
-  try { parsed = JSON.parse(response.ledger_text) }
-  catch (error) { throw new Error('v3 history damaged: saved ledger is not JSON', { cause: error }) }
-  const durable = savedLedger({ v: 1, ledger: parsed }, id)
-  if (durable === undefined) throw new Error('v3 history damaged: saved ledger is incompatible')
-  return { root, rootHash: response.root_sha256, durable: identifyLedger(durable, id) }
-}
+const readHistory = ($: EngineInterface, store: string, id: string): Promise<HistoryView | 'legacy'> =>
+  readHistoryView({ read: (store, id) => runHistory($, 'read', { v: 3, op: 'read', store, session_id: id }), legacy: key => $.store.get(key) }, store, id)
 
 // Runs `work` under its own write grant and confirms the grant's completion.
 const inOwnGrant = async ($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>, cleanupLabel: 'writer' | 'classifier' = 'writer',
