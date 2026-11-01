@@ -17,8 +17,9 @@ import { toolContracts } from './tool-contracts'
 import { readHistoryView } from './history-view'
 import type { HistoryView } from './history-view'
 import { wrappedLines, fitLines } from './terminal-text'
-import { clampTo, windowOf, lastStart, flowRows, buttonWidth, clockText, questionLabels } from './pane-layout'
-import { collapseLine } from './banner-layout'
+import { clampTo, clockText, questionLabels, buttonWidth, HEADER_GAP } from './pane-layout'
+import { paneRowMetrics } from './pane-row-metrics'
+import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
 import type { BannerRow } from './banner-layout'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
@@ -139,14 +140,6 @@ const TICK_MS = 1000
 const HOUR_MS = 3_600_000
 const ticking: { timer?: Timer } = {}
 
-// The pane's layout: the title pinned at the top, the banner and footer pinned at the bottom,
-// and between them Questions and Steps, each a fixed region that scrolls alone. Questions get
-// about a third of the room; room one side does not need goes to the other. `regions` is where the last drawing put each region, for routing a wheel tick.
-const QUESTION_SHARE = 0.35
-// Columns a question row spends on its dot, its [ Q ] [ A ] buttons and ✕.
-const QUESTION_CHROME = 18
-// Columns between the items of a header or bar; a narrow pane wraps between items, never inside one.
-const HEADER_GAP = 2
 // Below this width the Q/A columns crowd out the question; place them on the next line.
 const COMPACT_COLUMNS = 40
 const HINT = '/track hides · ctrl+x x closes for good'
@@ -180,9 +173,6 @@ const openStepsContext = (steps: Step[]): string => {
 const newPlanStep = (id: string, subject: string): Step => ({
   id, source: 'plan', subject, status: 'pending', sourceId: `plan:${crypto.randomUUID()}`,
 })
-
-const hidden = (above: number, below: number): string =>
-  [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
 
 // A background task's id in its notification text.
 const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
@@ -4341,7 +4331,6 @@ export const register: Register = on => {
       l, now, phase, isUnsaved, unsavedReason, pendingCause: isUnsaved ? pendingCauseOf(unsavedReason) : undefined,
       width, questions, steps, questionLabel,
     })
-    let bannerRows = openRows
     const countLabel = (done: number, total: number) => {
       const full = ring(done, total)
 
@@ -4355,82 +4344,14 @@ export const register: Register = on => {
     // The layout: the title, the two headers, the separator, the bottom bar and the banner take
     // fixed rows, a header or the bar as many as its items wrap onto; the two regions share the
     // room left, measured in wrapped lines.
-    const roomy = bodyRows >= 16
-    const titleRows = roomy ? 2 : 1
-    const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
-    const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
-    const sButtons = l.steps.length > 0 ? clearWidths : []
-    const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))
-    // Status owns two cells, including the paused/hourglass glyphs, then a gap.
-    const sWidth = Math.max(1, width - rowIndent - 3)
-    const qControlsRows = compact ? 1 : 0
-    const revealedText = (q: Question): string | undefined => {
-      const side = opened[String(q.id)]
-      if (side === 'q' && q.head.trim() !== '') return q.head
-      if (side === 'a' && q.answerKey === undefined && (q.answerText?.trim().length ?? 0) > 0) return q.answerText
-      return undefined
-    }
-    const qLines = questions.map(q => {
-      const extra = revealedText(q)
-      return wrappedLines(`${questionLabel(q.id)}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
+    const metrics = paneRowMetrics({
+      width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions: l.questions.length > 0, hasSteps: l.steps.length > 0,
+      allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf,
     })
-    const stepControlsRows = (s: Step) => compact && (hasClock(s) || s.status === 'completed') ? 1 : 0
-    const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
-    const stepSubjectWidth = (s: Step) => Math.max(1, stepWidth(s) - (!compact && s.status === 'completed' ? 7 : 0))
-    const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepSubjectWidth(s)) + stepControlsRows(s) +
-      (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
-    const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
-    const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
-    const atWork = steps.findIndex(s => s.status !== 'completed')
-    const layoutFor = (bannerCount: number) => {
-      const fit = (qArrows: string, sArrows: string) => {
-        const qHead = flowRows(['Questions'.length, qRing.length, ...qButtons, qArrows.length], width, HEADER_GAP)
-        const sHead = flowRows(['Steps'.length, sRing.length, ...sButtons, sArrows.length], width, HEADER_GAP)
-        const room = Math.max(0, bodyRows - (titleRows + qHead + 1 + sHead + (roomy ? 1 : 0) + bottomRows + bannerCount))
-        // A compact question needs a text line plus its Q/A controls even in a short pane.
-        const minQRows = questions.length > 0 ? 1 + qControlsRows : 1
-        let qRows = Math.min(needQ, room, Math.max(minQRows, Math.round(room * QUESTION_SHARE)))
-        let sRows = Math.max(0, room - qRows)
-        if (needS < sRows) {
-          qRows = Math.min(needQ, qRows + sRows - needS)
-          sRows = needS
-        }
-        // An open reveal needs one line of its own. Take it from the steps region,
-        // and never from the last step row.
-        const revealOpen = questions.some(q => revealedText(q) !== undefined)
-        const minSRows = steps.length > 0 ? 1 : 0
-        if (revealOpen && qRows < minQRows + 1 && sRows > minSRows) {
-          const give = Math.min(minQRows + 1 - qRows, sRows - minSRows)
-          qRows += give
-          sRows -= give
-        }
-        // Where each region starts: the newest questions, the step at work with one done row above.
-        const qLast = lastStart(qLines, qRows)
-        const sLast = lastStart(sLines, sRows)
-        const [qStart, qEnd] = windowOf(qLines, qRows, Math.min(at.questions ?? qLast, qLast))
-        const [sStart, sEnd] = windowOf(sLines, sRows, Math.min(at.steps ?? (atWork < 0 ? sLast : Math.max(0, atWork - 1)), sLast))
-
-        return { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd }
-      }
-      // The rows out of view, as arrows in each header. The arrows can wrap the header onto one more
-      // row, which takes a row from the regions, so the layout is fitted again with them.
-      const arrowsOf = (f: ReturnType<typeof fit>) => [hidden(f.qStart, questions.length - f.qEnd), hidden(f.sStart, steps.length - f.sEnd)] as const
-      const first = fit('', '')
-      const [qFirst, sFirst] = arrowsOf(first)
-
-      return qFirst === '' && sFirst === '' ? first : fit(qFirst, sFirst)
-    }
-    // Collapse when the stacked rows would leave fewer than min(3, steps) whole steps in view; a
-    // wrapped step takes several lines, so lines are not the measure.
-    if (openRows.length > 1 && steps.length > 0) {
-      const stacked = layoutFor(openRows.length)
-      if (stacked.sEnd - stacked.sStart < Math.min(3, steps.length)) {
-        bannerRows = [collapseLine(openRows, width)]
-      }
-    }
-    const fitted = layoutFor(bannerRows.length)
-    const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
-    const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
+    const { roomy, titleRows, qWidth, qControlsRows, stepControlsRows, stepWidth, stepSubjectWidth } = metrics
+    const fitted = paneViewport({ metrics, width, bodyRows, qRing, sRing, at, openRows, questionCount: questions.length, stepCount: steps.length })
+    const bannerRows: BannerRow[] = fitted.bannerRows
+    const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden } = fitted
     Object.assign(regions, {
       qTop: titleRows,
       qBottom: titleRows + qHead + qRows,

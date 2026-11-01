@@ -1,6 +1,15 @@
 import type { Question } from '../types'
 import { visibleQuestions } from './pane-order'
 
+// The pane's layout: the title pinned at the top, the banner and footer pinned at the bottom,
+// and between them Questions and Steps, each a fixed region that scrolls alone. Questions get
+// about a third of the room; room one side does not need goes to the other. `regions` is where the last drawing put each region, for routing a wheel tick.
+export const QUESTION_SHARE = 0.35
+// Columns a question row spends on its dot, its [ Q ] [ A ] buttons and ✕.
+export const QUESTION_CHROME = 18
+// Columns between the items of a header or bar; a narrow pane wraps between items, never inside one.
+export const HEADER_GAP = 2
+
 // A stored position never runs past the last one that shows anything (observed: 733 for 20 steps).
 export const clampTo = (last: number, value: number): number => Math.min(last, Math.max(0, value))
 
