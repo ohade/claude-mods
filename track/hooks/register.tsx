@@ -18,8 +18,9 @@ import { readHistoryView } from './history-view'
 import type { HistoryView } from './history-view'
 import { wrappedLines, fitLines } from './terminal-text'
 import { clampTo, windowOf, lastStart, flowRows, buttonWidth, clockText, questionLabels } from './pane-layout'
-import { bannerLine, collapseLine } from './banner-layout'
-import type { BannerCount, BannerParts, BannerRow } from './banner-layout'
+import { collapseLine } from './banner-layout'
+import { paneBanner } from './pane-banner-model'
+import type { BannerRow } from './banner-layout'
 import { lookupPaneRows, paneReferenceContext, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
@@ -37,7 +38,7 @@ import type { BlobFs } from './blob-store'
 import { diagnose } from './diagnose-flow'
 import type { DiagnosePorts } from './diagnose-flow'
 import type { GateProjection, RingEntry, RingValue } from './diagnose-bundle'
-import { AMBER_SHADES, GREY_SHADES, WAITING_BLUE, isDelegatedWork, workState } from './work-appearance'
+import { workState } from './work-appearance'
 import { stepView } from './pane-step-view'
 import { questionView } from './pane-question-view'
 import type { QuestionRow } from './pane-question-view'
@@ -131,8 +132,6 @@ const STEPS_LINE = RULE
 // waits on agents. The phase is $.state, so each tick redraws the pane alone.
 const PULSE_MS = 400
 const PULSE_PHASES = 12
-// The agents row's glyph pulses through light shades, never the row's own amber background.
-const AMBER_GLYPH = ['inverseText', '#f2d49b', '#e8bc63', '#f2d49b'] as const
 
 const pulsing: { timer?: Timer } = {}
 // Each step row ends in its wall clock. It moves every second under an hour, then once a minute.
@@ -4338,87 +4337,10 @@ export const register: Register = on => {
     const clearWidths = [l.steps.length > 0 ? buttonWidth('s', stepsLabel) : 0, buttonWidth('c', doneLabel)]
     const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
 
-    const work = workState(l, now)
-    const numbered = steps.map((s, i) => ({ step: s, n: i + 1 }))
-    const waitingSteps = numbered.filter(row => row.step.status === 'waiting')
-    const agentSteps = numbered.filter(row => isDelegatedWork(row.step))
-    const mainSteps = numbered.filter(row => row.step.status === 'in_progress' && row.step.delegated !== true && work === 'working')
-    const pausedSteps = numbered.filter(row => row.step.status === 'paused')
-    const taskCount = (now.tasks ?? []).length
-    const agentActivity = agentSteps.length > 0 || now.agentCalls.length > 0 || now.background.length > 0 || taskCount > 0
-    const askIds = new Set(now.askCalls)
-    const questionRefs = questions
-      .filter(q => q.status !== 'answered' && q.status !== 'deferred' && (askIds.has(q.askedRequestId ?? '') || askIds.has(q.trackedBy ?? '')))
-      .map(q => questionLabel(q.id))
-    const unfinishedQuestion = questions.some(q => q.status !== 'answered' && q.status !== 'deferred')
-    const askOpen = now.askCalls.length > 0
-    // The main turn runs with no main step of its own (only delegated steps): still a Working row.
-    const mainRuns = now.isWorking && !askOpen && !numbered.some(row => row.step.status === 'in_progress' && row.step.delegated !== true)
-    const mainRow = work === 'working' || mainRuns
-    // An ask dialog in the middle of a step is the person's turn, not unknown activity.
-    const unknownRow = work === 'unknown' && !askOpen
-    const running = agentActivity || mainRow || unknownRow || askOpen
-    const piece = (key: string, glyph: string, parts: BannerParts, background: string, glyphColor = 'inverseText'): BannerRow => {
-      const line = bannerLine(glyph, parts, width)
-
-      return { key, glyph: line.glyph, words: line.words, background, glyphColor, parts }
-    }
-    const stack = (): BannerRow[] => {
-      const built: BannerRow[] = []
-      if (isUnsaved) {
-        // A pending outcome may have committed, so it never reads as unsaved.
-        const pendingCause = pendingCauseOf(unsavedReason)
-        const label = pendingCause !== undefined ? `Save outcome pending · ${pendingCause}`
-          : unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`
-        built.push(piece('banner-unsaved', '', { label, brief: label, questions: [], steps: [], counts: [] }, 'warning'))
-      }
-      if (agentActivity) {
-        const counts: BannerCount[] = []
-        if (now.background.length > 0) counts.push({ kind: 'agents', n: now.background.length })
-        if (taskCount > 0) counts.push({ kind: 'tasks', n: taskCount })
-        const label = agentSteps.length > 0 || now.agentCalls.length > 0 || now.background.length > 0 ? 'Agents' : 'Tasks'
-        built.push(piece('banner-agents', '⧗', {
-          label,
-          brief: label,
-          questions: [],
-          steps: agentSteps.map(row => `S${row.n}`),
-          counts,
-        }, AMBER_SHADES[0], AMBER_GLYPH[phase % AMBER_GLYPH.length]))
-      }
-      if (mainRow) {
-        built.push(piece('banner-working', '◐', {
-          label: 'Working',
-          brief: 'Working',
-          questions: [],
-          steps: mainSteps.map(row => `S${row.n}`),
-          counts: [],
-        }, GREY_SHADES[0]))
-      }
-      if (unknownRow) {
-        const label = width < 18 ? 'Unknown' : 'Activity unknown'
-        built.push(piece('banner-unknown', '', { label, brief: 'Unknown', questions: [], steps: [], counts: [] }, 'warning'))
-      } else if (!running && (pausedSteps.length > 0 || (work === 'paused' && waitingSteps.length === 0 && unfinishedQuestion))) {
-        built.push(piece('banner-paused', '', { label: 'Paused', brief: 'Paused', questions: [], steps: [], counts: [] }, 'warning'))
-      }
-      if (waitingSteps.length > 0 || askOpen) {
-        built.push(piece('banner-you', '◆', {
-          label: 'Waiting on you',
-          brief: 'You',
-          questions: questionRefs,
-          steps: waitingSteps.map(row => `S${row.n}`),
-          counts: [],
-        }, WAITING_BLUE))
-      }
-      if (built.length === 0) {
-        // Nothing runs, so closing loses nothing; pending steps are still named as work left.
-        const pendingCount = steps.filter(s => s.status === 'pending').length
-        const label = pendingCount > 0 ? `Idle · ${pendingCount} pending` : 'Idle · Safe to close'
-        built.push(piece('banner-idle', '', { label, brief: 'Idle', questions: [], steps: [], counts: [] }, 'success'))
-      }
-
-      return built
-    }
-    const openRows = stack()
+    const { work, openRows } = paneBanner({
+      l, now, phase, isUnsaved, unsavedReason, pendingCause: isUnsaved ? pendingCauseOf(unsavedReason) : undefined,
+      width, questions, steps, questionLabel,
+    })
     let bannerRows = openRows
     const countLabel = (done: number, total: number) => {
       const full = ring(done, total)
