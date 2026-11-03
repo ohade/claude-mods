@@ -160,6 +160,39 @@ case "${LAND_TEST_K1_CASE:-}" in
   *) fail "unknown LAND_TEST_K1_CASE: ${LAND_TEST_K1_CASE}" ;;
 esac
 
+# 2026-11-04: AST-based Bun checks ran before npm ci in a clean landing tree.
+# FIXTURE: a locked local dependency must exist and execute in the Bun helper.
+prepare_repo bun-dependency-order
+mkdir -p "$repo/track/tests/helpers" "$repo/fixture-land-dependency"
+cat > "$repo/fixture-land-dependency/package.json" <<'DEPENDENCY'
+{"name":"fixture-land-dependency","version":"1.0.0","type":"module","exports":"./index.js"}
+DEPENDENCY
+printf "export const proof = 'locked-install'\n" > "$repo/fixture-land-dependency/index.js"
+cat > "$repo/track/package.json" <<'PACKAGE'
+{"name":"fixture-checks","version":"1.0.0","private":true,"devDependencies":{"fixture-land-dependency":"file:../fixture-land-dependency"}}
+PACKAGE
+cat > "$repo/track/package-lock.json" <<'LOCK'
+{"name":"fixture-checks","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"fixture-checks","version":"1.0.0","devDependencies":{"fixture-land-dependency":"file:../fixture-land-dependency"}},"../fixture-land-dependency":{"name":"fixture-land-dependency","version":"1.0.0"},"node_modules/fixture-land-dependency":{"resolved":"../fixture-land-dependency","link":true}}}
+LOCK
+cat > "$repo/track/tests/helpers/check_release.ts" <<'BUN_DEPENDENCY'
+import assert from 'node:assert/strict'
+import { appendFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+assert.ok(existsSync('node_modules/fixture-land-dependency/package.json'), 'locked dependencies must be installed before Bun helpers')
+const { proof } = await import('fixture-land-dependency')
+assert.equal(proof, 'locked-install')
+appendFileSync(join(process.env.CLAUDE_MODS_HOME!, 'checks'), 'dependency-bun\n')
+BUN_DEPENDENCY
+commit_checks
+if ! bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then
+  cat "$CLAUDE_MODS_HOME/output" >&2
+  cat "$state"/claude-mods-land-logs.*/track-check_release.ts.log >&2
+  fail 'locked dependencies must be installed before Bun helpers'
+fi
+expect_equal "$(cat "$CLAUDE_MODS_HOME/checks")" dependency-bun 'dependency-using Bun helper skipped or repeated'
+expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'dependency helper success did not land'
+printf 'PASS locked dependencies installed before Bun helpers\n'
+
 # GR-1 (2026-10-20): the native runner passed while real helper checks were skipped.
 prepare_repo python-helper
 mkdir -p "$repo/track/tests/helpers"
@@ -363,4 +396,4 @@ if bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then result=0; else
 expect_equal "$(git --git-dir="$CLAUDE_MODS_HOME/origin.git" rev-parse main)" "$target" 'pushed untested concurrent main'
 expect_equal "$result" 1 'concurrent main change not reported'
 printf 'PASS pinned push detects concurrent main\n'
-printf 'PASS 19 landing cases (FIXTURE; no real Claude or remote service)\n'
+printf 'PASS 20 landing cases (FIXTURE; no real Claude or remote service)\n'

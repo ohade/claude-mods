@@ -146,6 +146,15 @@ for mod in "$temporary_tree"/*; do
   if [ -f "${python_tests[0]}" ]; then
     if ! run_python_checks "$name-python" "$mod" "$mod/tests/helpers"; then has_failed=true; fi
   fi
+  # 2026-11-04: AST helpers need the locked compiler before Bun can resolve imports.
+  dependencies_ok=true
+  if [ -f "$mod/package.json" ]; then
+    # Install only locked development dependencies; never run dependency lifecycle scripts.
+    if ! run_check "$name-dependencies" "$mod" npm ci --ignore-scripts --include=dev --no-audit --no-fund; then
+      has_failed=true
+      dependencies_ok=false
+    fi
+  fi
   for check in "$mod"/tests/helpers/check_*.ts; do
     [ -f "$check" ] || continue
     if ! run_check "$name-${check##*/}" "$mod" bun "$check"; then has_failed=true; fi
@@ -158,11 +167,8 @@ for mod in "$temporary_tree"/*; do
         continue
       fi
     fi
-    # Install only locked development dependencies; never run dependency lifecycle scripts.
-    if ! run_check "$name-dependencies" "$mod" npm ci --ignore-scripts --include=dev --no-audit --no-fund; then
-      has_failed=true
-    elif ! run_check "$name-typecheck" "$mod" npm run --if-present typecheck; then
-      has_failed=true
+    if [ "$dependencies_ok" = true ]; then
+      if ! run_check "$name-typecheck" "$mod" npm run --if-present typecheck; then has_failed=true; fi
     fi
   fi
 done

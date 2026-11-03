@@ -24,7 +24,8 @@ landing script's shell and Python self-tests once from the tested tree. Python s
 need a nonzero test count and an `OK` footer. Packages need a committed lockfile:
 `npm ci --ignore-scripts --include=dev --no-audit --no-fund` installs their development
 dependencies only in the temporary worktree. Registry access or a populated local cache is
-required; an offline dependency failure refuses landing before publication. Have Python 3,
+required. Locked dependencies are installed before Bun helper checks resolve their imports;
+an offline dependency failure refuses landing before publication. Have Python 3,
 Bun, Node/npm and `~/.Trash` available; keep the real `HOME`, since OS helpers use it to
 find the installed checkout. `CLAUDE_MODS_HOME` changes only the deployment layout.
 
