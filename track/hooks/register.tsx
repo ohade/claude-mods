@@ -10,7 +10,7 @@ import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, 
 import { minimalInputReason, uncoveredBlock } from './stop-guidance'
 import { cancelReasonOf, cancelOwner } from './cancel-policy'
 import { launchOwner, agentLaunchOwner, canFollowUp, ownersForLiveSteps, rememberOwner, rememberLaunch } from './task-ownership'
-import { MAX_STEPS, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, distinctIds, keepRestores } from './ledger-policy'
+import { MAX_STEPS, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, distinctIds, keepRestores } from './ledger-policy'
 import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm, utf8Bytes } from './ledger-text'
 import { savedLedger } from './stored-codecs'
 import { toolContracts } from './tool-contracts'
@@ -33,6 +33,8 @@ import { sessionHead, bodyMatchesHead, sameRecord as sameValue } from './durable
 import type { SessionHead } from './durable-record'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, mayMarkAnswer, markQuestion, bindAnswerResponse, markerForQuestion, captureMarkerAnswer } from './question-commands'
+import { planInsertion, insertPlan, replacePlan, markStep } from './step-commands'
+import { createTask, updateTask, replaceTodos } from './task-sync-commands'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
 import { readBlob } from './blob-store'
 import { BUILD_IDENTITY } from './build-identity'
@@ -3490,22 +3492,7 @@ export const register: Register = on => {
     const taskId = String(task.id)
     const subject = headOf(String(e.subject ?? ''))
     const session = token?.owner
-    await updateOwnedLedger($, token, cur => {
-      const plan = cur.steps.find(s => s.source === 'plan' && s.taskId === undefined && norm(s.subject) === norm(subject))
-      if (plan !== undefined) {
-        return { ...cur, steps: cur.steps.map(s => (s.id === plan.id ? { ...s, taskId } : s)) }
-      }
-      const step: Step = {
-        id: `task:${taskId}`,
-        source: 'task',
-        subject,
-        status: 'pending',
-        taskId,
-        ...(e.tool_use_id !== undefined && { createdRequestId: e.tool_use_id }),
-      }
-
-      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps, step]) }
-    })
+    await updateOwnedLedger($, token, cur => createTask(cur, { taskId, subject, toolUseId: e.tool_use_id, session }))
 
     return ran
     } catch (error) {
@@ -3526,21 +3513,7 @@ export const register: Register = on => {
     try {
     const taskId = String(e.taskId)
     const now = await $.clock.now()
-    await updateOwnedLedger($, token, cur => ({
-      ...cur,
-      steps:
-        status === 'deleted'
-          ? // A deleted Task leaves; a plan step it was linked to stays, unlinked.
-            cur.steps
-              .filter(s => !(s.source === 'task' && s.taskId === taskId))
-              .map(s => {
-                if (s.taskId !== taskId) return s
-                const { taskId: _unlinked, ...plan } = s
-
-                return plan
-              })
-          : cur.steps.map(s => (s.taskId === taskId ? withStatus(s, status, now, currentId) : s)),
-    }))
+    await updateOwnedLedger($, token, cur => updateTask(cur, { taskId, status, now, currentId }))
     await dropFinishedOwners($, token)
 
     return ran
@@ -3563,22 +3536,7 @@ export const register: Register = on => {
     // A todo written again keeps its clock.
     const session = token?.owner
     const now = await $.clock.now()
-    await updateOwnedLedger($, token, cur => {
-      const before = new Map(cur.steps.filter(s => s.source === 'todo').map(s => [s.id, s]))
-      const seen = new Map<string, number>()
-      const rows: Step[] = todos.map(t => {
-        const base = `todo:${norm(t.content)}`
-        const n = (seen.get(base) ?? 0) + 1
-        seen.set(base, n)
-        const id = n === 1 ? base : `${base}#${n}`
-        const was = before.get(id)
-        const row: Step = { ...(was ?? { id, source: 'todo' as const, status: 'pending' as const }), subject: headOf(t.content) }
-
-        return withStatus(row, t.status, now, currentId)
-      })
-
-      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'todo'), ...rows]) }
-    })
+    await updateOwnedLedger($, token, cur => replaceTodos(cur, { todos, now, currentId, session }))
     await dropFinishedOwners($, token)
 
     return ran
@@ -3682,18 +3640,10 @@ export const register: Register = on => {
       await updateOwnedLedger($, token, cur => {
         // "last" is the last stored plan row, cleared or not, resolved here so a plan row another
         // writer added before this write is the anchor. With no plan row it creates the plan.
-        const plans = cur.steps.filter(s => s.source === 'plan')
-        anchor = after === 'last' ? plans[plans.length - 1]?.id : after
-        if (anchor === undefined) {
-          added = titles.map((subject, k) => newPlanStep(`plan:${k + 1}`, subject))
-          return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps, ...added]) }
-        }
-        const top = Math.max(0, ...cur.steps.map(s => Number(/^plan:(\d+)$/.exec(s.id)?.[1] ?? 0)))
-        added = titles.map((subject, k) => newPlanStep(`plan:${top + k + 1}`, subject))
-        const i = cur.steps.findIndex(s => s.id === anchor)
-        const steps = i < 0 ? [...cur.steps, ...added] : [...cur.steps.slice(0, i + 1), ...added, ...cur.steps.slice(i + 1)]
-
-        return { ...cur, session_id: cur.session_id ?? session, steps: capSteps(steps) }
+        const proposal = planInsertion(cur, after, titles.length)
+        anchor = proposal.anchor
+        added = proposal.ids.map((id, k) => newPlanStep(id, titles[k]!))
+        return insertPlan(cur, added, anchor, session)
       })
       await coverInput($, 'steps', { source_text: e.source_text }, token)
 
@@ -3708,9 +3658,9 @@ export const register: Register = on => {
     let unfinished: ReturnType<typeof openPlanSteps> = []
     await updateOwnedLedger($, token, cur => {
       // UI-1 (2026-10-20): validate inside the atomic update so concurrent additions cannot be lost.
-      unfinished = e.replace === true ? [] : openPlanSteps(cur.steps)
-      if (unfinished.length > 0) return cur
-      return { ...cur, session_id: cur.session_id ?? session, steps: capSteps([...cur.steps.filter(s => s.source !== 'plan'), ...steps]) }
+      const proposal = replacePlan(cur, steps, e.replace === true, session)
+      unfinished = proposal.unfinished
+      return proposal.ledger
     })
     if (unfinished.length > 0) return refusePlanReplacement(unfinished)
     await coverInput($, 'steps', { source_text: e.source_text }, token)
@@ -3874,12 +3824,9 @@ export const register: Register = on => {
     await updateOwnedLedger($, token, cur => {
       // A compare-and-set retry must discard eligibility from the old snapshot.
       if (reuse !== undefined) reuse.step = undefined
-      return { ...cur, steps: cur.steps.map(s => {
-        if (s.id !== id) return s
-        if (reuse !== undefined && s.cleared !== true && (s.status !== 'completed' || status !== 'completed')) reuse.step = s
-        const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(result === undefined ? s : withoutStepResult(s), status, now, currentId)
-        return { ...changed, ...((e.delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(typeof e.note === 'string' && { note: e.note }), ...result }
-      }) }
+      const proposal = markStep(cur, { id, status, now, currentId, note: typeof e.note === 'string' ? e.note : undefined, delegated: e.delegated, result })
+      if (reuse !== undefined) reuse.step = proposal.reusableStep
+      return proposal.ledger
     })
     await dropFinishedOwners($, token)
 

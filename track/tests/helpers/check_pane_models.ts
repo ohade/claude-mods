@@ -13,9 +13,9 @@ for (const name of ['pane-banner-model.ts', 'pane-banner-state.ts']) {
 }
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const native = readFileSync(hook('register.tsx'), 'utf8')
-assert.equal(hash(native), 'f228eeb0b3cc82b167d1d477757eaa6ad1977c4c022aca2e0b2a573388f37ac3', 'exact accepted native integration bytes')
+assert.equal(hash(native), 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded', 'exact accepted native integration bytes')
 const arch = readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')
-assert.equal(hash(arch), '85f0b4052b798af50f26f5414b9ed2362e218483048a1ec7bbb35839acbe63ae', 'exact declared architecture edges')
+assert.equal(hash(arch), '7195449a856219481f064c702750672471f10223c09c767dd5ed97721bcc1e92', 'exact declared architecture edges')
 const { paneBanner } = await import('../../hooks/pane-banner-model')
 checkPaneModels(paneBanner)
 console.log('banner ownership, native integration and frozen parity cases pass (SOURCE/FIXTURE)')
