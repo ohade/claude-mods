@@ -192,6 +192,33 @@ export type Activity = { isWorking: boolean; mainTurnId?: string; agentCalls: st
 export type Pane = { isOpen: boolean; hidden: boolean; closedByPerson: boolean; autoOpenDone?: true }
 
 declare module 'claude-code' {
+  // 2026-11-03: any connected MCP server closes the SDK's tool-name union.
+  // Declare our registered tools through its authored merge seam, not generated types.
+  interface McpToolInputs {
+    mcp__track__track_question: {
+      summary: string; source_request_id?: string; source_text?: string
+    }
+    mcp__track__mark_answered: {
+      id: number; status: 'answered' | 'deferred'; note?: string
+      answer_text?: string; answer_request_id?: string
+    }
+    mcp__track__track_steps: {
+      steps: string[]; after?: string; replace?: boolean; source_text?: string
+    }
+    mcp__track__restore_tracker: {
+      from_session: string; replace?: boolean; expected_checkpoint?: Record<string, unknown>
+    }
+    mcp__track__checkpoint: { expected_session: string }
+    mcp__track__lookup_rows: { references?: string[] }
+    mcp__track__diagnose: {}
+    mcp__track__reorder_steps: { ids: string[] }
+    mcp__track__mark_step: {
+      id: string; status: Step['status']
+      result_text?: string; source_text?: string; source_request_id?: string
+      note?: string; delegated?: boolean
+    }
+  }
+
   interface PluginState {
     track: {
       ledger: Ledger
