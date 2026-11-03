@@ -10,7 +10,7 @@ import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, 
 import { minimalInputReason, uncoveredBlock } from './stop-guidance'
 import { cancelReasonOf, cancelOwner } from './cancel-policy'
 import { launchOwner, agentLaunchOwner, canFollowUp, ownersForLiveSteps, rememberOwner, rememberLaunch } from './task-ownership'
-import { MAX_STEPS, capRows, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, distinctIds, keepRestores } from './ledger-policy'
+import { MAX_STEPS, capSteps, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, distinctIds, keepRestores } from './ledger-policy'
 import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm, utf8Bytes } from './ledger-text'
 import { savedLedger } from './stored-codecs'
 import { toolContracts } from './tool-contracts'
@@ -32,6 +32,7 @@ import type { Baseline } from './reconcile'
 import { sessionHead, bodyMatchesHead, sameRecord as sameValue } from './durable-record'
 import type { SessionHead } from './durable-record'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
+import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, mayMarkAnswer, markQuestion, bindAnswerResponse, markerForQuestion, captureMarkerAnswer } from './question-commands'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
 import { readBlob } from './blob-store'
 import { BUILD_IDENTITY } from './build-identity'
@@ -568,11 +569,7 @@ const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
   if (q === undefined) {
     return
   }
-  await updateLedger($, cur => ({
-    ...cur,
-    questions: cur.questions.filter(one => one.id !== id),
-    withdrawn: [...(cur.withdrawn ?? []), { id, head: q.head }],
-  }))
+  await updateLedger($, cur => withdrawQuestion(cur, id, q.head))
   await publishGate($)
   await saveLedger($)
   $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
@@ -2886,18 +2883,13 @@ export const register: Register = on => {
       // replace its text while leaving this message's UUID on the answer.
       let changed = false
       await updateLedger($, cur => {
-        changed = false
-        const pending = cur.questions.filter(q => q.status === 'answered' && q.answerText !== undefined &&
-          (q.answerTextHash !== undefined ? q.answerTextHash === answer.textHash : q.answerText === text) &&
-          q.answerTurnId === answer.turnId && q.answerOrder !== undefined && answer.order > q.answerOrder)
-        if (pending.length !== 1 || answer?.text === undefined) return cur
-        const questions = cur.questions.map(q => {
-          if (q.id !== pending[0]!.id) return q
-          const { answerTurnId: _turn, answerOrder: _order, ...rest } = q
-          changed = true
-          return { ...rest, answerText: answer.text, answerKey: answer.row, answerRequestId: e.uuid }
-        })
-        return changed ? { ...cur, questions } : cur
+        if (answer.text === undefined) {
+          changed = false
+          return cur
+        }
+        const proposal = bindAnswerResponse(cur, { text, answerText: answer.text, textHash: answer.textHash, row: answer.row, requestId: e.uuid, turnId: answer.turnId, order: answer.order })
+        changed = proposal.changed
+        return proposal.ledger
       })
       if (changed) {
         await publishGate($)
@@ -2931,14 +2923,11 @@ export const register: Register = on => {
     await updateLedger($, cur => {
       changed = false
       const questions = cur.questions.map(q => {
-        const block = completed.find(one => one.id === q.id)
-        if (block === undefined || q.cleared === true || (q.turnId === observed.turnId && (q.trackedOrder === undefined || observed.order! <= q.trackedOrder))) return q
-        const native = q.answerRequestId !== undefined && q.answerKey === answerBlockKey(rowKey(q.answerRequestId), q.id) && q.answerTextHash !== undefined
-        const correcting = q.status === 'answered' && native && q.answerTextHash !== block.hash
-        if ((q.status === 'answered' || q.answerText !== undefined) && !correcting) return q
-        if (q.answerMarker?.turnId === observed.turnId && q.answerMarker.order >= observed.order!) return q
+        const nativeKey = q.answerRequestId !== undefined ? answerBlockKey(rowKey(q.answerRequestId), q.id) : undefined
+        const block = markerForQuestion(q, completed, observed.turnId!, observed.order!, nativeKey)
+        if (block === undefined) return q
         changed = true
-        return { ...q, status: 'answered' as const, answeredAt: Date.now(), answerText: truncate(block.text, ANSWER_CHARS), answerTextHash: block.hash, answerRequestId: stored.uuid, answerKey: answerBlockKey(rowKey(stored.uuid), block.id), answerMarker: { turnId: observed.turnId!, order: observed.order! } }
+        return captureMarkerAnswer(q, { block, now: Date.now(), requestId: stored.uuid, answerKey: answerBlockKey(rowKey(stored.uuid), block.id), turnId: observed.turnId!, order: observed.order! })
       })
       return changed ? { ...cur, questions } : cur
     })
@@ -3363,12 +3352,12 @@ export const register: Register = on => {
       return { deny: 'track: summary is required.' }
     }
     const before = await read($, ledger)
-    const existing = before.questions.find(q => q.cleared !== true && q.status !== 'answered' && norm(q.head) === norm(summary))
+    const { existing, capacityExceeded: admissionCapacityExceeded } = questionAdmission(before, summary)
     if (existing !== undefined) {
       await coverInput($, 'question', { source_text: e.source_text, source_request_id: e.source_request_id, summary, questionId: existing.id }, token)
       return { result: `Already tracked as Q${existing.id}: ${existing.head}.` }
     }
-    if (capRows([...before.questions, { id: -1, head: summary, at: 0, turnId: null, status: 'open' as const }], MAX_QUESTIONS, q => q.status === 'answered').length > MAX_QUESTIONS) return { deny: 'track: question capacity reached; unfinished work was kept.' }
+    if (admissionCapacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     const session = token?.owner
     let trackedOrder = 0
     let trackedTurnId: string | null = null
@@ -3382,27 +3371,13 @@ export const register: Register = on => {
     let minted: Question | undefined
     let capacityExceeded = false
     await updateOwnedLedger($, token, l => {
-      const textSources = typeof e.source_text === 'string' ? l.prompts.filter(p => p.turnId === trackedTurnId && p.head === headOf(e.source_text as string)) : []
-      const source = typeof e.source_request_id === 'string' ? l.prompts.find(p => p.requestId === e.source_request_id || p.rowKey === rowKey(e.source_request_id as string)) : textSources.length === 1 ? textSources[0] : undefined
-      minted = {
-        id: l.nextQuestionId,
-        head: summary,
-        at: Date.now(),
-        trackedOrder,
-        ...(source?.rowKey !== undefined && { rowKey: source.rowKey }),
-        ...((source?.requestId ?? e.tool_use_id) !== undefined && { askedRequestId: source?.requestId ?? e.tool_use_id }),
-        ...(e.tool_use_id !== undefined && { trackedBy: e.tool_use_id }),
-        // The question is created now. A previous composer's turn is only a
-        // possible source location, never the order of this tracking event.
-        turnId: trackedTurnId,
-        status: 'open',
-      }
-
-      const questions = capRows([...l.questions, minted], MAX_QUESTIONS, q => q.status === 'answered')
-      capacityExceeded = questions.length > MAX_QUESTIONS
-      if (capacityExceeded) return l
-
-      return { ...l, session_id: l.session_id ?? session, nextQuestionId: l.nextQuestionId + 1, questions }
+      const sourceText = typeof e.source_text === 'string' ? e.source_text : undefined
+      const sourceRequestId = typeof e.source_request_id === 'string' ? e.source_request_id : undefined
+      const source = questionSource(l.prompts, { trackedTurnId, sourceText, sourceRequestId, sourceRowKey: sourceRequestId !== undefined ? rowKey(sourceRequestId) : undefined })
+      const proposal = mintQuestion(l, { summary, now: Date.now(), trackedOrder, trackedTurnId, source, toolUseId: e.tool_use_id, session })
+      minted = proposal.minted
+      capacityExceeded = proposal.capacityExceeded
+      return proposal.ledger
     })
     if (capacityExceeded) return { deny: 'track: question capacity reached; unfinished work was kept.' }
     // The Questions region follows the newest question again.
@@ -3477,24 +3452,14 @@ export const register: Register = on => {
     await updateOwnedLedger($, token, cur => ({
       ...cur,
       questions: cur.questions.map(q => {
-        if (q.id !== id) return q
-        // update retries after a competing write. The preflight snapshot is not
-        // authority to replace an answer acknowledged before that retry.
-        if (status === 'answered' && q.answerText !== undefined) return q
-        const { answerKey: _old, answerText: _oldText, answerTextHash: _hash, answerTurnId: _turn, answerOrder: _order, answeredBy: _by, answerRequestId: _request, ...rest } = q
-        return {
-              ...rest,
-              status,
-              answeredAt: Date.now(),
-              ...(note !== undefined && { note }),
-              ...(native?.requestId !== undefined && { answerRequestId: native.requestId }),
-              ...(native?.requestId === undefined && e.tool_use_id !== undefined && { answerRequestId: e.tool_use_id }),
-              ...(e.tool_use_id !== undefined && { answeredBy: e.tool_use_id }),
-              ...(answerKey !== undefined && { answerKey }),
-              ...(answerText !== undefined && { answerText: truncate(answerText, ANSWER_CHARS) }),
-              ...((suppliedHash ?? native?.textHash) !== undefined && { answerTextHash: suppliedHash ?? native?.textHash }),
-              ...(status === 'answered' && native === undefined && t.currentId !== null && { answerTurnId: t.currentId, answerOrder }),
-            }
+        if (!mayMarkAnswer(q, id, status)) return q
+        return markQuestion(q, {
+          status, now: Date.now(), note,
+          answerRequestId: native?.requestId ?? e.tool_use_id,
+          answeredBy: e.tool_use_id, answerKey, answerText,
+          answerTextHash: suppliedHash ?? native?.textHash,
+          ...(status === 'answered' && native === undefined && t.currentId !== null && { answerTurnId: t.currentId, answerOrder }),
+        })
       }),
     }))
     // [A] is now the native answer row. A pane reveal of the saved text would stay stuck beside it.

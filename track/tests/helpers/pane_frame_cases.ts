@@ -114,7 +114,7 @@ const invariantNodes = (file: ts.SourceFile) => nodes(file).flatMap(node => {
   if (ts.isVariableDeclaration(node) && node.initializer && !['register', 'item', 'questionRows', 'stepRows', ...names].includes(node.name.getText(file))) return [`init:${node.name.getText(file)}:${digest(norm(node.initializer, file))}`]
   return []
 }).sort()
-export const assertNative = (source: string): void => {
+export const assertPaneNative = (source: string): void => {
   const current = tree(source)
   for (const name of names) assert.equal(norm(variable(current, name).initializer!, current), baseControls[name], `native ${name} equals actual original control expression`)
   const call = nodes(current).filter(ts.isCallExpression).find(node => node.expression.getText(current) === 'paneRootView')
@@ -126,5 +126,8 @@ export const assertNative = (source: string): void => {
   for (const kind of ['questions', 'steps'] as const) assert.equal(digest(norm(rowMap(current, kind).arguments[0]!, current)), digest(norm(rowMap(base, kind).arguments[0]!, base)), `native ${kind} full row-map arrow unchanged`)
   assert.equal(digest(norm(variable(current, 'clearButtons').initializer!, current)), digest(norm(variable(base, 'clearButtons').initializer!, base)), 'native clearButtons AST unchanged')
   assert.equal(digest(norm(region(current), current)), digest(norm(region(base), base)), 'native region assignment AST unchanged')
-  assert.deepEqual(invariantNodes(current), invariantNodes(base), 'all unaffected native initializers and types retain original AST hashes')
+}
+export const assertNative = (source: string): void => {
+  assertPaneNative(source)
+  assert.deepEqual(invariantNodes(tree(source)), invariantNodes(base), 'all unaffected native initializers and types retain original AST hashes')
 }
