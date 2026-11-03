@@ -1,11 +1,11 @@
 {
   "v": 1,
-  "version": "2.1.314",
-  "provenance": "Engine-written SDK from a native Claude Code 2.1.314 one-session load of Track 47c4728 on 2026-10-30. Review against 2.1.312 covers additive Placed/ui.place APIs, SVG documentation, and tool declaration changes including removal of relative Agent effort values. Digests only; generated API and machine-specific tool schemas remain local.",
+  "version": "2.1.317",
+  "provenance": "Engine-written SDK from the native Claude Code 2.1.317 acceptance load of Track 754c815 on 2026-11-03. Review against 2.1.314 covers additive backdrop APIs, prompt/cache documentation, and tool declaration changes including removal of the Read file_unchanged result variant. SDK configuration and MCP declarations are unchanged. Digests only; generated API and machine-specific tool schemas remain local.",
   "files": {
     "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
-    "track/.claude-plugin/types/claude-code/index.d.ts": "51cfab28011b7e367866b68966442e2934e69383be637b17b0bf415e8c50a09b",
-    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "19015638221a685f8e8978eea6ea1c55a5068bb5c008a536431b9fd5f6cccf0b",
+    "track/.claude-plugin/types/claude-code/index.d.ts": "346bb9c8243cec810b79884a35e05089dcfb2bbc77c325a31e0077aaf5ad5740",
+    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "7d2e5583f505b70d7706eb7650e8dc6f554593c8329ea23a49d2589b6f54b777",
     "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "0cab298516885f406c7762cf83b84334b5f5f02e1207abc79a02d136f518354b"
   }
 }
