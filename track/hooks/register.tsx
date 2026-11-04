@@ -34,7 +34,8 @@ import type { Baseline } from './reconcile'
 import { sessionHead, bodyMatchesHead, sameRecord as sameValue } from './durable-record'
 import type { SessionHead } from './durable-record'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
-import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, mayMarkAnswer, markQuestion, bindAnswerResponse, markerForQuestion, captureMarkerAnswer } from './question-commands'
+import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, clearQuestionRows, hideAnsweredQuestions, mayMarkAnswer, markQuestion, bindAnswerResponse, markerForQuestion, captureMarkerAnswer } from './question-commands'
+import { planStepClear, hideCompletedSteps } from './clear-commands'
 import { planInsertion, insertPlan, replacePlan, markStep } from './step-commands'
 import { createTask, updateTask, replaceTodos } from './task-sync-commands'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
@@ -2174,14 +2175,7 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
 // counting up, so a later Q<n> never reuses one the model saw.
 const clearQuestions = async ($: EngineInterface): Promise<void> => {
-  await updateLedger($, cur => ({
-    ...cur,
-    questions: [],
-    withdrawn: [
-      ...(cur.withdrawn ?? []),
-      ...cur.questions.filter(q => q.status !== 'answered').map(q => ({ id: q.id, head: q.head })),
-    ],
-  }))
+  await updateLedger($, cur => clearQuestionRows(cur))
   await publishGate($)
   await saveLedger($)
   $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
@@ -2200,10 +2194,9 @@ const clearSteps = async ($: EngineInterface): Promise<void> => {
   // Decided on the steps this same write removes, so a step reopened meanwhile is never cleared
   // without a confirming press (refuter R16 finding 7).
   await updateLedger($, cur => {
-    const removed = cur.steps.filter(s => s.status !== 'completed').map(s => ({ id: s.id, head: s.subject }))
-    arming = removed.length > 0 && !armed
-    if (arming) return cur
-    return { ...cur, steps: [], ...(removed.length > 0 && { clearedSteps: [...(cur.clearedSteps ?? []), ...removed] }) }
+    const decision = planStepClear(cur, armed)
+    arming = decision.arming
+    return decision.ledger
   })
   if (arming) {
     // One compare-and-set, never retried: a reset that landed meanwhile wins and this press arms nothing.
@@ -4159,18 +4152,12 @@ export const register: Register = on => {
     }
     const sDone = steps.filter(s => s.status === 'completed').length
     const clearAnsweredQuestions = async () => {
-      await updateLedger($, cur => ({
-        ...cur,
-        questions: cur.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
-      }))
+      await updateLedger($, cur => hideAnsweredQuestions(cur))
       await publishGate($)
       await saveLedger($)
     }
     const clearCompletedSteps = async () => {
-      await updateLedger($, cur => ({
-        ...cur,
-        steps: cur.steps.map(s => (s.status === 'completed' ? { ...s, cleared: true as const } : s)),
-      }))
+      await updateLedger($, cur => hideCompletedSteps(cur))
       await publishGate($)
       await saveLedger($)
     }

@@ -17,10 +17,10 @@ const nodes: ts.Node[] = []
 const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
 visit(tree)
 const callName = (node: ts.Node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) ? node.expression.text : undefined
-for (const name of ['questionAdmission', 'questionSource', 'mintQuestion', 'withdrawQuestion', 'mayMarkAnswer', 'markQuestion', 'bindAnswerResponse', 'markerForQuestion', 'captureMarkerAnswer']) {
+for (const name of ['questionAdmission', 'questionSource', 'mintQuestion', 'withdrawQuestion', 'clearQuestionRows', 'hideAnsweredQuestions', 'mayMarkAnswer', 'markQuestion', 'bindAnswerResponse', 'markerForQuestion', 'captureMarkerAnswer']) {
   const calls = nodes.filter(node => callName(node) === name)
   assert.ok(calls.length > 0, `native delegates ${name}, not an unused parallel implementation`)
-  if (['questionSource', 'mintQuestion', 'mayMarkAnswer', 'markQuestion', 'bindAnswerResponse', 'markerForQuestion', 'captureMarkerAnswer'].includes(name)) {
+  if (['questionSource', 'mintQuestion', 'clearQuestionRows', 'hideAnsweredQuestions', 'mayMarkAnswer', 'markQuestion', 'bindAnswerResponse', 'markerForQuestion', 'captureMarkerAnswer'].includes(name)) {
     for (const call of calls) {
       const ancestors: ts.Node[] = []
       for (let parent = call.parent; parent !== undefined; parent = parent.parent) ancestors.push(parent)

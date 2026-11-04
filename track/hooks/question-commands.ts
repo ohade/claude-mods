@@ -44,6 +44,15 @@ export const withdrawQuestion = (ledger: Ledger, id: number, head: string): Ledg
   ...ledger, questions: ledger.questions.filter(q => q.id !== id), withdrawn: [...(ledger.withdrawn ?? []), { id, head }],
 })
 
+export const clearQuestionRows = (ledger: Ledger): Ledger => ({
+  ...ledger, questions: [],
+  withdrawn: [...(ledger.withdrawn ?? []), ...ledger.questions.filter(q => q.status !== 'answered').map(q => ({ id: q.id, head: q.head }))],
+})
+
+export const hideAnsweredQuestions = (ledger: Ledger): Ledger => ({
+  ...ledger, questions: ledger.questions.map(q => (q.status === 'answered' ? { ...q, cleared: true as const } : q)),
+})
+
 export const mayMarkAnswer = (question: Question, id: number, status: Mark['status']): boolean =>
   question.id === id && !(status === 'answered' && question.answerText !== undefined)
 
