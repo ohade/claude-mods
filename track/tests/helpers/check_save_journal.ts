@@ -274,11 +274,18 @@ assert.deepEqual(span('N4', registerLines, 'const writeVerified = async ($: Engi
 for (const line of [
   "import { SAVED_INDEX, commitSave, nextIndex, patchCompacted, rollbackSave, savedIndex } from './save-journal'",
   "import type { SaveJournal, SaveRecovery, SavedIndex, SavedReads } from './save-journal'",
-  '    const index = await nextIndex(storeReads($), id, bucket)',
-  '    await commitSave(saveJournal($, context), saveRecoveries, id, { previous, previousBlobText, bucket, previousHead, head: nextHead, index })',
-  '    saveRecoveries.delete(id)',
+  '      nextIndex: bucket => nextIndex(storeReads($), id, bucket),',
+  '      commit: write => commitSave(saveJournal($, context), saveRecoveries, id, write),',
+  '      clearRecovery: () => { saveRecoveries.delete(id) },',
   '    const index = await savedIndex(storeReads($))',
 ]) assert.equal(registerLines.filter(other => other === line).length, 1, `N5 register has exactly one: ${line.trim()}`)
+// P2.1 moved these three statements to the imported flow, retaining the native callbacks above.
+const flowLines = readFileSync(new URL('../../hooks/legacy-save-flow.ts', import.meta.url), 'utf8').split('\n')
+for (const line of [
+  '  const index = await ports.nextIndex(bucket)',
+  '  await ports.commit({ previous, previousBlobText, bucket, previousHead, head: nextHead, index })',
+  '  ports.clearRecovery()',
+]) assert.equal(flowLines.filter(other => other === line).length, 1, `N5 imported flow has exactly one: ${line.trim()}`)
 for (const declaration of [/^const SAVED_INDEX\b/m, /^type SavedIndex\b/m, /^type SaveRecovery\b/m, /^const savedIndex\b/m, /^const patchCompacted\b/m]) {
   assert.doesNotMatch(registerText, declaration, `N5 register no longer declares ${declaration.source}`)
 }

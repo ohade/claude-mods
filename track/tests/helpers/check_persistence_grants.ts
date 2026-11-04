@@ -1,5 +1,6 @@
 // SOURCE: R5 local save/resume shell gate, 2026-10-30. Native fixture tests own runtime traces.
-// Digests pin b9c2e24's operation/failure bodies with only leading indentation removed.
+// Admission/failure/resume digests pin b9c2e24. P2.1 split the operation pin into native
+// closures and the two imported owners after original/candidate1351 fixtures and port cases passed.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -18,8 +19,17 @@ const save = body('saveLedger')
 const resume = body('resumeOwned')
 assert.ok(save.includes("}, 'writer', saveFailure)"), 'R5 save must use the shared grant with its original failure handler')
 assert.ok(resume.includes("}, 'writer', resumeFailure, 'propagate')"), 'R5 resume must share the grant and preserve raw-close rejection')
-assert.equal(digest(between(save, '    await recoverSave($, context, id)', "  }, 'writer', saveFailure)")),
-  '3edc421f7dd82eba8d910e400b3b36c8ec8ec827c43d95b7a484cc3ca076d0e8', 'R5 save operation and acknowledgement order equal the origin')
+// Replaces original operation digest3edc421f7...; runtime ordering/value/error coverage is in
+// legacy-save-workflow.test.tsx, check_legacy_save_flow_ports and check_legacy_save_workflow.
+assert.equal(digest(between(save, '    await saveLegacy({', "  }, 'writer', saveFailure)")),
+  '2d4511d5a185901d409ca980d7e24bca409b5241b072a21b15d3dd345162397b', 'R5 native per-grant capabilities and acknowledgement callback stay frozen')
+for (const [file, expected] of [
+  ['legacy-save-plan.ts', '8224da6c6fd424f6abe799a120c58237c9e5a7d57d2970cd8d31ddcb9da84525'],
+  ['legacy-save-flow.ts', '4ec45a03a28ed80618b14d49375844f7eb6f2764bb77b50030e14e2227f43891'],
+]) {
+  const moved = readFileSync(new URL(`../../hooks/${file}`, import.meta.url))
+  assert.equal(createHash('sha256').update(moved).digest('hex'), expected, 'R5 extracted operation is the behavior-checked candidate')
+}
 assert.equal(digest(between(save, '    // A stale caller', '\n  }\n  let intent')),
   'b8636d7b6d8d183762c6a39dae78377cf06b61cb005352e02acc57f9ffb10e39', 'R5 save failure preserves OwnerChanged before taint, recovery and receipts')
 assert.equal(digest(between(save, '    assertOwner(token)', '\n  } catch (error) {').replace('    intent = ', '    const intent = ')),

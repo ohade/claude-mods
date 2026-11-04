@@ -15,6 +15,7 @@ import { launchOwner, agentLaunchOwner, canFollowUp, ownersForLiveSteps, remembe
 import { MAX_STEPS, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, distinctIds, keepRestores } from './ledger-policy'
 import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm, utf8Bytes } from './ledger-text'
 import { savedLedger } from './stored-codecs'
+import { saveLegacy } from './legacy-save-flow'
 import { toolContracts } from './tool-contracts'
 import { readHistoryView } from './history-view'
 import type { HistoryView } from './history-view'
@@ -29,7 +30,7 @@ import { lookupPaneRows, reorderVisibleSteps, visibleQuestions } from './pane-or
 import { cleanupRecords, clearOwnedClocks, isInlineV1Body, recoverCleanup, ensureCapacity as checkCapacity, writeVerified as writeRetentionValue } from './retention'
 import type { Compaction, Guard, RetentionStore } from './retention'
 import { indexedStore } from './size-index'
-import { assertLedgerOwner, identifyLedger, reconcileLedger, sameLedgerContent } from './reconcile'
+import { assertLedgerOwner, identifyLedger, reconcileLedger } from './reconcile'
 import type { Baseline } from './reconcile'
 import { sessionHead, bodyMatchesHead, sameRecord as sameValue } from './durable-record'
 import type { SessionHead } from './durable-record'
@@ -1507,111 +1508,38 @@ const saveLedger = async ($: EngineInterface, token?: OwnerToken): Promise<boole
   const session = id
   await inOwnGrant($, session, async context => {
     const id = session
-    await recoverSave($, context, id)
-    if (await recoverCleanup(retentionStore($, context), id, { owner: true })) await resumeLedger($, context, id)
-    else await clearOwnedClocks(retentionStore($, context), id)
-    await repairHead($, context, id)
-    const owned = await read($, ledger)
-    const acknowledged = await read($, durability)
-    if (acknowledged.memorySession !== id || owned.session_id !== undefined && owned.session_id !== id ||
-        acknowledged.baseline?.session_id !== id && !savedRevisions.has(id) &&
-        (await $.store.get(`s:${id}`) !== undefined || await $.store.get(`h:${id}`) !== undefined) &&
-        (acknowledged.rewindBaseline?.session_id !== id || await $.store.get(`s:${id}`) === undefined ||
-         !sameValue(identifyLedger(acknowledged.rewindBaseline.ledger, id), identifyLedger(savedLedger(await logicalBody($, await $.store.get(`s:${id}`)), id) ?? EMPTY_LEDGER, id)))) {
-      await resumeLedger($, context, id)
-    }
-    const pending = { ...await read($, durability), closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }
-    const preference = pending.closedByPerson
-    if (preference !== undefined) {
-      await retentionStore($, context).set('closedByPerson', preference)
-      if (await $.store.get('closedByPerson') !== preference) throw new Error('pane preference read-back did not match')
-    }
-    const memory = await read($, ledger)
-    let current = identifyLedger(memory, id)
-    const previous = await $.store.get(`s:${id}`) as { checkpoint?: Checkpoint; session_id?: string; generation?: string } | undefined
-    // Rows come from the logical view; rollback and compare-and-set keep `previous` raw.
-    let previousBlobText: string | undefined
-    const previousView = await logicalBody($, previous, text => { previousBlobText = text })
-    const previousHead = await $.store.get(`h:${id}`)
-    const head = sessionHead(previousHead, id)
-    if (previous?.session_id !== undefined && previous.session_id !== id) throw new Error('saved record identity is ambiguous; history was kept')
-    const revision = previous?.checkpoint?.revision ?? head?.checkpoint.revision ?? 0
-    let baseline = pending.baseline?.session_id === id ? pending.baseline : undefined
-    if (baseline === undefined && pending.rewindBaseline?.session_id === id && previous !== undefined) {
-      const restored = savedLedger(previousView, id)
-      if (restored === undefined || !sameValue(identifyLedger(pending.rewindBaseline.ledger, id), identifyLedger(restored, id))) throw new Error('rewind baseline differs; resume before saving; durable ledger was kept')
-      baseline = { session_id: id, ledger: identifyLedger(restored, id), checkpoint: previous.checkpoint, generation: head?.generation }
-    }
-    const expected = savedRevisions.get(id) ?? baseline?.checkpoint?.revision
-    if (previous !== undefined && expected === undefined && baseline === undefined) throw new Error('stale writer revision; no verified baseline; resume before saving; durable ledger was kept')
-    if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('stale writer revision; newer durable ledger was kept')
-    if (previous === undefined && head !== undefined &&
-        (expected === undefined || expected !== head.checkpoint.revision ||
-         (baseline?.generation !== undefined && baseline.generation !== head.generation))) {
-      await preserveConflict($, context, id, memory, baseline, previousHead)
-      throw new Error('stale writer revision; newer durable head was kept; its missing body needs recovery')
-    }
-    if (previous !== undefined && head !== undefined && !bodyMatchesHead(previous, head)) throw new Error('durable head/body checkpoint mismatch; both were kept')
-    if (previous !== undefined && ((expected !== undefined && expected !== revision) ||
-        (baseline?.generation !== undefined && head !== undefined && baseline.generation !== head.generation))) {
-      const durable = savedLedger(previousView, id)
-      if (durable === undefined) throw new Error('stale writer revision; newer durable ledger was kept')
-      try { current = reconcileLedger(baseline?.ledger, durable, current, id) }
-      catch (error) {
-        context.tainted = true
-        const archive = await adoptAfterConflict($, context, id, memory, baseline, identifyLedger(durable, id), previous.checkpoint, head?.generation)
-        throw new Error(`stale writer revision; newer durable ledger was kept; local rows archived in ${archive}; ${reason(error)}`)
-      }
-    }
-    const missing = previous === undefined && (head !== undefined || (expected ?? 0) > 0 || pending.isUnsaved)
-    let priorCheckpoint = previous?.checkpoint ?? head?.checkpoint ?? baseline?.checkpoint
-    if (missing && priorCheckpoint === undefined && expected !== undefined) {
-      priorCheckpoint = { ...await describeCheckpoint(current, id), revision: expected, checksum: '' }
-    }
-    if (missing && priorCheckpoint !== undefined) priorCheckpoint = { ...priorCheckpoint, checksum: '' }
-    const generation = missing ? crypto.randomUUID() : head?.generation ?? baseline?.generation ?? crypto.randomUUID()
-    const checkpoint = await describeCheckpoint(current, id, priorCheckpoint)
-    const inlineBucket = { v: 1, session_id: id, generation, savedAt: Date.now(), ledger: current, checkpoint,
-      ...(missing && { recovered: true, expected_revision: expected ?? head?.checkpoint.revision ?? null }) }
-    const text = previousBlobText !== undefined && sameLedgerContent((previousView as { ledger?: unknown } | undefined)?.ledger, current)
-      ? previousBlobText : JSON.stringify(current)
-    const ref = { checksum: await sha256Hex(text), bytes: new TextEncoder().encode(text).length }
-    const pointer = Object.fromEntries(Object.entries(inlineBucket).map(([name, value]) =>
-      name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, value]))
-    const publication = await publishLedgerBlob($, context, text, ref)
-    if (publication !== undefined && 'rejected' in publication) throw new Error(publication.rejected)
-    const fallbackCause = publication?.unavailable
-    const bucket = publication === undefined ? pointer : inlineBucket
-    if (publication === undefined) {
-      try { await cleanupOwned($, context, id) }
-      catch (error) { context.tainted = true; $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) }
-    }
-    const nextHead: SessionHead = { v: 1, session_id: id, generation, checkpoint }
-    const index = await nextIndex(storeReads($), id, bucket)
-    const replacements = { [`s:${id}`]: bucket, [`h:${id}`]: nextHead, [SAVED_INDEX]: index }
-    if (fallbackCause === undefined) {
-      const evicted = await ensureCapacity($, context, id, replacements, STORE_BUDGET, [], undefined, undefined, patchCompacted(index))
-      for (const session of evicted) delete index[session]
-    } else {
-      try { await checkCapacity(retentionStore($, context), replacements, STORE_BUDGET) }
-      catch (error) { throw new Error(`blob storage is unavailable: ${fallbackCause}; inline fallback does not fit: ${reason(error)}`, { cause: error }) }
-    }
-    await commitSave(saveJournal($, context), saveRecoveries, id, { previous, previousBlobText, bucket, previousHead, head: nextHead, index })
-    let memoryChanged = false
-    await updateLedger($, cur => {
-      memoryChanged = !sameValue(cur, memory)
-      return memoryChanged ? reconcileLedger(memory, current, cur, id!) : current
+    await saveLegacy({
+      id, emptyLedger: EMPTY_LEDGER,
+      intent: () => ({ closedByPerson: intent.closedByPerson, rewindSession: intent.rewindSession }),
+      recover: () => recoverSave($, context, id),
+      recoverCleanup: () => recoverCleanup(retentionStore($, context), id, { owner: true }),
+      resume: () => resumeLedger($, context, id),
+      clearClocks: () => clearOwnedClocks(retentionStore($, context), id),
+      repairHead: () => repairHead($, context, id),
+      readLedger: () => read($, ledger), readState: () => read($, durability),
+      readBody: () => $.store.get(`s:${id}`), readHead: () => $.store.get(`h:${id}`),
+      logicalBody: (raw, capture) => logicalBody($, raw, capture),
+      hasRevision: () => savedRevisions.has(id), readRevision: () => savedRevisions.get(id),
+      writePreference: value => retentionStore($, context).set('closedByPerson', value),
+      readPreference: () => $.store.get('closedByPerson'),
+      preserveConflict: (memory, baseline, durable) => preserveConflict($, context, id, memory, baseline, durable),
+      adoptConflict: (memory, baseline, durable, checkpoint, generation) => adoptAfterConflict($, context, id, memory, baseline, durable, checkpoint, generation),
+      describe: (current, prior) => describeCheckpoint(current, id, prior),
+      newGeneration: () => crypto.randomUUID(), now: () => Date.now(), hash: text => sha256Hex(text),
+      publish: (text, ref) => publishLedgerBlob($, context, text, ref),
+      cleanup: () => cleanupOwned($, context, id), taint: () => { context.tainted = true },
+      deferredCleanup: error => { $.ui.log(`track: foreign cleanup deferred; caller save continues: ${reason(error)}`, { to: 'debug' }) },
+      nextIndex: bucket => nextIndex(storeReads($), id, bucket),
+      ensureCapacity: (replacements, index) => ensureCapacity($, context, id, replacements, STORE_BUDGET, [], undefined, undefined, patchCompacted(index)),
+      checkCapacity: replacements => checkCapacity(retentionStore($, context), replacements, STORE_BUDGET),
+      commit: write => commitSave(saveJournal($, context), saveRecoveries, id, write),
+      updateLedger: change => updateLedger($, change),
+      acknowledgeRevision: revision => { savedRevisions.set(id, revision) },
+      clearRecovery: () => { saveRecoveries.delete(id) },
+      acknowledgeSave: () => { persistence.failure = ''; saved = true },
+      updateState: change => update($, durability, change),
+      fallbackNotice: cause => { $.ui.toast(`track: saved inline because blob storage is unavailable: ${cause}`) },
     })
-    savedRevisions.set(id, bucket.checkpoint.revision)
-    saveRecoveries.delete(id)
-    persistence.failure = ''
-    saved = true
-    // A rewind or UI choice that arrived after this save's snapshot needs
-    // its own acknowledgement. Keep its gate while the queued save catches up.
-    await update($, durability, cur => memoryChanged || cur.closedByPerson !== preference || cur.rewindSession !== pending.rewindSession
-      ? { ...cur, baseline: { session_id: id!, ledger: current, checkpoint, generation }, isUnsaved: true, reason: memoryChanged ? 'ledger save pending' : cur.closedByPerson !== preference ? 'pane preference save pending' : 'rewind save pending' }
-      : { isUnsaved: false, reason: '', memorySession: id, baseline: { session_id: id!, ledger: current, checkpoint, generation } })
-    if (fallbackCause !== undefined) $.ui.toast(`track: saved inline because blob storage is unavailable: ${fallbackCause}`)
   }, 'writer', saveFailure)
   })
   persistence.queue = run.catch(() => undefined)
