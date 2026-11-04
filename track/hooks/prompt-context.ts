@@ -8,6 +8,16 @@ export const OPEN_LISTED = 5
 export const OPEN_STEPS_LISTED = 8
 type PromptContext = { references?: string; withdrawn?: string; cleared?: string; open?: string }
 
+// Consume only notices this prompt captured; later arrivals keep their order and multiplicity.
+export const remainingNotices = <T extends { id: string | number; head: string }>(current: readonly T[] | undefined, delivered: readonly T[] | undefined): T[] => {
+  const remaining = [...(current ?? [])]
+  for (const notice of delivered ?? []) {
+    const at = remaining.findIndex(row => row.id === notice.id && row.head === notice.head)
+    if (at >= 0) remaining.splice(at, 1)
+  }
+  return remaining
+}
+
 // CC-180: keep permanent ids, statuses and quoted titles in the prompt inventory.
 const openStepsContext = (steps: Step[]): string => {
   const open = openStepsOf(steps)

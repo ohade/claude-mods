@@ -1,10 +1,11 @@
 import type { Ledger, Step } from '../types'
 import { capSteps, withStatus } from './ledger-policy'
 import { headOf, norm } from './ledger-text'
+import { visibleSteps } from './steps'
 
 export const createTask = (ledger: Ledger, values: { taskId: string; subject: string; toolUseId?: string; session?: string }): Ledger => {
   const { taskId, subject, toolUseId, session } = values
-  const plan = ledger.steps.find(s => s.source === 'plan' && s.taskId === undefined && norm(s.subject) === norm(subject))
+  const plan = visibleSteps(ledger.steps).find(s => s.source === 'plan' && s.taskId === undefined && s.status !== 'completed' && norm(s.subject) === norm(subject))
   if (plan !== undefined) return { ...ledger, steps: ledger.steps.map(s => (s.id === plan.id ? { ...s, taskId } : s)) }
   const step: Step = {
     id: `task:${taskId}`,

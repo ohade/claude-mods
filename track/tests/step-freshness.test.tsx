@@ -1,8 +1,8 @@
 // FIXTURE: TRACK-27's approved Stop contract. The Python tests exercise the real
 // exclusive claim file; this kit controls only the plugin's helper receipt.
 import { expect, mock, test } from 'claude-code/testing'
-import type { ToolCallResult } from 'claude-code'
-import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
+import type { PluginState, ToolCallResult } from 'claude-code'
+import { EMPTY, SESSION, atomStore, logs, pane, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 import type { Activity, Ledger, Step, Turn } from '../types'
 
@@ -65,6 +65,23 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   return { ledger, turn, activity, lines, lower, work, claim, contexts,
     snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') }
 }
+
+test('confirmed clear all refreshes the external Stop snapshot after an established save', async ($, on) => {
+  const durable = atomStore<PluginState['track']['durability']>(on, 'durability', { isUnsaved: false, reason: '' })
+  const fixture = await prepare($, on)
+  await mark($, 'waiting')
+  await response($, 'Waiting for the user without a visible request line.')
+  expect(durable.value.baseline, 'control: the initial save has established its baseline').toBeDefined()
+  const waiting = () => fixture.snapshot().candidates?.some((candidate: { kind: string }) => candidate.kind === 'missing_waiting_request') === true
+  expect(waiting(), 'control: command Stop has a candidate for the still-present waiting step').toBe(true)
+  const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'clear-steps' })
+  expect(fixture.ledger.value.steps).toHaveLength(1)
+  expect(waiting(), 'arming is not a clear').toBe(true)
+  await ui.press({ key: 'clear-steps' })
+  expect(fixture.ledger.value.steps).toEqual([])
+  expect(waiting(), 'a cleared step must not remain in the published command-Stop snapshot').toBe(false)
+})
 
 test('stale current-turn step blocks once without a live owner', async ($, on) => {
   const fixture = await prepare($, on)

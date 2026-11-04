@@ -11,14 +11,20 @@ export const columnsOf = (text: string): number => graphemesOf(text).reduce((sum
 export const wrappedLines = (text: string, width: number): number => {
   let lines = 1
   let used = 0
-  for (const word of text.split(' ')) {
-    const columns = columnsOf(word)
-    if (used > 0 && used + 1 + columns <= width) {
-      used += 1 + columns
-    } else if (columns > 0) {
-      const extra = Math.floor((columns - 1) / width)
-      lines += (used > 0 ? 1 : 0) + extra
-      used = columns - extra * width
+  for (const [index, line] of text.split('\n').entries()) {
+    if (index > 0) {
+      lines++
+      used = 0
+    }
+    for (const word of line.split(' ')) {
+      const columns = columnsOf(word)
+      if (used > 0 && used + 1 + columns <= width) {
+        used += 1 + columns
+      } else if (columns > 0) {
+        const extra = Math.floor((columns - 1) / width)
+        lines += (used > 0 ? 1 : 0) + extra
+        used = columns - extra * width
+      }
     }
   }
 

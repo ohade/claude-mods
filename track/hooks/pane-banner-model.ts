@@ -23,7 +23,7 @@ export const paneBanner = (input: BannerInput) => {
       // A pending outcome may have committed, so it never reads as unsaved.
       const label = pendingCause !== undefined ? `Save outcome pending · ${pendingCause}`
         : unsavedReason === '' ? 'Unsaved' : `Unsaved · ${unsavedReason}`
-      built.push(piece('banner-unsaved', '', { label, brief: label, questions: [], steps: [], counts: [] }, 'warning'))
+      built.push(piece('banner-unsaved', '', { label, brief: label, collapsedLabel: pendingCause !== undefined ? 'Save pending' : 'Unsaved', questions: [], steps: [], counts: [] }, 'warning'))
     }
     if (agentActivity) {
       const counts: BannerCount[] = []

@@ -1,7 +1,7 @@
 import { columnsOf, fitLines } from './terminal-text'
 
 export type BannerCount = { kind: 'agents' | 'tasks'; n: number }
-export type BannerParts = { label: string; brief: string; questions: string[]; steps: string[]; counts: BannerCount[] }
+export type BannerParts = { label: string; brief: string; collapsedLabel?: string; questions: string[]; steps: string[]; counts: BannerCount[] }
 export type BannerRow = { key: string; glyph: string; words: string; background: string; glyphColor: string; parts: BannerParts }
 
 // A row is parts, not a sentence to parse. The glyph counts toward the width, in terminal columns.
@@ -36,8 +36,7 @@ export const bannerLine = (glyph: string, parts: BannerParts, width: number): { 
 
   return { glyph, words: bannerWords(glyph, fitLines(shortest, Math.max(1, width - glyphCols), 1)) }
 }
-const collapseBrief = (row: BannerRow): string =>
-  row.key === 'banner-unsaved' ? 'Unsaved' : row.key === 'banner-unknown' ? 'Unknown' : row.parts.brief
+const collapseBrief = (row: BannerRow): string => row.parts.collapsedLabel ?? (row.key === 'banner-unsaved' ? 'Unsaved' : row.parts.brief)
 const collapseSegment = (row: BannerRow, mode: 'full' | 'brief' | 'count' | 'label'): string => {
   const label = mode === 'full' ? row.parts.label : collapseBrief(row)
   const steps = mode === 'count' ? stepCount(row.parts.steps) : row.parts.steps

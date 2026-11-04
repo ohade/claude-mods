@@ -332,3 +332,16 @@ test('[X2] an unknown owner identity is refused', async ($, on) => {
   expect(refusalOf(r)).toContain('track: diagnose needs an admitted owner')
   expect(bundleOf(r)).toBeUndefined()
 })
+
+test('diagnose finds an input claim at its producer path and freshness claims at the parent path', async ($, on) => {
+  world(on, { pending: { inputs: [{ id: 1, held: true, head: 'Why?', excerpt: 'Why?', turnId: 't1' }], nextId: 2 } })
+  const name = async (turn: string, kind: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([SESSION, turn, kind])))), b => b.toString(16).padStart(2, '0')).join('')
+  const inputClaim = await name('input:1', 'uncovered_input')
+  const freshClaim = await name('t1', 'untracked_edit')
+  on('fs.stat', (_, e) => [ `${HOLDS}/inputs/${inputClaim}`, `${HOLDS}/${freshClaim}` ].includes(String(e.path))
+    ? { value: { kind: 'file', size: 64 } } as never : { deny: 'fixture missing' } as never)
+  const bundle = bundleOf(await call($))
+  expect(bundle?.v, 'diagnose returned a valid bundle').toBe(1)
+  expect(bundle?.claims.find((claim: any) => claim.name === freshClaim)?.present, 'freshness still uses the parent directory').toBe(true)
+  expect(bundle?.claims.find((claim: any) => claim.name === inputClaim)?.present, 'the existing input claim must not be reported absent').toBe(true)
+})

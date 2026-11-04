@@ -7,7 +7,7 @@ import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps, openStepsOf, openPlanSteps, sameResultOwner } from './steps'
 import { MAX_INPUTS, admitInput } from './prompt-intake'
-import { OPEN_LISTED, OPEN_STEPS_LISTED, unregisteredContext, promptContext } from './prompt-context'
+import { OPEN_LISTED, OPEN_STEPS_LISTED, unregisteredContext, promptContext, remainingNotices } from './prompt-context'
 import { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } from './turn-policy'
 import { minimalInputReason, uncoveredBlock } from './stop-guidance'
 import { cancelReasonOf, cancelOwner } from './cancel-policy'
@@ -2213,6 +2213,7 @@ const clearSteps = async ($: EngineInterface): Promise<void> => {
   }
   await update($, clearArm, () => null)
   await saveLedger($)
+  await publishGate($)
   $.ui.toast('track: steps cleared.')
 }
 
@@ -2571,7 +2572,7 @@ const claimStats = async ($: EngineInterface, session: string, turnId: string | 
     let present = false
     // D9 lstat: a symbolic link never counts as a present claim, whatever it leads to.
     try {
-      const stat = await $.fs.stat(`${config}/state/track/stop-holds/${name}`)
+      const stat = await $.fs.stat(`${config}/state/track/stop-holds/${kind === INPUT_CLAIM_KIND ? 'inputs/' : ''}${name}`)
       present = stat.kind === 'file' && stat.isLink !== true
     }
     catch { present = false }
@@ -3108,7 +3109,7 @@ export const register: Register = on => {
         lines.push(context.withdrawn)
         await updateLedger($, cur => {
           assertAdmitted()
-          return { ...cur, withdrawn: [] }
+          return { ...cur, withdrawn: remainingNotices(cur.withdrawn, l.withdrawn) }
         })
       }
       // Unfinished steps the user removed with a confirmed "clear all", told once like a withdrawal.
@@ -3116,7 +3117,7 @@ export const register: Register = on => {
         lines.push(context.cleared)
         await updateLedger($, cur => {
           assertAdmitted()
-          return { ...cur, clearedSteps: [] }
+          return { ...cur, clearedSteps: remainingNotices(cur.clearedSteps, l.clearedSteps) }
         })
       }
       if (context.open === undefined) {
@@ -3925,6 +3926,11 @@ export const register: Register = on => {
   // draw nothing; mark_answered draws one dim acknowledgement, separate from answer targets.
   // restore_tracker draws what it restored, so the person reads the old answers here.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    if ((e.props.tool === MARK_STEP || e.props.tool === MARK_ANSWERED) && typeof e.props.output === 'string' &&
+        (e.props.isErrored || e.props.isInterrupted || e.props.output.startsWith('No ') || e.props.output.startsWith('track:'))) {
+      const { Text } = $.ui.resolve(e)
+      return <Text dimColor>{e.props.output}</Text>
+    }
     if (e.props.tool === TRACK_QUESTION) {
       const l = await read($, ledger)
       const q = l.questions.find(q => q.trackedBy === e.props.tool_use_id && q.askedRequestId === e.props.tool_use_id)
@@ -3964,7 +3970,9 @@ export const register: Register = on => {
       const at = shown.findIndex(s => s.id === id)
       const step = shown[at]
       const name = step === undefined ? id : `S${at + 1}. ${truncate(step.subject, 60)}`
-      const label = `${glyph} ${name} ${status.replace('_', ' ')}`
+      const proposed = e.props.isRunning || e.props.isErrored || e.props.isInterrupted ||
+        (typeof e.props.output !== 'string' && !l.steps.some(row => row.id === id))
+      const label = `${proposed ? '◻' : glyph} ${name} ${status.replace('_', ' ')}${proposed ? ' (requested)' : ''}`
       // Proposed tool input is not an accepted result. Only the durable row
       // acknowledged for this source and these full words may draw it.
       const full = typeof input.result_text === 'string' ? input.result_text.trim() : undefined
@@ -3988,8 +3996,9 @@ export const register: Register = on => {
       const level = await read($, memberOf(flash, e))
       const l = await read($, ledger)
       const questionLabel = questionLabels(l.questions)
-      const label = `✓ ${questionLabel(String(input.id ?? '?'))}. ${status}`
       const q = l.questions.find(one => one.id === Number(input.id))
+      const proposed = e.props.isRunning || e.props.isErrored || e.props.isInterrupted || (typeof e.props.output !== 'string' && q === undefined)
+      const label = `${proposed ? '' : '✓ '}${questionLabel(String(input.id ?? '?'))}. ${status}${proposed ? ' (requested)' : ''}`
       if (q?.answeredBy === e.props.tool_use_id && q.answerKey === e.props.tool_use_id && q.answerText !== undefined) {
         return <Box flexDirection="column"><Text dimColor>{label}</Text><Box key={`answer:${q.answerKey}`} backgroundColor={shade(level)}><Text wrap="wrap">{q.answerText}</Text></Box></Box>
       }

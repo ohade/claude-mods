@@ -157,12 +157,16 @@ export const checkPaneModels = (reader: Reader): void => {
         assert.deepEqual(result.openRows.map(row => row.key), test.rows.map(row => row.key), `${test.name}: expected banner keys and order`)
         if (test.name === 'pending save keeps cause') assert.equal(result.openRows[0]?.parts.label, 'Save outcome pending · receipt lost', 'pending save retains its cause and never reads as ordinary Unsaved')
         const rows = test.rows.map(expected => {
-          const parts = expected.key === 'banner-unknown' ? { ...expected.parts, label: width < 18 ? 'Unknown' : 'Activity unknown' } : expected.parts
+          const parts = expected.key === 'banner-unknown' ? { ...expected.parts, label: width < 18 ? 'Unknown' : 'Activity unknown' }
+            : expected.key === 'banner-unsaved' ? { ...expected.parts, collapsedLabel: value.pendingCause !== undefined ? 'Save pending' : 'Unsaved' } : expected.parts
           return { ...expected, parts, ...bannerLine(expected.glyph, parts, width),
             glyphColor: expected.key === 'banner-agents' ? ['inverseText', '#f2d49b', '#e8bc63', '#f2d49b'][phase % 4] : expected.glyphColor }
         })
         assert.deepEqual(result, { work: test.work, openRows: rows }, `${test.name}: literal parts, glyph, colors, widths and work`)
-        assert.deepEqual(result, originalPaneBanner(value), `${test.name}: original c9daf9c parity`)
+        // The old full row stays byte-for-byte equivalent; only its explicit collapse label is new.
+        const original = originalPaneBanner(value)
+        for (const row of original.openRows) if (row.key === 'banner-unsaved') row.parts.collapsedLabel = value.pendingCause !== undefined ? 'Save pending' : 'Unsaved'
+        assert.deepEqual(result, original, `${test.name}: original c9daf9c parity plus the corrected collapse label`)
         assert.equal(JSON.stringify(value), before, `${test.name}: input immutability`)
       }
     }

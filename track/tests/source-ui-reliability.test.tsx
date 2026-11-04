@@ -1,9 +1,10 @@
 // FIXTURE release gates: verified sources, reachable fallback, durable explicit UI actions.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, blobPool, pane, pluginStore, trackCommand } from './kit'
+import type { Ledger } from '../types'
 
 const prepare = (on: any, prompts: any[] = [], options: Parameters<typeof pluginStore>[3] = {}) => {
-  const l = atomStore(on, 'ledger', { ...EMPTY, prompts })
+  const l = atomStore<Ledger>(on, 'ledger', { ...EMPTY, prompts })
   atomStore(on, 'turn', { currentId: 'current', gatedTurnId: null, eventOrder: 0 })
   const store = pluginStore(on, {}, undefined, options)
   on('session.id', () => ({ value: SESSION }))
@@ -133,3 +134,30 @@ for (const laterPreference of [true, false]) {
     expect(durable.value.rewindSession).toBe(SESSION)
   })
 }
+
+for (const [tool, input, refusal] of [
+  ['mcp__track__mark_step', { id: 'plan:999', status: 'completed' }, 'No change'],
+  ['mcp__track__mark_answered', { id: 999, status: 'answered' }, 'No question with id 999'],
+] as const) {
+  test(`${tool} exposes a refusal instead of a successful mark for a missing row`, async ($, on) => {
+    const { l } = prepare(on)
+    const result = await $.tool.call({ tool, ...input, tool_use_id: 'missing-mark' } as never)
+    expect(String((result as any).result), 'control: the call was refused without a mutation').toContain(refusal)
+    expect(l.value.questions).toHaveLength(0)
+    expect(l.value.steps).toHaveLength(0)
+    const ui = await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'ToolUse', requestId: 'missing-mark', props: { tool_use_id: 'missing-mark', tool, input, output: (result as any).result, isRunning: false, isErrored: false, isInterrupted: false } } as never)
+    const text = (await ui.findAll({ type: 'Text' })).map(row => row.text).join(' ')
+    expect(text, 'a refused call must not display a success checkmark').not.toContain('✓')
+    expect(text, 'the custom row must expose the refusal').toContain(tool === 'mcp__track__mark_step' ? 'No change' : 'No question')
+  })
+}
+
+test('an in-flight mark_step shows a request without a completed acknowledgement', async ($, on) => {
+  const { l } = prepare(on)
+  l.value = { ...l.value, steps: [{ id: 'plan:1', source: 'plan', subject: 'Still running', status: 'pending' }] } as never
+  const ui = await $.ui.mount({ plugin: 'track', surface: 'terminal', component: 'ToolUse', requestId: 'running-mark', props: { tool_use_id: 'running-mark', tool: 'mcp__track__mark_step', input: { id: 'plan:1', status: 'completed' }, isRunning: true, isErrored: false, isInterrupted: false } } as never)
+  const text = (await ui.findAll({ type: 'Text' })).map(row => row.text).join(' ')
+  expect(text, 'proposed completion is not an accepted outcome').not.toContain('✓')
+  expect(text).toContain('requested')
+  expect(l.value.steps[0]?.status).toBe('pending')
+})

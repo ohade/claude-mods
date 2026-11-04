@@ -13,16 +13,21 @@ for (const name of ['pane-row-metrics.ts', 'pane-viewport-model.ts']) {
   assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:EngineInterface|Runtime|atom|memberOf|update|Date|crypto|process)\b|\$(?!\{)/)
 }
 const hash = (source: string) => createHash('sha256').update(source).digest('hex')
-// U4: the previous integration proof stays pinned to its accepted commit.
-for (const [path, expected] of [['hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'], ['architecture/archview.toml', '7195449a856219481f064c702750672471f10223c09c767dd5ed97721bcc1e92']] as const) {
-  const accepted = spawnSync('git', ['show', `1bdd7b52fd4ebcde8db795004183a608c351f499:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
-  assert.equal(accepted.status, 0, `accepted pre-U4 ${path} must exist`)
-  assert.equal(hash(accepted.stdout), expected, `accepted pre-U4 ${path} proof retained`)
+// Audit repairs: retain both accepted integrations before pinning the authorized fixes.
+for (const [commit, path, expected] of [
+  ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'],
+  ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'architecture/archview.toml', '7195449a856219481f064c702750672471f10223c09c767dd5ed97721bcc1e92'],
+  ['94f09966dc47249189e87b8c8b91f90c3c86b6a3', 'hooks/register.tsx', 'a8b7247e922f89dac89bc7f89adff7ce2bf13478760265209782b476c5be53c2'],
+  ['94f09966dc47249189e87b8c8b91f90c3c86b6a3', 'architecture/archview.toml', '27d383cf7a8f3be47c1997da2567043b64bd8d56e618e93acaa04adee71cfc79'],
+] as const) {
+  const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
+  assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
+  assert.equal(hash(accepted.stdout), expected, `accepted ${commit} ${path} proof retained`)
 }
-for (const [name, expected] of [['register.tsx', 'a8b7247e922f89dac89bc7f89adff7ce2bf13478760265209782b476c5be53c2'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
-  assert.equal(hash(readFileSync(hook(name), 'utf8')), expected, `${name}: exact planned extraction, all native effects unchanged`)
+for (const [name, expected] of [['register.tsx', '715775a1b94fa1e0443bfdb34726a9a47405905440fdc1e762a1436701e81889'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
+  assert.equal(hash(readFileSync(hook(name), 'utf8')), expected, `${name}: exact reviewed repair integration`)
 }
-assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '27d383cf7a8f3be47c1997da2567043b64bd8d56e618e93acaa04adee71cfc79', 'exact declared architecture edges')
+assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '98bbf008e9384fa1280c2b69beeef51c2e304a85c50797dc35e3b5a767b1a803', 'exact declared architecture edges')
 const { paneRowMetrics } = await import('../../hooks/pane-row-metrics')
 const { paneViewport } = await import('../../hooks/pane-viewport-model')
 checkViewport(input => {

@@ -93,3 +93,33 @@ test('U4 a losing admission retries a competing duplicate without scheduling its
   expect(held.value).toEqual(winner)
   expect(modelCalls).toBe(0)
 })
+
+for (const [field, before, later] of [
+  ['withdrawn', { id: 1, head: 'Gone' }, { id: 2, head: 'Later question' }],
+  ['clearedSteps', { id: 'plan:1', head: 'Old' }, { id: 'plan:2', head: 'Later step' }],
+] as const) {
+  test(`a ${field} notice arriving during consumption remains for the next prompt`, async ($, on) => {
+    let ledger!: ReturnType<typeof atomStore<Ledger>>
+    let injected = false
+    on('state.set', { plugin: 'track', key: ['ledger'] }, (_, event, next) => {
+      const proposal = event.value as Ledger
+      if (!injected && proposal[field]?.length === 0) {
+        injected = true
+        ledger.value = { ...ledger.value, [field]: [...(ledger.value[field] ?? []), later] }
+        ledger.version++
+      }
+      return next(event)
+    })
+    const fixture = prepare(on, state({ [field]: [before] } as Partial<Ledger>))
+    ledger = fixture.ledger
+    await submit($, 'Continue.')
+    expect(injected, 'a competing notice was appended at the versioned write').toBe(true)
+    expect(ledger.value[field], 'undelivered arrivals must survive consumption of the captured notice').toEqual([later])
+    expect(fixture.delivered[0]!.context.some(line => line.includes(later.head))).toBe(false)
+    await submit($, 'Continue.')
+    expect(fixture.delivered[1]!.context.some(line => line.includes(later.head))).toBe(true)
+    expect(ledger.value[field]).toEqual([])
+    await submit($, 'Continue.')
+    expect(fixture.delivered[2]!.context.some(line => line.includes(later.head))).toBe(false)
+  })
+}

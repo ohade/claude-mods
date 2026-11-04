@@ -72,7 +72,7 @@ export const checkStepCommands = (commands: StepCommands, tasks: TaskSyncCommand
   const match = fixed(step('plan:3', { subject: '1. Fix the bug!', status: 'completed', cleared: true }))
   const secondMatch = step('plan:4', { subject: 'fix the bug' })
   const linked = tasks.createTask(fixed(ledger([match, secondMatch])), { taskId: '7', subject: 'fix the bug', toolUseId: 'create-call', session: 'owner' })
-  assert.deepEqual(linked, { ...ledger(), steps: [{ ...match, taskId: '7' }, secondMatch] }, 'first unlinked normalized plan matches even when cleared/completed; link does not add session fields')
+  assert.deepEqual(linked, { ...ledger(), steps: [match, { ...secondMatch, taskId: '7' }] }, 'new tasks link to the first visible unfinished normalized plan; completed history and session fields stay unchanged')
   assert.deepEqual(tasks.createTask(ledger(), { taskId: '7', subject: 'New task', toolUseId: 'create-call', session: 'owner' }), { ...ledger(), session_id: 'owner', steps: [{ id: 'task:7', source: 'task', subject: 'New task', status: 'pending', taskId: '7', createdRequestId: 'create-call' }] })
   const boundPlan = step('plan:7', { taskId: '7', status: 'in_progress', startedAt: 10 })
   const boundTask = step('task:7', { source: 'task', taskId: '7' })

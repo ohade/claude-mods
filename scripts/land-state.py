@@ -72,14 +72,37 @@ def release_lock(path, pid):
     lock.rmdir()
 
 
+class _CommandTerminated(Exception):
+    pass
+
+
 def run_bounded(seconds, argv):
     if not argv:
         raise ValueError('missing command')
-    process = subprocess.Popen(argv, start_new_session=True)
+    process = None
+    terminating = False
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_int = signal.getsignal(signal.SIGINT)
+
+    def terminate(_signal, _frame):
+        nonlocal terminating
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        terminating = True
+        # Let Popen finish registering the owned PID before interrupting it.
+        if process is not None:
+            raise _CommandTerminated()
+
     try:
+        signal.signal(signal.SIGTERM, terminate)
+        process = subprocess.Popen(argv, start_new_session=True)
+        if terminating:
+            raise _CommandTerminated()
         return process.wait(timeout=seconds)
-    except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
-        interrupted = isinstance(error, KeyboardInterrupt)
+    except (subprocess.TimeoutExpired, KeyboardInterrupt, _CommandTerminated) as error:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if process is None:
+            raise  # No returned process handle is available to own or clean up.
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -94,7 +117,10 @@ def run_bounded(seconds, argv):
             pass  # No member remains; a parent exit alone does not prove that.
         process.wait()
         print(f'land: command interrupted or exceeded {seconds}s: {argv[0]}', file=sys.stderr)
-        return 130 if interrupted else 1
+        return 143 if isinstance(error, _CommandTerminated) else 130 if isinstance(error, KeyboardInterrupt) else 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
 
 def record_counts(log, name, path):
