@@ -1,11 +1,11 @@
 {
   "v": 1,
-  "version": "2.1.317",
-  "provenance": "Engine-written SDK from the native Claude Code 2.1.317 acceptance load of Track 754c815 on 2026-11-03. Review against 2.1.314 covers additive backdrop APIs, prompt/cache documentation, and tool declaration changes including removal of the Read file_unchanged result variant. SDK configuration and MCP declarations are unchanged. Digests only; generated API and machine-specific tool schemas remain local.",
+  "version": "2.1.318",
+  "provenance": "Engine-written SDK from a fresh native Claude Code 2.1.318 load of Track 6803903 on 2026-11-04. Reviewed against the retained 2.1.317 declarations: additive optional fork effort, backdrop color-scheme and mobile Input/Select support; PushNotification status becomes optional and WebFetch gains an optional internal citable flag. SDK configuration and MCP declarations are unchanged. Digests only; generated API and machine-specific tool schemas remain local.",
   "files": {
     "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
-    "track/.claude-plugin/types/claude-code/index.d.ts": "346bb9c8243cec810b79884a35e05089dcfb2bbc77c325a31e0077aaf5ad5740",
-    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "7d2e5583f505b70d7706eb7650e8dc6f554593c8329ea23a49d2589b6f54b777",
+    "track/.claude-plugin/types/claude-code/index.d.ts": "042ff9743dc3fee570ff699e51ebc1071252c3eec6116294a72bf0568e5aed37",
+    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "ae7194df9c5da3393936bb3cb6fb0ad0f5bdb0deb1cc8f30448b566cf2fbda63",
     "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "0cab298516885f406c7762cf83b84334b5f5f02e1207abc79a02d136f518354b"
   }
 }
