@@ -271,18 +271,33 @@ class BugReportTest(unittest.TestCase):
         self.assertEqual(len(self.plane_calls()), 1)
         self.assertTrue((self.report_root() / out["draft_id"] / "note.local.txt").exists())
 
-    def test_definite_failure_keeps_the_draft_and_allows_a_manual_retry(self):
+    def test_plane_error_after_create_was_sent_is_ambiguous(self):
+        # Codex review 2026-11-06: an error printed after create was invoked cannot prove nothing was created.
         _, out = self.preview()
         self.set_plane_mode("fail")
         failed = self.run_helper(["file"], {"v": 1, "draft_id": out["draft_id"]})
         self.assertEqual(failed.returncode, 1)
         body = json.loads(failed.stdout)
-        self.assertEqual([body["ok"], body["ambiguous"]], [False, False])
+        self.assertEqual([body["ok"], body["ambiguous"]], [False, True])
         self.set_plane_mode("ok")
+        again = self.run_helper(["file"], {"v": 1, "draft_id": out["draft_id"]})
+        self.assertEqual(again.returncode, 1)
+        self.assertEqual(len(self.plane_calls()), 1)
+
+    def test_failure_before_create_is_definite_and_retryable(self):
+        _, out = self.preview()
+        cli = self.config / "skills" / "plane-tasks" / "scripts" / "plane-cli.py"
+        parked = cli.with_name("parked.py")
+        cli.rename(parked)
+        failed = self.run_helper(["file"], {"v": 1, "draft_id": out["draft_id"]})
+        self.assertEqual(failed.returncode, 1)
+        body = json.loads(failed.stdout)
+        self.assertEqual([body["ok"], body["ambiguous"]], [False, False])
+        self.assertEqual(self.plane_calls(), [])
+        parked.rename(cli)
         retried = self.run_helper(["file"], {"v": 1, "draft_id": out["draft_id"]})
         self.assertEqual(retried.returncode, 0, retried.stderr)
-        self.assertEqual(len(self.plane_calls()), 2)
-
+        self.assertEqual(len(self.plane_calls()), 1)
 
 if __name__ == "__main__":
     unittest.main()
