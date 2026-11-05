@@ -1,4 +1,4 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderComponent, RenderInput } from 'claude-code'
 
 import type { Pasted, Shown, Thumb } from '../types'
 import { freshNumbers, imageNumbers } from './numbers.ts'
@@ -15,11 +15,18 @@ const SUBMITTED = { plugin: 'image-thumbs', key: 'submittedAt' } as const
 const SLASH_PENDING = { plugin: 'image-thumbs', key: 'slashPending' } as const
 const REPLY_PICTURES = { plugin: 'image-thumbs', key: 'replyPictures' } as const
 const TURN_ROWS = { plugin: 'image-thumbs', key: 'turnRows' } as const
+const SEEN = { plugin: 'image-thumbs', key: 'seen' } as const
+const PLACED = { plugin: 'image-thumbs', key: 'placed' } as const
 
 // A transcript row is drawn under its uuid with the last group zeroed.
 const requestIdOf = (uuid: string): string => `${uuid.slice(0, 24)}000000000000`
 
 const PANE = 'image-view'
+
+// How long after a prompt is submitted its pictures wait to draw under its
+// row before they get a row of their own: another mod (prismantis) can draw
+// the person's prompt on its own and never hand the row on.
+const PLACE_AFTER_MS = 1000
 
 // A slash command's row as the prompt shows it: `/name` or `/plugin:name`,
 // then a space or the end. A path (`/Users/me/shot.png`) is not one.
@@ -411,6 +418,83 @@ const claimableId = async ($: EngineInterface, ids: string[]): Promise<string | 
   return ids.find(id => rows.includes(id))
 }
 
+// The pictures of a row, framed side by side: each with its click area and
+// the button that opens it in the pane.
+const drawPictures = async ($: EngineInterface, e: RenderInput<RenderComponent, 'terminal'>, thumbs: Thumb[]) => {
+  const expanded = await Promise.all(
+    thumbs.map(async thumb => (await $.state.get({ ...EXPANDED, id: String(thumb.n) })).value ?? null),
+  )
+  const repaints = await Promise.all(
+    thumbs.map(async thumb => (await $.state.get({ ...REPAINTS, id: String(thumb.n) })).value ?? 0),
+  )
+  const { Box, Button, Client, Image, Text } = $.ui.resolve(e)
+  // Less the row's indent and the frame's two border columns.
+  const columns = (e.viewport?.columns ?? 80) - 6
+  const room = { columns, rows: ROWS }
+  const roomExpanded = { columns, rows: Math.max(ROWS, Math.min(EXPANDED_ROWS, (e.viewport?.rows ?? 40) - 10)) }
+
+  return (
+    <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginLeft={2}>
+      {thumbs.map((thumb, index) => {
+        const { n, originalPath } = thumb
+        const expandedPicture = expanded[index] ?? null
+        const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
+        const png = expandedPicture === null ? thumb.png : expandedPicture.png
+        // Drawn again under a new key shortly after the first drawing: a new
+        // image id, sent again with its cells written again, as a window
+        // resize does for every picture. The first drawing can stay blank.
+        const drawing = repaints[index] ?? 0
+
+        return (
+          <Box flexDirection="column" alignItems="flex-start">
+            <Box borderStyle="round" borderDimColor>
+              <Box>
+                <Image key={`thumb-${n}-${drawing}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
+                <Box position="absolute" top={0} left={0}>
+                  <Client
+                    key={`click-${n}`}
+                    module="./click-area.ts"
+                    props={{ n }}
+                    width={cells.columns}
+                    height={cells.rows}
+                  />
+                </Box>
+              </Box>
+            </Box>
+            <Box flexDirection="row">
+              <Text dimColor>
+                #{n} · click the picture to {expandedPicture === null ? 'expand' : 'shrink'} ·{' '}
+              </Text>
+              <Button
+                key={`open-${n}`}
+                label="open in pane"
+                plain
+                dimColor
+                onPress={() => openImage($, n, originalPath)}
+              />
+            </Box>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+// A prompt's pictures that did not draw under its row, in a row of their own
+// placed after it; one stored and seen nowhere yet.
+const placeUnseen = async ($: EngineInterface, numbers: number[]): Promise<void> => {
+  const unseen = await Promise.all(
+    numbers.map(async n => (await isStored($, n)) && (await $.state.get({ ...SEEN, id: String(n) })).value !== true),
+  )
+  const waiting = numbers.filter((_, index) => unseen[index])
+  if (waiting.length === 0) {
+    return
+  }
+  const id = `thumbs-${waiting.join('-')}`.slice(0, 64)
+  await $.state.set({ ...PLACED, id }, waiting)
+  await $.ui.place({ id })
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // A pane asked for by code below 144 columns waits unseen; drop any such
@@ -455,6 +539,10 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (e.attachments?.some(attachment => attachment.type === 'image') === true) {
       await storeSavedThumbs($, e.text)
+      const numbers = imageNumbers(e.text)
+      $.clock.after(PLACE_AFTER_MS, () => {
+        placeUnseen($, numbers).catch(error => $.ui.toast(`image-thumbs: cannot place the pictures of this prompt: ${String(error)}`))
+      })
     }
 
     return next(e)
@@ -533,7 +621,7 @@ export const register: Register = on => {
   // pane: a click a Client posts counts as code, and the engine seats a pane
   // code opens only from 144 columns.
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { toggle?: unknown; repaint?: unknown; claim?: unknown } | null
+    const data = e.data as { toggle?: unknown; repaint?: unknown; claim?: unknown; seen?: unknown } | null
     // A reply row's claim area, on the row's first drawing here
     // (claim-area.ts): the first to claim takes the waiting pictures.
     if (typeof data?.claim === 'string') {
@@ -545,6 +633,12 @@ export const register: Register = on => {
         await $.state.set(SLASH_PENDING, [])
         await $.state.set(TURN_ROWS, [])
       }
+
+      return {}
+    }
+    // A click area on its first drawing: its picture is on screen.
+    if (typeof data?.seen === 'number') {
+      await $.state.set({ ...SEEN, id: String(data.seen) }, true)
 
       return {}
     }
@@ -627,64 +721,9 @@ export const register: Register = on => {
     if (thumbs.length === 0) {
       return next(e)
     }
-    const expanded = await Promise.all(
-      thumbs.map(async thumb => (await $.state.get({ ...EXPANDED, id: String(thumb.n) })).value ?? null),
-    )
-    const repaints = await Promise.all(
-      thumbs.map(async thumb => (await $.state.get({ ...REPAINTS, id: String(thumb.n) })).value ?? 0),
-    )
     const row = await next(e)
-    const { Box, Button, Client, Image, Text } = $.ui.resolve(e)
-    // Less the row's indent and the frame's two border columns.
-    const columns = (e.viewport?.columns ?? 80) - 6
-    const room = { columns, rows: ROWS }
-    const roomExpanded = { columns, rows: Math.max(ROWS, Math.min(EXPANDED_ROWS, (e.viewport?.rows ?? 40) - 10)) }
-
-    const pictures = (
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginLeft={2}>
-        {thumbs.map((thumb, index) => {
-          const { n, originalPath } = thumb
-          const expandedPicture = expanded[index] ?? null
-          const cells = expandedPicture === null ? fitCells(thumb, room) : fitCells(expandedPicture, roomExpanded)
-          const png = expandedPicture === null ? thumb.png : expandedPicture.png
-          // Drawn again under a new key shortly after the first drawing: a new
-          // image id, sent again with its cells written again, as a window
-          // resize does for every picture. The first drawing can stay blank.
-          const drawing = repaints[index] ?? 0
-
-          return (
-            <Box flexDirection="column" alignItems="flex-start">
-              <Box borderStyle="round" borderDimColor>
-                <Box>
-                  <Image key={`thumb-${n}-${drawing}`} source={{ png }} {...cells} alt={`[Image #${n}]`} />
-                  <Box position="absolute" top={0} left={0}>
-                    <Client
-                      key={`click-${n}`}
-                      module="./click-area.ts"
-                      props={{ n }}
-                      width={cells.columns}
-                      height={cells.rows}
-                    />
-                  </Box>
-                </Box>
-              </Box>
-              <Box flexDirection="row">
-                <Text dimColor>
-                  #{n} · click the picture to {expandedPicture === null ? 'expand' : 'shrink'} ·{' '}
-                </Text>
-                <Button
-                  key={`open-${n}`}
-                  label="open in pane"
-                  plain
-                  dimColor
-                  onPress={() => openImage($, n, originalPath)}
-                />
-              </Box>
-            </Box>
-          )
-        })}
-      </Box>
-    )
+    const { Box } = $.ui.resolve(e)
+    const pictures = await drawPictures($, e, thumbs)
 
     // Under a prompt; above a reply, whose text follows from the pictures.
     return (
@@ -694,6 +733,21 @@ export const register: Register = on => {
         {!isReply && pictures}
       </Box>
     )
+  })
+
+  // A row placed for a prompt whose own row drew none of its pictures.
+  on('ui.render', { component: 'Placed' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.plugin !== 'image-thumbs') {
+      return next(e)
+    }
+    const { value: numbers = [] } = await $.state.get({ ...PLACED, id: e.props.id })
+    const stored = await Promise.all(numbers.map(async n => (await $.state.get({ ...BY_IMAGE, id: String(n) })).value))
+    const thumbs = stored.filter(isThumb)
+    if (thumbs.length === 0) {
+      return next(e)
+    }
+
+    return drawPictures($, e, thumbs)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

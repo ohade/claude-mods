@@ -16,6 +16,7 @@ const REPAINT_MS = 300
 const ClickArea: ClientModule<{ n: number }, { isRepaintAsked: true }> = (props, surface) => {
   if (surface.state === undefined) {
     surface.setState({ isRepaintAsked: true })
+    surface.post({ seen: props.n })
     const stop = surface.every(REPAINT_MS, () => {
       stop()
       surface.post({ repaint: props.n })

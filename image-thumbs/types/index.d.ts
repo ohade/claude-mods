@@ -41,6 +41,11 @@ declare module 'claude-code' {
       turnRows: string[]
       // The slash command pictures drawn above a reply row, by its request id.
       replyPictures: StateFamily<number[]>
+      // Pictures that drew on screen, by image number.
+      seen: StateFamily<boolean>
+      // The pictures of a row placed for a prompt whose own row drew none, by
+      // the placed row's id.
+      placed: StateFamily<number[]>
     }
   }
 }

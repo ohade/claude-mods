@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 // The kit cannot raise session.append in this build (2.1.292): it skips any
@@ -467,4 +467,61 @@ test("a reply row another mod draws on its own leaves the pictures to the next r
 
   expect((await bash.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #5]' })
   expect(await later.findAll({ type: 'Image' })).toHaveLength(0)
+})
+
+// A row this mod placed in the transcript ($.ui.place), drawn as the engine draws it.
+const placedRow = (id: string) => ({
+  plugin: 'image-thumbs',
+  surface: 'terminal' as const,
+  component: 'Placed' as const,
+  requestId: 'p1000000-0000-4000-8000-000000000000',
+  viewport: { columns: 100, rows: 40 },
+  props: { id, plugin: 'image-thumbs' },
+})
+
+const recordPlaces = (on: On, places: string[]) => {
+  on('ui.place', (_, e) => {
+    places.push(e.id)
+
+    return { value: { isPlaced: true as const, requestId: 'p1000000-0000-4000-8000-000000000000' } }
+  })
+}
+
+test("a prompt whose row another mod draws on its own gets its pictures in a row of their own", async ($, on) => {
+  const clock = mock.clock(on)
+  const places: string[] = []
+  standInForSavedPictures(on, [savedName(1, 'A1B2C3D4')], [])
+  recordPlaces(on, places)
+
+  // Live, prismantis draws the person's prompt as a chat bubble and never
+  // hands the row on, so this mod's UserMessage hook never runs for it
+  // (2026-11-05). Nothing mounts the prompt row here for the same reason.
+  await settle($.prompt.submit({ text: 'why is it blank? [Image #4]', attachments: [{ type: 'image', mediaType: 'image/png' }], wait: false, origin: { kind: 'composer' } }))
+  await clock.advance(2000)
+
+  expect(places).toHaveLength(1)
+  const row = await $.ui.mount(placedRow(places[0] ?? ''))
+  expect((await row.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #4]' })
+})
+
+test('a prompt whose own row draws its pictures gets no second row', async ($, on) => {
+  const clock = mock.clock(on)
+  const places: string[] = []
+  standInForSavedPictures(on, [savedName(1, 'A1B2C3D4')], [])
+  recordPlaces(on, places)
+
+  await settle($.prompt.submit({ text: 'why is it blank? [Image #4]', attachments: [{ type: 'image', mediaType: 'image/png' }], wait: false, origin: { kind: 'composer' } }))
+  const ui = await $.ui.mount(userMessage('why is it blank? [Image #4]', '8a8b0111-01c9-465e-9864-e5453358cf5d'))
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ alt: '[Image #4]' })
+  await clock.advance(2000)
+
+  expect(places).toEqual([])
+})
+
+test('a row another plugin placed is left to that plugin', async ($, on) => {
+  // The engine draws a placed row empty until its own plugin draws it.
+  on('ui.render', { component: 'Placed' }, () => ({ type: 'Text', props: {}, children: [''] }))
+  const row = await $.ui.mount({ ...placedRow('build'), props: { id: 'build', plugin: 'other' } })
+
+  expect(await row.findAll({ type: 'Image' })).toHaveLength(0)
 })
