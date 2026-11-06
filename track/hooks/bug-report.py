@@ -26,6 +26,7 @@ Environment: CLAUDE_CONFIG_DIR (default ~/.claude) roots every path read or writ
 import argparse
 from collections import deque
 from datetime import datetime, timezone
+import html
 import json
 import os
 from pathlib import Path
@@ -271,7 +272,8 @@ def ticket_text(outbound, draft):
     else:
         lines.append("Hook failures: unavailable (no unique transcript)")
     lines.append(f"Diagnose: {json.dumps(outbound.get('diagnose'), sort_keys=True)[:4000]}")
-    return f"🐞 Report: {first}", scrub("\n".join(lines))
+    # plane-cli sends --description as raw HTML (<p>{description}</p>): escape it so notes and logs show literally.
+    return f"🐞 Report: {first}", html.escape(scrub("\n".join(lines))).replace("\n", "<br>")
 
 
 def file_ticket(request, timeout):
