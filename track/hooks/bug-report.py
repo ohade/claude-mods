@@ -57,7 +57,8 @@ SECRET_PATTERNS = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{10,}"),
 )
-SECRET_ASSIGNMENT = re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)(\s*[=:]\s*)\S+")
+# A quoted value is removed whole, before the unquoted rule: password="alpha beta" must not leave "beta".
+SECRET_ASSIGNMENT = re.compile(r"""(?i)\b(password|passwd|secret|token|api[_-]?key)(\s*[=:]\s*)(?:"[^"]*"|'[^']*'|\S+)""")
 # JSON pairs such as {"password": "..."}: the key stays so the reader sees what was removed.
 SECRET_JSON = re.compile(r'(?i)("(?:password|passwd|secret|token|api[_-]?key)"\s*:\s*)"(?:[^"\\]|\\.)*"')
 
