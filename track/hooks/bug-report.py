@@ -31,6 +31,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
+import subprocess
 import sys
 
 MAX_STDIN_BYTES = 256 * 1024
@@ -40,6 +42,8 @@ EVENT_LIMIT = 200
 FAILURE_LIMIT = 50
 STDERR_LIMIT = 2048
 COMMAND_LIMIT = 500
+WORKSPACE, PROJECT = "dv", "TRACK"
+DRAFT_ID = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}-[0-9a-f]{8}$")
 SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HOOK_FAILURES = {"hook_non_blocking_error", "hook_blocking_error", "hook_error"}
 HANDOFF_FIELDS = ("phase", "cycleId", "failedCycles", "unclearedRuns", "autoChain", "backoffTokens")
@@ -235,6 +239,72 @@ def preview(request):
             "note_out": note_out, "note_changed": note_out != note}
 
 
+def owned_draft(draft_id):
+    if not isinstance(draft_id, str) or not DRAFT_ID.match(draft_id):
+        raise UsageError("draft_id is not a draft made by preview")
+    draft = report_root() / draft_id
+    info = os.lstat(draft) if os.path.lexists(draft) else None
+    if info is None or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise Failure("no such draft", ambiguous=False)
+    if not (draft / "outbound.json").is_file():
+        raise Failure("draft has no outbound.json", ambiguous=False)
+    return draft
+
+
+def ticket_text(outbound, draft):
+    note = outbound.get("note_out") or ""
+    first = " ".join(note.split())[:60] or "no note"
+    lines = [note, "", "---", f"Session: {outbound.get('session_id')}",
+             f"Transcript: {outbound.get('transcript_path') or 'unavailable'}",
+             f"Report draft (local): {draft}", f"Claude Code: {outbound.get('cc_version')}",
+             f"Versions: {json.dumps(outbound.get('peers'), sort_keys=True)}",
+             f"context-handoff: {json.dumps(outbound.get('context_handoff'), sort_keys=True)}"]
+    failures = outbound.get("hook_failures")
+    if isinstance(failures, list):
+        lines.append(f"Hook failures: {len(failures)}")
+        for failure in failures[-10:]:
+            lines.append(f"- {failure.get('timestamp')} {failure.get('hookName')} exit {failure.get('exitCode')}: "
+                         f"{failure.get('command')} | {failure.get('stderr')[:300]}")
+    else:
+        lines.append("Hook failures: unavailable (no unique transcript)")
+    lines.append(f"Diagnose: {json.dumps(outbound.get('diagnose'), sort_keys=True)[:4000]}")
+    return f"🐞 Report: {first}", scrub("\n".join(lines))
+
+
+def file_ticket(request, timeout):
+    draft = owned_draft(request.get("draft_id"))
+    marker = draft / "filing"
+    try:
+        private_file(marker, "in flight\n")
+    except FileExistsError:
+        raise Failure("this draft was already filed or its filing is in flight or ambiguous", ambiguous=False) from None
+    cli = config_dir() / "skills" / "plane-tasks" / "scripts" / "plane-cli.py"
+    try:
+        outbound = json.loads((draft / "outbound.json").read_text())
+        if not cli.is_file():
+            raise Failure(f"Plane CLI not found at {cli}", ambiguous=False)
+        title, description = ticket_text(outbound, draft)
+    except (Failure, OSError, ValueError) as error:
+        marker.unlink()  # nothing was sent: the person may file this draft again
+        if isinstance(error, Failure):
+            raise
+        raise Failure("could not read the draft", ambiguous=False) from None
+    argv = [sys.executable, str(cli), "create", WORKSPACE, PROJECT, title, "--state-name", "Backlog",
+            "--priority", "medium", "--label-names", "🐞 Bug", "--description", description]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        marker.write_text("ambiguous: timeout\n")
+        raise Failure("Plane did not answer in time; check Plane before filing again", ambiguous=True) from None
+    created = re.search(r"Created #(\d+):", result.stdout or "")
+    if result.returncode != 0 or created is None:
+        marker.write_text(f"ambiguous: exit {result.returncode}\n")
+        raise Failure("Plane returned an error after the create call; check Plane before filing again", ambiguous=True)
+    ticket = f"{PROJECT}-{created.group(1)}"
+    marker.write_text(ticket + "\n")
+    return {"ok": True, "ticket": ticket}
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(prog="bug-report.py", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -256,10 +326,7 @@ def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         request = read_request()
-        if args.command == "file":
-            # Staged release (Codex, 2026-11-06): file stays unimplemented until its own observed red.
-            raise Failure("not implemented")
-        result = preview(request)
+        result = preview(request) if args.command == "preview" else file_ticket(request, args.timeout_seconds)
     except UsageError as error:
         print(json.dumps({"ok": False, "error": str(error)}))
         print(f"bug-report: {error}", file=sys.stderr)
