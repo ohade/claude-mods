@@ -7,6 +7,7 @@ export type ReportFrame = {
   onNote: (value: string) => void
   onPreview: (value: string) => void
   onFile: () => void
+  onNewReport: () => void
   onClose: () => void
   onCopySession: () => void
 }
@@ -31,6 +32,7 @@ export const reportView = ({ Box, Button, Text, Input }: ReportElements, frame: 
       {form.phase === 'filing' && <Text wrap="wrap">Submitting report…</Text>}
       {form.phase === 'filed' && <Text wrap="wrap">{'Created ' + form.ticket}</Text>}
       {form.phase === 'ambiguous' && <Text wrap="wrap">Check Plane before filing another report; do not retry this draft.</Text>}
+      {(form.phase === 'filed' || form.phase === 'ambiguous') && <Button key="report-new" label="New report" onPress={frame.onNewReport} />}
       {form.error && <Text color="error" wrap="wrap">{form.error}</Text>}
       <Button key="report-close" label="Close" onPress={frame.onClose} />
     </Box>

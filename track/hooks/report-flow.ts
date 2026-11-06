@@ -30,6 +30,14 @@ export async function openReport(ports: ReportPorts): Promise<void> {
   await ports.update(form => sameOwner(form.owner, owner) ? form : editing(form, owner, ''))
 }
 
+export async function newReport(ports: ReportPorts, owner: ReportOwner): Promise<void> {
+  if (!(await ports.isCurrent(owner))) return
+  await ports.update(form => {
+    if (!sameOwner(form.owner, owner) || (form.phase !== 'filed' && form.phase !== 'ambiguous')) return form
+    return editing(form, owner, '')
+  })
+}
+
 export async function editReport(ports: ReportPorts, owner: ReportOwner, note: string): Promise<void> {
   if (!(await ports.isCurrent(owner))) return
   await ports.update(form => {
