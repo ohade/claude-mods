@@ -16,17 +16,223 @@ private draft under $CLAUDE_CONFIG_DIR/state/track-reports/<draft_id>/: note.loc
 note, never sent) and outbound.json (what file sends). It posts nothing.
 
 file creates exactly one Plane ticket (workspace dv, project TRACK) from an owned draft. A draft is
-filed at most once; a timeout after the create was sent is reported as ambiguous and never retried.
+filed at most once; any failure after the create call was started is reported as ambiguous and the
+draft stays locked, so it is never retried. Only a failure before the call releases the draft.
 
 Exit codes: 0 success, 1 runtime failure (JSON {"ok": false, ...} on stdout), 2 usage error.
 Environment: CLAUDE_CONFIG_DIR (default ~/.claude) roots every path read or written.
 """
 
 import argparse
+from collections import deque
+from datetime import datetime, timezone
 import json
+import os
+from pathlib import Path
+import re
+import secrets
 import sys
 
 MAX_STDIN_BYTES = 256 * 1024
+MAX_NOTE_CHARS = 4000
+MAX_RECORD_BYTES = 8 * 1024 * 1024
+EVENT_LIMIT = 200
+FAILURE_LIMIT = 50
+STDERR_LIMIT = 2048
+COMMAND_LIMIT = 500
+SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+HOOK_FAILURES = {"hook_non_blocking_error", "hook_blocking_error", "hook_error"}
+HANDOFF_FIELDS = ("phase", "cycleId", "failedCycles", "unclearedRuns", "autoChain", "backoffTokens")
+SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{10,}"),
+    re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{10,}"),
+)
+SECRET_ASSIGNMENT = re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)(\s*[=:]\s*)\S+")
+
+
+class UsageError(Exception):
+    pass
+
+
+class Failure(Exception):
+    def __init__(self, message, **fields):
+        super().__init__(message)
+        self.fields = fields
+
+
+def scrub(text):
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", text)
+
+
+def scrub_value(value):
+    if isinstance(value, str):
+        return scrub(value)
+    if isinstance(value, list):
+        return [scrub_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: scrub_value(item) for key, item in value.items()}
+    return value
+
+
+def config_dir():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def report_root():
+    return config_dir() / "state" / "track-reports"
+
+
+def read_request():
+    raw = sys.stdin.read(MAX_STDIN_BYTES + 1)
+    if len(raw) > MAX_STDIN_BYTES:
+        raise UsageError("request exceeds 256 KiB")
+    try:
+        request = json.loads(raw)
+    except ValueError:
+        raise UsageError("request is not valid JSON") from None
+    if not isinstance(request, dict) or request.get("v") != 1:
+        raise UsageError("request must be a v1 JSON object")
+    return request
+
+
+def session_of(record):
+    return record.get("sessionId") if isinstance(record, dict) else None
+
+
+def resolve_transcript(session_id, given):
+    """The bound transcript path, or None when no unique session file exists (never invented)."""
+    if given is not None:
+        path = Path(given)
+        if path.name != f"{session_id}.jsonl" or not path.is_file():
+            raise Failure("transcript_path is not this session's transcript")
+        return path
+    matches = [p for p in (config_dir() / "projects").glob(f"*/{session_id}.jsonl") if p.is_file()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def scan_transcript(path, session_id):
+    """Hook failures and event metadata; message, answer and tool bodies are never read out."""
+    failures = deque(maxlen=FAILURE_LIMIT)
+    events = deque(maxlen=EVENT_LIMIT)
+    bound = False
+    with path.open("rb") as stream:
+        for line in stream:
+            if len(line) > MAX_RECORD_BYTES:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            owner = session_of(record)
+            if owner is not None and not bound:
+                if owner != session_id:
+                    raise Failure("transcript belongs to another session")
+                bound = True
+            attachment = record.get("attachment") if isinstance(record.get("attachment"), dict) else {}
+            event = {"type": record.get("type")}
+            if attachment:
+                event["attachment_type"] = attachment.get("type")
+                if attachment.get("hookName"):
+                    event["hookName"] = attachment.get("hookName")
+            if record.get("timestamp"):
+                event["timestamp"] = record.get("timestamp")
+            events.append(event)
+            if attachment.get("type") in HOOK_FAILURES:
+                failures.append({
+                    "hookName": attachment.get("hookName"), "hookEvent": attachment.get("hookEvent"),
+                    "exitCode": attachment.get("exitCode"), "timestamp": record.get("timestamp"),
+                    "command": scrub(str(attachment.get("command") or ""))[:COMMAND_LIMIT],
+                    "stderr": scrub(str(attachment.get("stderr") or ""))[:STDERR_LIMIT]})
+    if not bound:
+        raise Failure("transcript has no record bound to this session")
+    return list(failures), list(events)
+
+
+def handoff_state(session_id):
+    path = config_dir() / "state" / "context-handoff" / "sessions" / f"{session_id}.json"
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return "unavailable"
+    picked = {field: state.get(field) for field in HANDOFF_FIELDS if field in state}
+    nudge = state.get("nudge")
+    picked["nudge_turnEnds"] = nudge.get("turnEnds") if isinstance(nudge, dict) else None
+    return picked
+
+
+def peer_identity(request):
+    track = request.get("track_build") if isinstance(request.get("track_build"), dict) else {}
+    peers = {"track": {"loaded": track.get("loaded"), "disk": track.get("disk")}}
+    try:
+        installed = json.loads((config_dir() / "plugins" / "installed_plugins.json").read_text())
+        entry = next((entries[0] for key, entries in installed.get("plugins", {}).items()
+                      if key.startswith("prismantis@") and entries), None)
+    except (OSError, ValueError, AttributeError):
+        entry = None
+    peers["prismantis"] = ({"version": entry.get("version"), "commit": entry.get("gitCommitSha")}
+                           if isinstance(entry, dict) else "unknown")
+    try:
+        manifest = json.loads((config_dir() / "mods" / "context-handoff" / ".claude-plugin" / "plugin.json").read_text())
+        peers["context-handoff"] = {"version": manifest.get("version")}
+    except (OSError, ValueError, AttributeError):
+        peers["context-handoff"] = "unknown"
+    return peers
+
+
+def private_file(path, text):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(text)
+
+
+def preview(request):
+    session_id = request.get("session_id")
+    note = request.get("note")
+    if not isinstance(session_id, str) or not SESSION_ID.match(session_id):
+        raise UsageError("session_id must be a session UUID")
+    if not isinstance(note, str) or len(note) > MAX_NOTE_CHARS:
+        raise UsageError(f"note must be text of at most {MAX_NOTE_CHARS} characters")
+    given = request.get("transcript_path")
+    if given is not None and not isinstance(given, str):
+        raise UsageError("transcript_path must be a string when present")
+    transcript = resolve_transcript(session_id, given)
+    failures, events = scan_transcript(transcript, session_id) if transcript else ("unavailable", "unavailable")
+    note_out = scrub(note)
+    outbound = {
+        "v": 1, "session_id": session_id, "transcript_path": str(transcript) if transcript else None,
+        "cwd": scrub(str(request.get("cwd") or "")), "cc_version": request.get("cc_version"),
+        "peers": scrub_value(peer_identity(request)), "context_handoff": handoff_state(session_id),
+        "hook_failures": failures, "events": events,
+        "diagnose": scrub_value(request.get("diagnose")), "note_out": note_out}
+    root = report_root()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    draft_id = f"{stamp}-{session_id[:8]}-{secrets.token_hex(4)}"
+    draft = root / draft_id
+    draft.mkdir(mode=0o700)
+    os.chmod(draft, 0o700)
+    private_file(draft / "note.local.txt", note)
+    private_file(draft / "outbound.json", json.dumps(outbound, indent=1))
+    scope = ["note" + (" (secrets removed)" if note_out != note else ""),
+             "session id, Claude Code version, Track/prismantis/context-handoff versions",
+             "Track diagnose bundle (ids and counts)"]
+    if transcript is None:
+        scope.append("transcript unavailable: no unique session file, so no hook failures or events")
+    else:
+        scope.append(f"{len(failures)} hook failure(s): hook, exit code, command and stderr (secrets removed, stderr at most 2 KiB)")
+        scope.append(f"{len(events)} transcript events: type, hook name and time only")
+    scope.append("context-handoff state: phase and counters" if outbound["context_handoff"] != "unavailable"
+                 else "context-handoff state unavailable")
+    return {"ok": True, "draft_id": draft_id, "draft_dir": str(draft), "scope": scope,
+            "note_out": note_out, "note_changed": note_out != note}
 
 
 def parse_args(argv):
@@ -41,15 +247,35 @@ def parse_args(argv):
     if args.command is None:
         parser.print_usage(sys.stderr)
         sys.exit(2)
+    if args.command == "file" and not 1 <= args.timeout_seconds <= 60:
+        parser.error("--timeout-seconds must be between 1 and 60")
     return args
 
 
 def main(argv=None):
-    parse_args(sys.argv[1:] if argv is None else argv)
-    # Stage A scaffold (2026-11-06): the protocol exists, the behaviour does not yet.
-    print(json.dumps({"ok": False, "error": "not implemented"}))
-    print("bug-report: not implemented", file=sys.stderr)
-    return 1
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        request = read_request()
+        if args.command == "file":
+            # Staged release (Codex, 2026-11-06): file stays unimplemented until its own observed red.
+            raise Failure("not implemented")
+        result = preview(request)
+    except UsageError as error:
+        print(json.dumps({"ok": False, "error": str(error)}))
+        print(f"bug-report: {error}", file=sys.stderr)
+        return 2
+    except Failure as error:
+        print(json.dumps(dict({"ok": False, "error": str(error)}, **error.fields)))
+        print(f"bug-report: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    except Exception as error:  # noqa: BLE001 - the protocol promises JSON, never a traceback
+        print(json.dumps({"ok": False, "error": type(error).__name__}))
+        print(f"bug-report: unexpected {type(error).__name__}", file=sys.stderr)
+        return 1
+    print(json.dumps(result))
+    return 0
 
 
 if __name__ == "__main__":
