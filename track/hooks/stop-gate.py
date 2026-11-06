@@ -16,7 +16,7 @@ import time
 
 # TRACK-27 (approved 2026-10-17): the ordinary hook and plugin share these
 # messages and exclusive claims. Missing facts never authorize a hard block.
-KINDS = ("premature_completion", "stale_in_progress", "missing_waiting_request", "untracked_edit")
+KINDS = ("premature_completion", "stale_in_progress", "finished_delegation", "missing_waiting_request", "untracked_edit")
 HOLD_OWNER = "track-stop-hold-v1"
 TTL_SECONDS = 7 * 24 * 60 * 60
 INPUT_KIND = "uncovered_input"
@@ -149,7 +149,7 @@ def freshness_reason(candidate, payload, attributed):
     step = candidate.get("id")
     if kind != "untracked_edit" and (not isinstance(step, str) or not step.strip()):
         return None
-    if kind in ("premature_completion", "stale_in_progress"):
+    if kind in ("premature_completion", "stale_in_progress", "finished_delegation"):
         tasks, owners = payload.get("background_tasks"), candidate.get("owner_task_ids")
         if not isinstance(tasks, list):
             unavailable("background task list")
@@ -163,7 +163,7 @@ def freshness_reason(candidate, payload, attributed):
         running = {task["id"] for task in tasks}
         owner = next((owner for owner in owners if owner in running), None)
         # A running task with no recorded owner might own this step: unknown, not stale.
-        if kind == "stale_in_progress" and owner is None and running and (
+        if kind in ("stale_in_progress", "finished_delegation") and owner is None and running and (
                 not isinstance(attributed, list) or not running <= set(attributed)):
             unavailable("owner identity")
             return None
@@ -174,6 +174,9 @@ def freshness_reason(candidate, payload, attributed):
             )
         if owner is not None:
             return None
+        if kind == "finished_delegation":
+            return (f"track: {step} is still delegated, but its agent has finished. Call mark_step "
+                    "with completed, paused, or in_progress with delegated false, then finish.")
         return (f"track: {step} is still in_progress, but no work owns it. "
                 "Call mark_step with completed, paused, or waiting and the true result, then finish.")
     if kind == "missing_waiting_request":

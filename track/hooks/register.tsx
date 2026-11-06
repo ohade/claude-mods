@@ -870,7 +870,7 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
 type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 const GATE_SNAPSHOT_BYTES = 16 * 1024
-const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'missing_waiting_request', 'untracked_edit']
+const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'finished_delegation', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
 
 
