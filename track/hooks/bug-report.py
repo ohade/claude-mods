@@ -57,6 +57,8 @@ SECRET_PATTERNS = (
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{10,}"),
 )
 SECRET_ASSIGNMENT = re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key)(\s*[=:]\s*)\S+")
+# JSON pairs such as {"password": "..."}: the key stays so the reader sees what was removed.
+SECRET_JSON = re.compile(r'(?i)("(?:password|passwd|secret|token|api[_-]?key)"\s*:\s*)"(?:[^"\\]|\\.)*"')
 
 
 class UsageError(Exception):
@@ -72,6 +74,7 @@ class Failure(Exception):
 def scrub(text):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[REDACTED]", text)
+    text = SECRET_JSON.sub(lambda m: m.group(1) + '"[REDACTED]"', text)
     return SECRET_ASSIGNMENT.sub(lambda m: m.group(1) + m.group(2) + "[REDACTED]", text)
 
 
