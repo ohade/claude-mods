@@ -41,7 +41,9 @@ export const ownerTasksForStep = (a: Activity, step: Step): string[] => {
 }
 
 // Full stored responses, not the capped pane preview, supply waiting requests.
-export const waitingArrowIds = (text: string, stepIds: ReadonlySet<string>): string[] => {
+// TRACK-44: with `visible` (the rows the pane shows), a request may also name the step by its
+// title or a unique prefix of it; permanent ids keep working, and the two-argument call is unchanged.
+export const waitingArrowIds = (text: string, stepIds: ReadonlySet<string>, visible?: ReadonlyArray<Pick<Step, 'id' | 'subject'>>): string[] => {
   const ids: string[] = []
   let fence: { char: string; size: number } | undefined
   for (const raw of text.split('\n')) {
@@ -56,12 +58,30 @@ export const waitingArrowIds = (text: string, stepIds: ReadonlySet<string>): str
       // only an id that names a visible step counts.
       const arrow = /^ {0,3}👉[ \t]+(\S.*?):[ \t]+(\S.*)$/.exec(line)
       if (arrow !== null && stepIds.has(arrow[1]!)) ids.push(arrow[1]!)
+      else if (arrow !== null && visible !== undefined) {
+        const id = titledPointer(line.replace(/^ {0,3}👉[ \t]+/, ''), visible)
+        if (id !== undefined) ids.push(id)
+      }
     }
   }
   return distinctIds(ids)
 }
 
-export const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessCandidate[] => {
+// TRACK-44: the step a "<title>: <request>" pointer names. Each ": " stays a boundary, so a request colon
+// cannot join a title. Exact beats prefix; the longest pointer that matches decides, and two rows name none.
+const key = (text: string): string => text.split(/:[ \t]+/).map(norm).join(':')
+const titledPointer = (rest: string, visible: ReadonlyArray<Pick<Step, 'id' | 'subject'>>): string | undefined => {
+  const titles = visible.map(step => ({ id: step.id, title: key(step.subject) }))
+  const pointers = [...rest.matchAll(/:[ \t]+(?=\S)/g)].map(split => key(rest.slice(0, split.index))).filter(pointer => pointer !== '').reverse()
+  const decide = (match: (title: string, pointer: string) => boolean): string | null | undefined => {
+    const hits = pointers.map(pointer => titles.filter(row => match(row.title, pointer))).find(rows => rows.length > 0)
+    return hits === undefined ? undefined : hits.length === 1 ? hits[0]!.id : null
+  }
+  const exact = decide((title, pointer) => title === pointer)
+  return (exact === undefined ? decide((title, pointer) => title.startsWith(pointer)) : exact) ?? undefined
+}
+
+export const freshnessCandidates = (t: Turn, l: Ledger, a: Activity, withSubjects = true): FreshnessCandidate[] => {
   const fresh = t.freshness?.turnId === t.currentId ? t.freshness : undefined
   const visible = visibleSteps(l.steps)
   const completed: FreshnessCandidate[] = (fresh?.completed ?? []).filter(row => visible.some(step => step.id === row.id && step.status === 'completed') && (row.owner_task_ids === undefined || row.owner_task_ids.length > 0))
@@ -72,7 +92,7 @@ export const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessC
   const finished: FreshnessCandidate[] = visible.filter(step => step.status === 'in_progress' && step.delegated === true && step.followUp === true)
     .map(step => ({ kind: 'finished_delegation', id: step.id, owner_task_ids: ownerTasksForStep(a, step), ...(typeof step.external_owner === 'boolean' && { external_owner: step.external_owner }) }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
-    .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
+    .map(step => ({ kind: 'missing_waiting_request', id: step.id, ...(withSubjects && { subject: step.subject }) }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.
   return [...completed, ...stale, ...finished, ...waiting, ...(fresh !== undefined && fresh.edits.length > 0 && fresh.steps.length === 0 ? [{ kind: 'untracked_edit' as const }] : [])]
 }

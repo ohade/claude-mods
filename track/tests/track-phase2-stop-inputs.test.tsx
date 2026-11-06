@@ -159,7 +159,7 @@ test('R4 the published input remains present while freshness claim copies omit i
   for (const claim of fixture.calls) {
     expect(Object.hasOwn(claim.snapshot, 'inputs')).toBe(false)
     expect(Object.hasOwn(claim.snapshot, 'inputs_complete')).toBe(false)
-    expect(claim.snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1' }])
+    expect(claim.snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1', subject: 'Review the result' }])
   }
 })
 
@@ -186,7 +186,7 @@ test('R6b long input reasons shrink before they displace a waiting candidate', a
   const snapshot = fixture.snapshot()
   expect(snapshot.inputs?.map(row => row.id)).toEqual(inputs.map(row => row.id))
   expect(snapshot.inputs_complete).toBe(true)
-  expect(snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1' }])
+  expect(snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1', subject: 'Review the result' }])
   expect(snapshot.inputs?.at(-1)?.reason).toBe(worded(inputs.at(-1)!.excerpt))
   expect(snapshot.inputs?.[0]?.reason).toContain('mcp__track__track_question')
   expect(snapshot.inputs![0]!.reason.length).toBeLessThan(worded(inputs[0]!.excerpt).length)

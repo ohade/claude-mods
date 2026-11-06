@@ -208,7 +208,7 @@ test('with several open questions this turn, the block names the first and lists
 const freshnessMessages: Array<[FreshnessKind, string]> = [
   ['premature_completion', 'track: task:7 is completed while its owned task worker-7 is still running. Reopen or pause the step, or wait for that task, then finish.'],
   ['stale_in_progress', 'track: task:7 is still in_progress, but no work owns it. Call mark_step with completed, paused, or waiting and the true result, then finish.'],
-  ['missing_waiting_request', 'track: task:7 is waiting, but the final reply has no 👉 task:7: request line. Ask the user visibly, then finish.'],
+  ['missing_waiting_request', 'track: "Finish the change" (task:7) is waiting, but the final reply has no 👉 Finish the change: request line. Ask the user visibly, then finish.'],
   ['untracked_edit', 'track: this turn changed files but no step was created or marked. Reuse a step with mark_step or register one with track_steps, then finish.'],
 ]
 

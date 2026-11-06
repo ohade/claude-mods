@@ -188,6 +188,12 @@ def freshness_reason(candidate, payload, attributed):
         return (f"track: {step} is still in_progress, but no work owns it. "
                 "Call mark_step with completed, paused, or waiting and the true result, then finish.")
     if kind == "missing_waiting_request":
+        # TRACK-44: name the step by the title the pane shows; an old snapshot keeps the id wording.
+        title = candidate.get("subject")
+        if isinstance(title, str) and title.strip():
+            title = title.strip()
+            return (f'track: "{title}" ({step}) is waiting, but the final reply has no 👉 {title}: request line. '
+                    "Ask the user visibly, then finish.")
         return (f"track: {step} is waiting, but the final reply has no 👉 {step}: request line. "
                 "Ask the user visibly, then finish.")
     if kind == "untracked_edit":

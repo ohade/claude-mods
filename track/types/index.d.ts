@@ -142,7 +142,7 @@ export type Baseline = { session_id: string; ledger: Ledger; checkpoint?: Checkp
 // `lastText`: the main loop's last text row, its text, and the turn it was written in.
 // Only the exact composedRule proves that the current instruction reached the model.
 export type FreshnessKind = 'premature_completion' | 'stale_in_progress' | 'finished_delegation' | 'missing_waiting_request' | 'untracked_edit'
-export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[]; external_owner?: boolean }
+export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[]; external_owner?: boolean; subject?: string }
 export type StepFreshness = {
   turnId: string
   edits: string[]

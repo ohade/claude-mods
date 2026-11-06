@@ -907,6 +907,8 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
       candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [],
       // The command Stop hook copies this into its task inventory: a launch numbered above it is newer.
       launch_seq: a.launchSeq ?? 0 }
+    // TRACK-44: step titles are optional repair text; drop them before losing any safety candidate.
+    if (utf8Bytes(snapshot) > GATE_SNAPSHOT_BYTES) snapshot.candidates = freshnessCandidates(t, l, a, false)
     while (utf8Bytes(snapshot) > GATE_SNAPSHOT_BYTES && snapshot.candidates.length > 0) {
       snapshot.candidates.pop()
       snapshot.truncated = true
@@ -2817,7 +2819,8 @@ export const register: Register = on => {
     const text = textOf(stored.message.content)
     const current = await read($, turn)
     if (current.currentId !== observed.turnId) return stored
-    const arrows = waitingArrowIds(text, new Set(visibleSteps((await read($, ledger)).steps).map(step => step.id)))
+    const shown = visibleSteps((await read($, ledger)).steps)
+    const arrows = waitingArrowIds(text, new Set(shown.map(step => step.id)), shown)
     await update($, turn, cur => {
       if (cur.currentId !== observed.turnId || cur.lastText?.order !== observed.order) return cur
       const fresh = cur.freshness?.turnId === observed.turnId ? cur.freshness : freshTurn(observed.turnId!)

@@ -34,7 +34,7 @@ assert.deepEqual(freshnessCandidates(orderedTurn, ledger([
 ]), activity), [
   { kind: 'stale_in_progress', id: 'plan:2', owner_task_ids: [] },
   expected,
-  { kind: 'missing_waiting_request', id: 'plan:3' },
+  { kind: 'missing_waiting_request', id: 'plan:3', subject: 'Work' },
 ], 'stale precedes finished delegation, which precedes waiting')
 
 // SOURCE contract only: parse the static array without evaluating repository code.

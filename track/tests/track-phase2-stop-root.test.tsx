@@ -66,7 +66,7 @@ const prepare = (on: On, kind: 'input' | 'freshness') => {
     } else {
       expect(Object.hasOwn(snapshot, 'inputs')).toBe(false)
       expect(Object.hasOwn(snapshot, 'inputs_complete')).toBe(false)
-      expect(snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1' }])
+      expect(snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1', subject: 'Review the result' }])
     }
     return { value: { exitCode: 0, stdout: JSON.stringify(kind === 'input' ? {} : { decision: 'block', reason: FRESHNESS_REASON }),
       stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
