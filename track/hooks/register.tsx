@@ -3166,9 +3166,21 @@ export const register: Register = on => {
         ? { ...a, isWorking: false, agentCalls: [], askCalls: [] }
         : a)
     } else {
-      // A background agent's loop ended.
+      // A background agent's loop ended: retire it as a finished task, so the step it owned is flagged now.
       const agentId = e.agentId
-      await update($, activity, a => ({ ...a, background: a.background.filter(id => id !== agentId) }))
+      // Fence on the owner at completion. A child receipt never claims or switches the session owner.
+      const epoch = ownership.epoch
+      try {
+        const owner = (await read($, ledger)).session_id ?? (await read($, durability)).memorySession ?? undefined
+        const token: OwnerToken = { owner, epoch }
+        const assertAdmitted = () => assertOwner(token)
+        assertAdmitted()
+        await finishTasks($, () => [agentId], assertAdmitted, token)
+        await publishGate($, token)
+      } catch (error) {
+        // The owner changed during this child completion: its writes belong to the old session, so drop them.
+        if (!(error instanceof OwnerChanged)) throw error
+      }
     }
     const done = await next(e)
     if (e.agentId === undefined && deployDrift.isShown) $.clock.after(0, () => checkDeployDrift($))

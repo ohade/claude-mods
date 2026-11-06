@@ -1,4 +1,6 @@
 // FIXTURE: actual native registration payloads/order, frozen before the pure-owner move.
+// The payload checksum includes the reviewed TRACK-30 mark_step extension (external_owner property
+// and its description sentence); lifecycle and registration order are the pre-owner-move baseline.
 import { expect, mock, test } from 'claude-code/testing'
 import { checksumOf } from '../hooks/checkpoint'
 import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
@@ -36,7 +38,7 @@ test('native tool registration preserves all discovery contracts and its lifecyc
   expect(trace.slice(0, 10)).toEqual(['command:track', ...NAMES.map(name => `tool:${name}`)])
   expect(trace.indexOf('owner') > 9).toBe(true)
   expect(trace.indexOf('housekeeping') > trace.indexOf('owner')).toBe(true)
-  expect(await checksumOf(canonical(payloads))).toBe('715855064492afda0f13a79c2b059a3b7ee478d0c023faec6e4ead4ccef71ee7')
+  expect(await checksumOf(canonical(payloads))).toBe('c9cde67a7ba48fc0ed8a6e3e45587ec063a914bc5c66515011458af2b57624f3')
   expect(payloads[0]!.inputSchema!.required).toEqual(['summary'])
   expect(payloads[1]!.inputSchema!.required).toEqual(['id', 'status'])
   expect(payloads[3]!.inputSchema!.required).toEqual(['from_session'])
@@ -44,5 +46,9 @@ test('native tool registration preserves all discovery contracts and its lifecyc
   expect(payloads[8]!.inputSchema!.required).toEqual(['id', 'status'])
   expect((payloads[8]!.inputSchema!.properties as Record<string, { enum?: string[] }>).status!.enum).toEqual(['pending', 'in_progress', 'completed', 'paused', 'waiting'])
   expect((payloads[7]!.inputSchema!.properties as Record<string, { maxItems?: number }>).ids!.maxItems).toBe(300)
+  // TRACK-30: the local-owner declaration, pinned literally so the checksum is not its only guard.
+  expect((payloads[8]!.inputSchema!.properties as Record<string, unknown>).external_owner).toEqual({ type: 'boolean',
+    description: 'Only with delegated:true. Set false ONLY when every owner is a recorded local background task; true or an unknown declaration keeps external work nonblocking. Omission retains any prior declaration.' })
+  expect(payloads[8]!.description).toContain('Set external_owner:false only when every owner is a recorded local background task.')
   expect(payloads.every(payload => payload.isDeferred === undefined)).toBe(true)
 })
