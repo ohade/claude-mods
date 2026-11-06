@@ -37,7 +37,7 @@ import type { SessionHead } from './durable-record'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
 import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, clearQuestionRows, hideAnsweredQuestions, mayMarkAnswer, markQuestion, bindAnswerResponse, markerForQuestion, captureMarkerAnswer } from './question-commands'
 import { planStepClear, hideCompletedSteps } from './clear-commands'
-import { planInsertion, insertPlan, replacePlan, markStep } from './step-commands'
+import { planInsertion, insertPlan, replacePlan, markStep, delegationError } from './step-commands'
 import { createTask, updateTask, replaceTodos } from './task-sync-commands'
 import { classifyTranscriptChange, printsOf } from './transcript-baseline'
 import { readBlob } from './blob-store'
@@ -3682,7 +3682,8 @@ export const register: Register = on => {
       return { deny: 'track: a subagent cannot mark the session\'s steps.' }
     }
     const currentId = (await read($, turn)).currentId
-    if (e.delegated !== undefined && typeof e.delegated !== 'boolean') return { deny: 'track: delegated must be a boolean.' }
+    const delegationProblem = delegationError(e)
+    if (delegationProblem !== undefined) return { deny: delegationProblem }
     const id = String(e.id)
     const status = STEP_STATUSES.find(one => one === e.status)
     const supplied = typeof e.result_text === 'string' ? e.result_text.trim() : undefined
@@ -3701,7 +3702,7 @@ export const register: Register = on => {
     await updateOwnedLedger($, token, cur => {
       // A compare-and-set retry must discard eligibility from the old snapshot.
       if (reuse !== undefined) reuse.step = undefined
-      const proposal = markStep(cur, { id, status, now, currentId, note: typeof e.note === 'string' ? e.note : undefined, delegated: e.delegated, result })
+      const proposal = markStep(cur, { id, status, now, currentId, note: typeof e.note === 'string' ? e.note : undefined, delegated: e.delegated, external_owner: e.external_owner, result })
       if (reuse !== undefined) reuse.step = proposal.reusableStep
       return proposal.ledger
     })

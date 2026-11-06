@@ -61,7 +61,7 @@ export const toolContracts = (steps: string, stepResult: string, statuses: reado
   mark_step: {
     name: 'mark_step',
     description:
-      `Set a step's status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user's answer. ${stepResult} When a request reuses existing open work, pass its exact source_text or known source_request_id and keep the current status unless the work changes status; the request is registered only after saving. Repeating an old completed step does not register a new request. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.`,
+      `Set a step's status in the track pane as you work: in_progress when you start it, completed when done, paused when you park it unfinished, waiting when it needs the user's answer. ${stepResult} When a request reuses existing open work, pass its exact source_text or known source_request_id and keep the current status unless the work changes status; the request is registered only after saving. Repeating an old completed step does not register a new request. Set delegated:true while agents own the work, including agents launched through other tools; set delegated:false when you resume it. Set external_owner:false only when every owner is a recorded local background task. True or an unknown declaration keeps external work nonblocking; omission retains a prior declaration. Ids: plan:1, plan:2, … (from track_steps), task:<taskId>, todo:<the todo text, lowercased>. For Tasks, TaskUpdate does this already.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -72,6 +72,7 @@ export const toolContracts = (steps: string, stepResult: string, statuses: reado
         source_request_id: { type: 'string', description: 'Optional known source request UUID; takes precedence over source_text and must name an uncovered request.' },
         note: { type: 'string', description: 'Optional complete owner or blocker note, including a peer or background wait. Saved without shortening; storage capacity failures are reported.' },
         delegated: { type: 'boolean', description: 'Agents own this work; false when the main session resumes it. Does not assert peer liveness.' },
+        external_owner: { type: 'boolean', description: 'Only with delegated:true. Set false ONLY when every owner is a recorded local background task; true or an unknown declaration keeps external work nonblocking. Omission retains any prior declaration.' },
       },
       required: ['id', 'status'],
     },

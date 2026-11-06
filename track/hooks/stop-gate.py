@@ -157,6 +157,12 @@ def freshness_reason(candidate, payload, attributed):
         if not isinstance(owners, list) or not all(isinstance(owner, str) and owner for owner in owners):
             unavailable("owner receipt")
             return None
+        if kind == "finished_delegation" and not owners:
+            unavailable("finished task owner receipt")
+            return None
+        if kind == "finished_delegation" and candidate.get("external_owner") is not False:
+            unavailable("complete local ownership declaration")
+            return None
         if not all(isinstance(task, dict) and isinstance(task.get("id"), str) for task in tasks):
             unavailable("background task identity")
             return None
@@ -175,8 +181,10 @@ def freshness_reason(candidate, payload, attributed):
         if owner is not None:
             return None
         if kind == "finished_delegation":
-            return (f"track: {step} is still delegated, but its agent has finished. Call mark_step "
-                    "with completed, paused, or in_progress with delegated false, then finish.")
+            return (f"track: {step} is still delegated, but its recorded background tasks have finished. "
+                    "Call mark_step with completed or paused and the true result. If another owner remains, "
+                    "keep in_progress with delegated:true and a note naming that owner. Use delegated:false "
+                    "only when the main thread resumes work now, then finish.")
         return (f"track: {step} is still in_progress, but no work owns it. "
                 "Call mark_step with completed, paused, or waiting and the true result, then finish.")
     if kind == "missing_waiting_request":

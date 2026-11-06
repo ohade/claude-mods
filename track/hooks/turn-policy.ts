@@ -70,7 +70,7 @@ export const freshnessCandidates = (t: Turn, l: Ledger, a: Activity): FreshnessC
     .map(step => ({ kind: 'stale_in_progress', id: step.id, owner_task_ids: ownerTasksForStep(a, step) }))
   // Follow-up can mark one finished owner while another still runs; the gate checks liveness.
   const finished: FreshnessCandidate[] = visible.filter(step => step.status === 'in_progress' && step.delegated === true && step.followUp === true)
-    .map(step => ({ kind: 'finished_delegation', id: step.id, owner_task_ids: ownerTasksForStep(a, step) }))
+    .map(step => ({ kind: 'finished_delegation', id: step.id, owner_task_ids: ownerTasksForStep(a, step), ...(typeof step.external_owner === 'boolean' && { external_owner: step.external_owner }) }))
   const waiting: FreshnessCandidate[] = visible.filter(step => step.status === 'waiting' && fresh?.waiting.includes(step.id) && !fresh.response?.arrow_ids.includes(step.id))
     .map(step => ({ kind: 'missing_waiting_request', id: step.id }))
   // Held kinds stay listed; `held` travels beside them and both Stop paths skip it.

@@ -24,14 +24,21 @@ export const replacePlan = (ledger: Ledger, rows: Step[], replace: boolean, sess
 
 type Result = { resultText: string; resultTextHash: string; resultAt: number; resultRequestId?: string; resultTurnId?: string }
 
-export const markStep = (ledger: Ledger, values: { id: string; status: Step['status']; now: number; currentId: string | null; note?: string; delegated?: boolean; result?: Result }): { ledger: Ledger; reusableStep?: Step } => {
-  const { id, status, now, currentId, note, delegated, result } = values
+export const delegationError = (values: { delegated?: unknown; external_owner?: unknown }): string | undefined => {
+  if (values.delegated !== undefined && typeof values.delegated !== 'boolean') return 'track: delegated must be a boolean.'
+  if (values.external_owner !== undefined && (typeof values.external_owner !== 'boolean' || values.delegated !== true)) return 'track: external_owner must be a boolean and requires delegated:true.'
+  return undefined
+}
+
+export const markStep = (ledger: Ledger, values: { id: string; status: Step['status']; now: number; currentId: string | null; note?: string; delegated?: boolean; external_owner?: boolean; result?: Result }): { ledger: Ledger; reusableStep?: Step } => {
+  const { id, status, now, currentId, note, delegated, external_owner, result } = values
   let reusableStep: Step | undefined
   const steps = ledger.steps.map(s => {
     if (s.id !== id) return s
     if (s.cleared !== true && (s.status !== 'completed' || status !== 'completed')) reusableStep = s
-    const { followUp: _followUp, delegated: _delegated, ...changed } = withStatus(result === undefined ? s : withoutStepResult(s), status, now, currentId)
-    return { ...changed, ...((delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }), ...(note !== undefined && { note }), ...result }
+    const { followUp: _followUp, delegated: _delegated, external_owner: _externalOwner, ...changed } = withStatus(result === undefined ? s : withoutStepResult(s), status, now, currentId)
+    const owner = external_owner ?? (s.delegated === true ? s.external_owner : undefined)
+    return { ...changed, ...((delegated ?? s.delegated) === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const, ...(typeof owner === 'boolean' && { external_owner: owner }) }), ...(note !== undefined && { note }), ...result }
   })
   return { ledger: { ...ledger, steps }, reusableStep }
 }

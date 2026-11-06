@@ -168,12 +168,17 @@ running turn. Doorbells and informational notifications alone need no row. Track
   `mark_step({ delegated: true })` identifies work owned by agents, including agents launched
   through other tools. It shows the brown hourglass and agents banner. Use `delegated: false`
   when the main session resumes that step. This is explicit ownership, not a peer-liveness probe.
-  Completed steps clear it. Concurrent main work stays grey on its own row.
+  Declare `external_owner: false` with `delegated: true` only when every owner is a recorded local
+  background task. Omission retains a prior declaration; set it to `true` if an external owner may
+  exist. Unknown or external ownership keeps finished-delegation Stop nonblocking. Review a
+  follow-up with `mark_step`; if another owner remains, keep `in_progress` and `delegated: true`
+  with a note naming that owner. Completed and waiting steps clear ownership. Concurrent main
+  work stays grey on its own row.
   Explicit ownership leaves agent counts unknown; only native-only activity supplies a count.
   User waiting does not hide concurrent work: unsaved, agents, main work, and waiting on you
   are separate rows, top to bottom, and only the amber glyph pulses. A short pane collapses to
   the highest-priority row and a count.
-  Paused, pending and user-waiting rows retain ownership metadata but do not count as active
+  Paused and pending rows retain ownership metadata but do not count as active
   delegated work or show a running hourglass. An open question dialog alone does not imply
   that the main session is working. Actual native background activity still shows and pulses.
 - **Steps.** Filled from the model's own `TaskCreate`, `TaskUpdate`, `TodoWrite` and explicit

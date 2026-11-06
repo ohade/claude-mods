@@ -98,7 +98,7 @@ export const savedStep = (row: unknown): Step | undefined => {
     status,
     ...(typeof r.taskId === 'string' ? { taskId: r.taskId } : {}),
     ...(r.cleared === true ? { cleared: true as const } : {}),
-    ...(r.delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const }),
+    ...(r.delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const, ...(typeof r.external_owner === 'boolean' && { external_owner: r.external_owner }) }),
     ...(status === 'in_progress' && typeof r.activeTurnId === 'string' && { activeTurnId: r.activeTurnId }),
     ...(typeof r.startedAt === 'number' ? { startedAt: r.startedAt } : {}),
     ...(typeof r.endedAt === 'number' ? { endedAt: r.endedAt } : {}),

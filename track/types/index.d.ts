@@ -83,6 +83,8 @@ export type Step = {
   note?: string
   // Explicit work ownership, independent of whether agents run through Agent or a shell.
   delegated?: true
+  // Unknown unless explicitly false: all owners are recorded local background tasks.
+  external_owner?: boolean
   // Background work finished while this row was still open. The status stays until the lead updates it.
   followUp?: true
   // The main turn that last started this work. Kept for reload, removed on cross-session restore.
@@ -140,7 +142,7 @@ export type Baseline = { session_id: string; ledger: Ledger; checkpoint?: Checkp
 // `lastText`: the main loop's last text row, its text, and the turn it was written in.
 // Only the exact composedRule proves that the current instruction reached the model.
 export type FreshnessKind = 'premature_completion' | 'stale_in_progress' | 'finished_delegation' | 'missing_waiting_request' | 'untracked_edit'
-export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[] }
+export type FreshnessCandidate = { kind: FreshnessKind; id?: string; owner_task_ids?: string[]; external_owner?: boolean }
 export type StepFreshness = {
   turnId: string
   edits: string[]
@@ -215,7 +217,7 @@ declare module 'claude-code' {
     mcp__track__mark_step: {
       id: string; status: Step['status']
       result_text?: string; source_text?: string; source_request_id?: string
-      note?: string; delegated?: boolean
+      note?: string; delegated?: boolean; external_owner?: boolean
     }
   }
 
