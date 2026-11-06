@@ -1,10 +1,5 @@
-export type ReportOwner = { session: string; epoch: number }
-export type ReportPhase = 'editing' | 'previewing' | 'preview' | 'filing' | 'filed' | 'ambiguous'
-export type ReportForm = {
-  owner?: ReportOwner; revision: number; note: string; phase: ReportPhase
-  draftId?: string; scope?: string[]; noteOut?: string; noteChanged?: boolean
-  ticket?: string; error?: string
-}
+import type { ReportForm, ReportOwner } from '../types'
+export type { ReportOwner, ReportPhase, ReportForm } from '../types'
 export type PreviewReply = { ok: true; draft_id: string; scope: string[]; note_out: string; note_changed: boolean } | { ok: false; error: string }
 export type FileReply = { ok: true; ticket: string } | { ok: false; error: string; ambiguous?: boolean }
 export type ReportPorts = {

@@ -6,6 +6,7 @@ import { wrappedLines } from './terminal-text'
 
 type RowInput = {
   width: number; bodyRows: number; compact: boolean; rowIndent: number
+  bottomWidths?: number[]; sessionLabel?: string
   clearWidths: number[]; hints: readonly { text: string }[]; hasQuestions: boolean; hasSteps: boolean
   allLabel: string; doneLabel: string; questions: Question[]; steps: Step[]
   opened: Readonly<Record<string, 'q' | 'a' | 'r' | undefined>>; resultReveals: ReadonlyMap<string, string>
@@ -16,7 +17,8 @@ export const paneRowMetrics = (input: RowInput) => {
   const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf } = input
   const roomy = bodyRows >= 16
   const titleRows = roomy ? 2 : 1
-  const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
+  const bottomRows = flowRows([...(input.bottomWidths ?? clearWidths), ...hints.map(hint => hint.text.length)], width, HEADER_GAP) +
+    (input.sessionLabel === undefined ? 0 : wrappedLines(input.sessionLabel, width))
   const qButtons = hasQuestions ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
   const sButtons = hasSteps ? clearWidths : []
   const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))

@@ -122,6 +122,14 @@ export type Ledger = {
 
 // Native validation failed on 2026-10-19 because the public contract imported
 // Baseline from hooks. Keep its dependency types here, without external imports.
+export type ReportOwner = { session: string; epoch: number }
+export type ReportPhase = 'editing' | 'previewing' | 'preview' | 'filing' | 'filed' | 'ambiguous'
+export type ReportForm = {
+  owner?: ReportOwner; revision: number; note: string; phase: ReportPhase
+  draftId?: string; scope?: string[]; noteOut?: string; noteChanged?: boolean
+  ticket?: string; error?: string
+}
+
 export type Checkpoint = {
   v: 1
   ok: boolean
@@ -221,6 +229,8 @@ declare module 'claude-code' {
 
   interface PluginState {
     track: {
+      reportForm: ReportForm
+      reportOpen: boolean
       ledger: Ledger
       turn: Turn
       pane: Pane

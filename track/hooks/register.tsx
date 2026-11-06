@@ -45,6 +45,9 @@ import { BUILD_IDENTITY } from './build-identity'
 import { identityOf } from './identity-read'
 import type { BlobFs } from './blob-store'
 import { diagnose } from './diagnose-flow'
+import { EMPTY_REPORT, openReport, editReport, previewReport, fileReport, newReport } from './report-flow'
+import type { ReportPorts, ReportOwner, PreviewReply, FileReply } from './report-flow'
+import { reportView } from './report-view'
 import type { DiagnosePorts } from './diagnose-flow'
 import type { GateProjection, RingEntry, RingValue } from './diagnose-bundle'
 import { workState } from './work-appearance'
@@ -228,6 +231,8 @@ const AGENT_TASK = /agent|workflow/i
 
 const EMPTY_LEDGER: Ledger = { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: [] }
 
+const reportForm = atom({ plugin: 'track', key: 'reportForm' } as const, EMPTY_REPORT)
+const reportOpen = atom({ plugin: 'track', key: 'reportOpen' } as const, false)
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
 const turn = atom({ plugin: 'track', key: 'turn' } as const, { currentId: null, gatedTurnId: null } as Turn)
 const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hidden: false, closedByPerson: false } as Pane)
@@ -2419,6 +2424,8 @@ const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
   const prior = ownership.running?.run.catch(() => undefined) ?? Promise.resolve()
   const run = prior.then(async () => {
     ownership.epoch++
+    await update($, reportForm, () => EMPTY_REPORT)
+    await update($, reportOpen, () => false)
     ringOwner.id = id
     // Decide after queued transitions finish: A->B->A must clear B's atoms.
     // A same-target direct resume fences old tokens while keeping its own atoms.
@@ -2521,6 +2528,63 @@ const diagnosePorts = ($: EngineInterface): DiagnosePorts => ({
   events: () => eventRing,
   identity: LOADED_IDENTITY,
 })
+
+const reportPorts = ($: EngineInterface, boundOwner?: ReportOwner): ReportPorts => {
+  const isCurrent = async (owner: ReportOwner): Promise<boolean> => {
+    if (ownership.running !== undefined || ownership.epoch !== owner.epoch) return false
+    try {
+      const session = await $.session.id()
+      return session === owner.session && ownership.running === undefined && ownership.epoch === owner.epoch
+    } catch { return false }
+  }
+  return {
+    owner: async () => {
+      if (boundOwner && !(await isCurrent(boundOwner))) return undefined
+      const owned = await ensureOwner($)
+      if (!owned.ok || owned.token.owner === undefined || (boundOwner && owned.token.owner !== boundOwner.session)) return undefined
+      return { session: owned.token.owner, epoch: owned.token.epoch }
+    },
+    isCurrent,
+    read: () => read($, reportForm),
+    update: change => update($, reportForm, current => boundOwner && (ownership.running !== undefined || ownership.epoch !== boundOwner.epoch) ? current : change(current)).then(() => undefined),
+    preview: async (owner, note): Promise<PreviewReply> => {
+      const config = await configDir($)
+      const cwd = await $.session.cwd()
+      const version = (await $.session.version()).version
+      const disk = await observedDisk($)
+      const diagnostic = await diagnose(diagnosePorts($), {})
+      if (!config?.startsWith('/') || 'deny' in diagnostic) throw new Error('preview context unavailable')
+      const context = JSON.parse(diagnostic.result) as unknown
+      if (!(await isCurrent(owner))) throw new Error('report owner changed')
+      const result = await $.process.run(['python3', `${$.plugin.root}/hooks/bug-report.py`, 'preview'], {
+        stdin: JSON.stringify({ v: 1, session_id: owner.session, cwd, cc_version: version, track_build: { loaded: LOADED_IDENTITY.loaded, disk }, diagnose: context, note }),
+        env: { CLAUDE_CONFIG_DIR: config }, timeoutMs: 30000,
+      })
+      if (result.exitCode !== 0 || result.isStdoutTruncated) throw new Error('preview failed')
+      const reply = JSON.parse(result.stdout) as PreviewReply
+      if (reply.ok !== true || typeof reply.draft_id !== 'string' || !Array.isArray(reply.scope) || !reply.scope.every(item => typeof item === 'string') || typeof reply.note_out !== 'string' || typeof reply.note_changed !== 'boolean') throw new Error('invalid preview reply')
+      return reply
+    },
+    file: async (draftId): Promise<FileReply> => {
+      const owner = boundOwner
+      const config = await configDir($)
+      if (!owner || !config?.startsWith('/') || !(await isCurrent(owner))) throw new Error('report owner or configuration unavailable')
+      const result = await $.process.run(['python3', `${$.plugin.root}/hooks/bug-report.py`, 'file'], {
+        stdin: JSON.stringify({ v: 1, draft_id: draftId }), env: { CLAUDE_CONFIG_DIR: config }, timeoutMs: 30000,
+      })
+      if (result.isStdoutTruncated) throw new Error('invalid file reply')
+      const reply = JSON.parse(result.stdout) as FileReply
+      if (reply.ok === true && result.exitCode === 0 && typeof reply.ticket === 'string') return reply
+      if (reply.ok === false && typeof reply.error === 'string' && reply.ambiguous === false) return { ok: false, error: 'Report was not filed. Please check the draft and try again.', ambiguous: false }
+      throw new Error('file outcome unknown')
+    },
+  }
+}
+
+const copyReportSession = async ($: EngineInterface, owner: ReportOwner): Promise<void> => {
+  if (!(await reportPorts($).isCurrent(owner))) return
+  try { await $.ui.copy({ text: owner.session }) } catch { $.ui.log('track: session copy failed', { to: 'debug' }) }
+}
 
 export const register: Register = on => {
   // Per-call eligibility crosses the handler/save boundary, then leaves memory.
@@ -3976,6 +4040,7 @@ export const register: Register = on => {
   // last scrolled. The pane body is pinned at its top (offset 0): its tree is as tall as the body,
   // and a body left scrolled down could otherwise never come back.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (await read($, reportOpen)) return next(e)
     if (e.origin.kind !== 'person') {
       return next(e)
     }
@@ -4007,7 +4072,26 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Text, Input } = $.ui.resolve(e)
+    const form = await read($, reportForm)
+    const ports = reportPorts($, form.owner)
+    if (await read($, reportOpen) && form.owner && await ports.isCurrent(form.owner)) {
+      const owner = form.owner
+      const run = (action: Promise<void>) => { void action.catch(() => $.ui.log('track: report action failed', { to: 'debug' })) }
+      return reportView({ Box, Button, Text, Input }, {
+        form, width: Math.max(1, e.props.bodyColumns),
+        onNote: value => run(editReport(ports, owner, value)),
+        onPreview: value => run((async () => { await editReport(ports, owner, value); await previewReport(ports, owner) })()),
+        onFile: () => run(fileReport(ports, owner)),
+        onNewReport: () => run(newReport(ports, owner)),
+        onClose: () => run((async () => { if (await ports.isCurrent(owner)) await update($, reportOpen, current => ownership.running === undefined && ownership.epoch === owner.epoch ? false : current) })()),
+        onCopySession: () => run(copyReportSession($, owner)),
+      })
+    }
+    let session: string | undefined
+    try { session = await $.session.id() } catch { session = undefined }
+    const sessionLabel = session ? `Session: ${session}` : 'Session unavailable'
+    const footerOwner = session ? { session, epoch: ownership.epoch } : undefined
     const l = await read($, ledger)
     const now = await read($, activity)
     const saved = await read($, durability)
@@ -4113,6 +4197,7 @@ export const register: Register = on => {
       item(`item-clear-completed${suffix}`, <Button key={`clear-completed${suffix}`} plain dimColor hotkey="c" label={doneLabel} onPress={clearCompletedSteps} />),
     ]
     const clearWidths = [l.steps.length > 0 ? buttonWidth('s', stepsLabel) : 0, buttonWidth('c', doneLabel)]
+    const bottomWidths = [...clearWidths, buttonWidth('r', 'Report issue'), buttonWidth('y', 'Copy session')]
     const hints = compact ? [{ key: 'hint-hide', text: '/track hide' }, { key: 'hint-close', text: 'ctrl+x x close' }] : [{ key: 'hint', text: HINT }]
 
     const { work, openRows } = paneBanner({
@@ -4133,7 +4218,7 @@ export const register: Register = on => {
     // fixed rows, a header or the bar as many as its items wrap onto; the two regions share the
     // room left, measured in wrapped lines.
     const metrics = paneRowMetrics({
-      width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions: l.questions.length > 0, hasSteps: l.steps.length > 0,
+      width, bodyRows, compact, rowIndent, clearWidths, bottomWidths, sessionLabel, hints, hasQuestions: l.questions.length > 0, hasSteps: l.steps.length > 0,
       allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf,
     })
     const { roomy, titleRows, qWidth, qControlsRows, stepControlsRows, stepWidth, stepSubjectWidth } = metrics
@@ -4231,7 +4316,22 @@ export const register: Register = on => {
             onJumpResult: key => jump($, [key], 'start', key, renderInstances.get(key)),
           })
         })
-    const bottomControls = clearButtons('-bottom')
-    return paneRootView({ Box, Button, Text }, { width, bodyRows, roomy, titleLabel, titleSide, qDone, qTotal: questions.length, qRing, qHidden, qRows, qEmpty, sDone, sTotal: steps.length, sRing, sHidden, sRows, sEmpty, questionClear, answeredClear, stepHeaderControls, bottomControls, questionRows, stepRows, hints, bannerRows })
+    const bottomControls = [...clearButtons('-bottom'),
+      item('item-report', <Button key="report" plain hotkey="r" label="Report issue" onPress={() => { void (async () => {
+        if (!footerOwner || !(await ports.isCurrent(footerOwner))) return
+        const admitted = await reportPorts($, footerOwner).owner()
+        if (!admitted || admitted.session !== footerOwner.session) return
+        const openPorts = reportPorts($, admitted)
+        await openReport(openPorts)
+        const owner = (await read($, reportForm)).owner
+        if (owner && owner.session === footerOwner.session && await openPorts.isCurrent(owner)) await update($, reportOpen, current => ownership.running === undefined && ownership.epoch === owner.epoch ? true : current)
+      })().catch(() => $.ui.log('track: report open failed', { to: 'debug' })) }} />),
+      item('item-copy-session', <Button key="copy-session" plain hotkey="y" label="Copy session" onPress={() => { void (async () => {
+        if (!footerOwner) return
+        const admitted = await reportPorts($, footerOwner).owner()
+        if (admitted && admitted.session === footerOwner.session) await copyReportSession($, admitted)
+      })().catch(() => $.ui.log('track: session copy failed', { to: 'debug' })) }} />),
+    ]
+    return paneRootView({ Box, Button, Text }, { width, bodyRows, roomy, titleLabel, titleSide, qDone, qTotal: questions.length, qRing, qHidden, qRows, qEmpty, sDone, sTotal: steps.length, sRing, sHidden, sRows, sEmpty, questionClear, answeredClear, stepHeaderControls, bottomControls, questionRows, stepRows, hints, bannerRows, sessionLabel })
   })
 }

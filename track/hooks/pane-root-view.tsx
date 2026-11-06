@@ -4,6 +4,7 @@ import type { BannerRow } from './banner-layout'
 import { HEADER_GAP } from './pane-layout'
 
 export type PaneFrame = {
+  sessionLabel?: string
   width: number; bodyRows: number; roomy: boolean; titleLabel: string; titleSide: number
   qDone: number; qTotal: number; qRing: string; qHidden: string; qRows: number; qEmpty: string
   sDone: number; sTotal: number; sRing: string; sHidden: string; sRows: number; sEmpty: string
@@ -66,6 +67,7 @@ export const paneRootView = (elements: PaneElements, frame: PaneFrame): JSX.Elem
         {stepRows}
         </Box>
         <Box flexGrow={1} />
+        {frame.sessionLabel !== undefined && <Box key="session" width={width}><Text dimColor wrap="wrap">{frame.sessionLabel}</Text></Box>}
         <Box key="bottom-bar" flexDirection="row" flexWrap="wrap" columnGap={HEADER_GAP} marginTop={roomy ? 1 : 0}>
           {bottomControls}
           {hints.map(hint => item(hint.key, <Text dimColor>{hint.text}</Text>))}
