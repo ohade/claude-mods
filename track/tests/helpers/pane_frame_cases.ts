@@ -114,7 +114,9 @@ const invariantNodes = (file: ts.SourceFile) => nodes(file).flatMap(node => {
   if (ts.isVariableDeclaration(node) && node.initializer && !['register', 'item', 'questionRows', 'stepRows', ...names].includes(node.name.getText(file))) return [`init:${node.name.getText(file)}:${digest(norm(node.initializer, file))}`]
   return []
 }).sort()
-export const assertPaneNative = (source: string): void => {
+// questionsArrow: the exact questions row-map arrow digest the checked source must have. Accepted
+// sources keep the 0c14bba arrow; the live caller pins the reviewed cold-resume arrow.
+export const assertPaneNative = (source: string, questionsArrow: string = 'a401635d03b4ae327dd451756c14009e34ef9430e551e6125c4604088918e0d2'): void => {
   const current = tree(source)
   for (const name of names) assert.equal(norm(variable(current, name).initializer!, current), baseControls[name], `native ${name} equals actual original control expression`)
   const call = nodes(current).filter(ts.isCallExpression).find(node => node.expression.getText(current) === 'paneRootView')
@@ -123,7 +125,9 @@ export const assertPaneNative = (source: string): void => {
     const field: ts.ObjectLiteralElementLike | undefined = call.arguments[1].properties.find(prop => prop.name?.getText(current) === name)
     assert.ok(field && (ts.isShorthandPropertyAssignment(field) && field.name.text === name || ts.isPropertyAssignment(field) && field.initializer.getText(current) === name), `native frame field ${name} passes its matching prepared node`)
   }
-  for (const kind of ['questions', 'steps'] as const) assert.equal(digest(norm(rowMap(current, kind).arguments[0]!, current)), digest(norm(rowMap(base, kind).arguments[0]!, base)), `native ${kind} full row-map arrow unchanged`)
+  assert.equal(digest(norm(rowMap(current, 'steps').arguments[0]!, current)), digest(norm(rowMap(base, 'steps').arguments[0]!, base)), 'native steps full row-map arrow unchanged')
+  assert.equal(digest(norm(rowMap(base, 'questions').arguments[0]!, base)), 'a401635d03b4ae327dd451756c14009e34ef9430e551e6125c4604088918e0d2', 'accepted 0c14bba questions row-map arrow proof retained')
+  assert.equal(digest(norm(rowMap(current, 'questions').arguments[0]!, current)), questionsArrow, 'native questions row-map arrow is the exact expected arrow')
   assert.equal(digest(norm(variable(current, 'clearButtons').initializer!, current)), digest(norm(variable(base, 'clearButtons').initializer!, base)), 'native clearButtons AST unchanged')
   assert.equal(digest(norm(region(current), current)), digest(norm(region(base), base)), 'native region assignment AST unchanged')
 }

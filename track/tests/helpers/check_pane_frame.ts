@@ -14,7 +14,9 @@ const native = readFileSync(resolve(W, 'track/hooks/register.tsx'), 'utf8')
 const frameCandidate = spawnSync('git', ['show', 'c3d0f3017523dd93091b21fa2fd79982d30cfe55:track/hooks/register.tsx'], { cwd: W, encoding: 'utf8' })
 assert.equal(frameCandidate.status, 0, 'accepted frame candidate source must exist')
 assertNative(frameCandidate.stdout)
-assertPaneNative(native)
+// 2026-11-07: the reviewed cold-resume fix adds one same-session saved answerInstance fallback to
+// the questions row map; pin that exact arrow (the accepted candidate above keeps the 0c14bba one).
+assertPaneNative(native, '2a8e69dc1142bf6baef536724495b4e8ca376510dcf0c614be0d49b529f43a27')
 // Audit repairs: retain both accepted integrations before pinning the authorized fixes.
 for (const [commit, path, expected] of [
   ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'],
