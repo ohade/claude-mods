@@ -23,14 +23,15 @@ for (const [commit, path, expected] of [
   ['95249cfaca36afe9e9ca3b72ffe4f6dad20ba724', 'architecture/archview.toml', '98bbf008e9384fa1280c2b69beeef51c2e304a85c50797dc35e3b5a767b1a803'],
   ['cec1475e9817c2d7b94babbe2a26b6a24ac43dc7', 'hooks/register.tsx', 'a6a7925ae886aec9deefa56bf0555cd04ad7c2d9c7124ed9746aad9b257db76e'],
   ['cec1475e9817c2d7b94babbe2a26b6a24ac43dc7', 'architecture/archview.toml', '0794df4369145445081976bb5f3ad59feacc2b1b7434b16b0246bfc033a4b35c'],
+  ['6f201d77bbe521b3c9b3bfcec3f65206888cd0cb', 'hooks/register.tsx', 'e3f6855f903f51b531544689d4e995f6144a2c5c35bdf6180053c2a1d53ab242'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
   assert.equal(hash(accepted.stdout), expected, `accepted ${commit} ${path} proof retained`)
 }
 const native = readFileSync(hook('register.tsx'), 'utf8')
-// 2026-11-05: preserve all historical pane pins; freeze the behavior-checked P2.1 wiring too.
-assert.equal(hash(native), 'e3f6855f903f51b531544689d4e995f6144a2c5c35bdf6180053c2a1d53ab242', 'exact bulk-clear/P2.1 integration bytes')
+// 2026-11-07: retain P2.1 above; pin the reviewed TRACK-30/44 integration below.
+assert.equal(hash(native), 'bbb985c269b2ef4794e503e5b05579b1363b3568fbd3a392e68b1dc781c919ca', 'exact bulk-clear/P2.1 integration bytes')
 const arch = readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')
 assert.equal(hash(arch), '075c3350887caeb8dca4275e91662aa62b71544d38640a7274353d535148016c', 'exact declared architecture edges')
 const { paneBanner } = await import('../../hooks/pane-banner-model')
