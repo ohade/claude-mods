@@ -57,7 +57,7 @@ export const mayMarkAnswer = (question: Question, id: number, status: Mark['stat
   question.id === id && !(status === 'answered' && question.answerText !== undefined)
 
 export const markQuestion = (question: Question, values: Mark): Question => {
-  const { answerKey: _old, answerText: _oldText, answerTextHash: _hash, answerTurnId: _turn, answerOrder: _order, answeredBy: _by, answerRequestId: _request, ...rest } = question
+  const { answerKey: _old, answerInstance: _instance, answerInstanceSession: _drawnIn, answerText: _oldText, answerTextHash: _hash, answerTurnId: _turn, answerOrder: _order, answeredBy: _by, answerRequestId: _request, ...rest } = question
   const { status, now, note, answerRequestId, answeredBy, answerKey, answerText, answerTextHash, answerTurnId, answerOrder } = values
   return {
     ...rest, status, answeredAt: now,

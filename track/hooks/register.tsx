@@ -503,7 +503,7 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
       if (q.trackedBy === old.trackedBy && q.at === old.at && q.trackedBy !== undefined && q.at > compactedAt && !present.has(q.trackedBy)) return []
       const source = answerSourceOf(q)
       if (source === undefined || source !== answerSourceOf(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(source)) return [q]
-      const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerText: _x, answerTextHash: _hash, ...rest } = q
+      const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerInstance: _i, answerInstanceSession: _in, answerText: _x, answerTextHash: _hash, ...rest } = q
 
       return [{ ...rest, status: 'open' as const }]
     })
@@ -2441,6 +2441,30 @@ const updateLedger = async ($: EngineInterface, change: (current: Ledger) => Led
   return written
 }
 
+// A marker answer's drawn instance, kept in its session's ledger and saved at once, so a cold
+// resume of the session can still jump to the reply ($.state, which holds renderInstances' copy,
+// lasts one process). Written from a timer: a write during a render is refused. The write is
+// rechecked at the time it runs: a changed or cleared answer, or another session's ledger, gets none.
+const keepAnswerInstance = ($: EngineInterface, key: string, instance: string): void => {
+  $.clock.after(0, () => {
+    void (async () => {
+      const session = await $.session.id()
+      let changed = false
+      await updateLedger($, cur => {
+        changed = false
+        if (cur.session_id !== undefined && cur.session_id !== session) return cur
+        const questions = cur.questions.map(q => {
+          if (q.answerKey !== key || q.cleared === true || (q.answerInstance === instance && q.answerInstanceSession === session) || (q.session_id !== undefined && q.session_id !== session)) return q
+          changed = true
+          return { ...q, answerInstance: instance, answerInstanceSession: session }
+        })
+        return changed ? { ...cur, questions } : cur
+      })
+      if (changed) await saveLedger($)
+    })().catch(error => $.ui.log(`track: answer instance not kept: ${reason(error)}`, { to: 'debug' }))
+  })
+}
+
 // Check inside the atom's synchronous decision, including every compare-and-set retry.
 // No lock spans engine execution: nested events can still select their own session.
 const updateOwnedLedger = ($: EngineInterface, token: OwnerToken | undefined, change: (current: Ledger) => Ledger): Promise<Ledger> =>
@@ -4011,6 +4035,7 @@ export const register: Register = on => {
         const key = answerBlockKey(rowKey(e.requestId), block.id)
         const q = l.questions.find(one => one.answerKey === key && one.cleared !== true)
         if (q !== undefined) rememberRender($, key, e.requestId)
+        if (q !== undefined && (q.answerInstance !== e.requestId || q.answerInstanceSession !== renderSaved.session)) keepAnswerInstance($, key, e.requestId)
         const level = q === undefined ? 0 : await read($, memberOf(flash, { requestId: key }))
         parts.push(<Box key={`answer:${key}`} backgroundColor={shade(level)}><Markdown text={block.text} /></Box>)
         if (q !== undefined) parts.push(<Text key={`ack:${key}`} dimColor>{`✓ ${questionLabels(l.questions)(q.id)}. answered`}</Text>)
@@ -4245,7 +4270,7 @@ export const register: Register = on => {
           // A completed answer displayed by mark_answered owns its ToolUse row: the native
           // contract makes that call id the requestId, even before its first draw after reload.
           const answerInstance = q.answerKey === undefined ? restoreInstance
-            : q.answerKey === q.answeredBy ? q.answerKey : renderInstances.get(q.answerKey)
+            : q.answerKey === q.answeredBy ? q.answerKey : renderInstances.get(q.answerKey) ?? (q.answerInstanceSession !== undefined && q.answerInstanceSession === renderSaved.session ? q.answerInstance : undefined)
 
           const questionControl: QuestionRow['question'] = restoredOnly && !savedQuestion
             ? { dimColor: true, onPress: () => undefined }

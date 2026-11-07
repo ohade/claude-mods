@@ -31,6 +31,11 @@ export type Question = {
   answerOrder?: number
   // The verified native text row key, or the call displaying explicit answer text.
   answerKey?: string
+  // The render instance that answerKey was drawn under, as the host reported it. Kept in the
+  // ledger because $.state lasts one process, so a cold resume can still jump to its reply.
+  answerInstance?: string
+  // The session that drew answerInstance; another session never jumps to it.
+  answerInstanceSession?: string
   note?: string
   cleared?: true
   // The tool_use_id of the track_question call that minted it, and when it was answered:

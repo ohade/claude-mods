@@ -50,6 +50,8 @@ export const savedQuestion = (row: unknown): Question | undefined => {
     ...(typeof r.answerTextHash === 'string' && /^[0-9a-f]{64}$/.test(r.answerTextHash) && { answerTextHash: r.answerTextHash }),
     ...(typeof r.answerOrder === 'number' && Number.isSafeInteger(r.answerOrder) && r.answerOrder >= 0 && { answerOrder: r.answerOrder }),
     ...textField('answerKey', r.answerKey),
+    ...textField('answerInstance', r.answerInstance),
+    ...textField('answerInstanceSession', r.answerInstanceSession),
     ...(typeof r.answerMarker === 'object' && r.answerMarker !== null && savedMarker(r.answerMarker as Record<string, unknown>)),
     ...textField('trackedBy', r.trackedBy),
     ...(typeof r.trackedOrder === 'number' && Number.isSafeInteger(r.trackedOrder) && r.trackedOrder >= 0 && { trackedOrder: r.trackedOrder }),
