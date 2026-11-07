@@ -34,7 +34,7 @@ assert.equal(resets, 1, `updateLedger reset lines: ${resets} (expected 1)`)
 
 const calls = hits(/\bupdateLedger\(/g)
 const voidCalls = hits(/\bvoid updateLedger\(/g)
-assert.ok(calls.length === 23 && voidCalls.length === 1, `updateLedger call sites: ${calls.length}, void ones: ${voidCalls.length} (expected 23 and 1)`)
+assert.ok(calls.length === 24 && voidCalls.length === 1, `updateLedger call sites: ${calls.length}, void ones: ${voidCalls.length} (expected 24 and 1)`)
 
 const ownedCalls = hits(/\bupdateOwnedLedger\(/g)
 assert.equal(ownedCalls.length, 12, `updateOwnedLedger call sites: ${ownedCalls.length} (expected 12)`)
