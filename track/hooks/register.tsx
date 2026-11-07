@@ -692,6 +692,26 @@ const recordWork = async ($: EngineInterface, start: Turn, tool: string, callId:
   return true
 }
 
+// TRACK-53: the pane moves a row only when the model calls mark_step, so work can run for minutes
+// beside rows that all read pending. Once per turn, when this turn already updated a step and none
+// is in_progress, the next main-agent tool result carries one reminder. The Stop and next-prompt
+// nudges arrive too late for this. It never picks a step: tool activity does not say which one owns it.
+const ACTIVE_STEP_NUDGE = 'track: steps are pending and none is in_progress. Mark the step this work belongs to with mark_step.'
+const dueActiveStepNudge = async ($: EngineInterface, start: Turn, token: OwnerToken): Promise<boolean> => {
+  const steps = (await read($, ledger)).steps
+  if (!steps.some(step => step.status === 'pending') || steps.some(step => step.status === 'in_progress')) return false
+  let due = false
+  await update($, turn, row => {
+    assertOwner(token)
+    due = false
+    const fresh = row.freshness
+    if (row.currentId !== start.currentId || fresh?.turnId !== row.currentId || fresh.steps.length === 0 || fresh.nudged.includes('active_step')) return row
+    due = true
+    return { ...row, freshness: { ...fresh, nudged: [...fresh.nudged, 'active_step'] } }
+  })
+  return due
+}
+
 // An identity failure must not discard a tracking event. Null records explicitly
 // unknown ownership: a later save archives these rows instead of relabelling them.
 const captureMintOwner = async ($: EngineInterface): Promise<string | undefined> => {
@@ -2574,7 +2594,10 @@ export const register: Register = on => {
       completed = ran
       if (!isOwnerCurrent(token)) return ran
       await applyCancel($, owners, ran, token)
-      if (ran.deny === undefined && ran.isError !== true && await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeActivity, token)) await publishGate($, token)
+      if (ran.deny === undefined && ran.isError !== true) {
+        if (await recordWork($, current, e.tool, e.tool_use_id, [], beforeLedger, await read($, ledger), beforeActivity, token)) await publishGate($, token)
+        if (await dueActiveStepNudge($, current, token)) return { ...ran, context: [...(ran.context ?? []), ACTIVE_STEP_NUDGE] }
+      }
       return ran
     }
     const before = JSON.stringify(beforeLedger)
