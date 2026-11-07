@@ -107,12 +107,25 @@ const FLASH_STEP_MS = 250
 // through in order, so a fade step already under way cannot clear a newer jump's lit list.
 // Module memory, as a reload only cuts a fade short; session.start puts out what is left.
 const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as Promise<void> }
-// Exact render-instance IDs observed on this load, never guessed from transcript UUIDs.
+// Exact render-instance IDs observed in this session, never guessed from transcript UUIDs.
 // This presentation cache is bounded and does not write the ledger or store during rendering.
+// A reload restarts it but does not redraw rows already on screen (TRACK-48), so a timer copies
+// it to $.state under its session, and session.start takes back only this session's copy.
 const renderInstances = new Map<string, string>()
-const rememberRender = (key: string, id: string): void => {
+const renderSaved = { session: undefined as string | undefined, isQueued: false }
+const rememberRender = ($: EngineInterface, key: string, id: string): void => {
+  if (renderInstances.get(key) === id) return
   renderInstances.set(key, id)
   if (renderInstances.size > MESSAGES_CAP) renderInstances.delete(renderInstances.keys().next().value!)
+  if (renderSaved.isQueued) return
+  renderSaved.isQueued = true
+  $.clock.after(0, () => {
+    renderSaved.isQueued = false
+    const session = renderSaved.session
+    if (session === undefined) return
+    void update($, renders, () => ({ session, rows: [...renderInstances] }))
+      .catch(error => $.ui.log(`track: render instances not saved: ${reason(error)}`, { to: 'debug' }))
+  })
 }
 
 // The standing rule, sent once per request as a byte-stable system-prompt section.
@@ -236,6 +249,7 @@ const pending = atom({ plugin: 'track', key: 'pending' } as const, { inputs: [],
 // 0 unlit, up to FLASH_SHADES.length at full. `lit` names the rows a jump lit.
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
+const renders = atom({ plugin: 'track', key: 'renders' } as const, { session: null, rows: [] } as { session: string | null; rows: [string, string][] })
 const IDLE: Activity = { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] }
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 // Which restored question is expanded in the pane. Not part of the ledger: a checkpoint must not keep it.
@@ -2678,6 +2692,7 @@ export const register: Register = on => {
     deployDrift.isShown = true
     $.clock.after(0, () => checkDeployDrift($))
     renderInstances.clear()
+    renderSaved.session = undefined
     // Like /btw: typed while a turn runs, /track acts at once instead of waiting for the turn to
     // end, and the toggle answers with no text, so the session gets no row.
     await $.command.register({
@@ -2696,6 +2711,16 @@ export const register: Register = on => {
     await $.tool.register(catalog.diagnose)
     await $.tool.register(catalog.reorder_steps)
     await $.tool.register(catalog.mark_step)
+
+    try {
+      const saved = await read($, renders)
+      renderSaved.session = await $.session.id()
+      if (saved.session === renderSaved.session) {
+        for (const [key, id] of saved.rows) if (!renderInstances.has(key)) renderInstances.set(key, id)
+      }
+    } catch (error) {
+      $.ui.log(`track: render instances not restored: ${reason(error)}`, { to: 'debug' })
+    }
 
     try {
       const id = await $.session.id()
@@ -3914,7 +3939,7 @@ export const register: Register = on => {
       if (restore === undefined) {
         return <Box />
       }
-      rememberRender(`restore:${restore.by}`, e.requestId)
+      rememberRender($, `restore:${restore.by}`, e.requestId)
       return renderRestore($, $.ui.resolve(e), restore, questionLabels(l.questions))
     }
     if (e.props.tool === MARK_STEP) {
@@ -3942,7 +3967,7 @@ export const register: Register = on => {
       if (status === 'completed' && saved?.status === 'completed' && saved.resultRequestId === e.props.tool_use_id && saved.resultText !== undefined &&
           full !== undefined && saved.resultTextHash === await checksumOf(full) && !e.props.isRunning && !e.props.isErrored && !e.props.isInterrupted) {
         const key = `result:${e.props.tool_use_id}`
-        rememberRender(key, e.requestId)
+        rememberRender($, key, e.requestId)
         const level = await read($, memberOf(flash, { requestId: key }))
         const resultName = step !== undefined && sameResultOwner(step, saved) ? name : `${saved.id}. ${truncate(saved.subject, 60)}`
         return <Box flexDirection="column"><Text dimColor>{`${glyph} ${resultName} completed`}</Text><Box key={key} backgroundColor={shade(level)}><Text dimColor wrap="wrap">{full}</Text></Box></Box>
@@ -3973,7 +3998,7 @@ export const register: Register = on => {
   // The answer's text row alone. Each row reads only the
   // level kept under its own row key, so a jump redraws the lit row alone.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    rememberRender(rowKey(e.requestId), e.requestId)
+    rememberRender($, rowKey(e.requestId), e.requestId)
     const blocks = answerBlocks(e.props.text)
     if (blocks.length > 0 && e.props.isSummary !== true) {
       const { Box, Markdown, Text } = $.ui.resolve(e)
@@ -3985,7 +4010,7 @@ export const register: Register = on => {
         if (before !== '') parts.push(<Markdown key={`before:${block.start}`} text={before} />)
         const key = answerBlockKey(rowKey(e.requestId), block.id)
         const q = l.questions.find(one => one.answerKey === key && one.cleared !== true)
-        if (q !== undefined) rememberRender(key, e.requestId)
+        if (q !== undefined) rememberRender($, key, e.requestId)
         const level = q === undefined ? 0 : await read($, memberOf(flash, { requestId: key }))
         parts.push(<Box key={`answer:${key}`} backgroundColor={shade(level)}><Markdown text={block.text} /></Box>)
         if (q !== undefined) parts.push(<Text key={`ack:${key}`} dimColor>{`✓ ${questionLabels(l.questions)(q.id)}. answered`}</Text>)

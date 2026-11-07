@@ -230,6 +230,9 @@ declare module 'claude-code' {
       // by an answer's text key. `lit` lists the rows lit now, so a reload can put them out.
       flash: StateFamily<number>
       lit: string[]
+      // The render instances drawn in one session, by row key, so a reload can still jump to a
+      // row it does not draw again (TRACK-48). Another session's copy is never read.
+      renders: { session: string | null; rows: [string, string][] }
       activity: Activity
       pending: Pending
       // The phase of the in-progress step's pulse, advanced by a timer while work runs.
