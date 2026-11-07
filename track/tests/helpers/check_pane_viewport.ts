@@ -26,16 +26,18 @@ for (const [commit, path, expected] of [
   ['6f201d77bbe521b3c9b3bfcec3f65206888cd0cb', 'hooks/register.tsx', 'e3f6855f903f51b531544689d4e995f6144a2c5c35bdf6180053c2a1d53ab242'],
   ['202fd1eafba32710401b2efe1c88c12d388dc1f7', 'hooks/register.tsx', 'bbb985c269b2ef4794e503e5b05579b1363b3568fbd3a392e68b1dc781c919ca'],
   ['56499875419239c85f5541af389b932949fb60e4', 'hooks/register.tsx', 'a4ef3c8cb15f95c0cccc1376bb5ef0dbd2e3931d5709dc5404fd2ebb8a82a38b'],
+  ['482034d8af849595386964df5b5fde5b4d8ccb42', 'hooks/register.tsx', 'a3787c4d3db84b270dd7b26a69bcb8de1d94d85b7967e822122b41b72ba0b7a6'],
+  ['6f201d77bbe521b3c9b3bfcec3f65206888cd0cb', 'architecture/archview.toml', '075c3350887caeb8dca4275e91662aa62b71544d38640a7274353d535148016c'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
   assert.equal(hash(accepted.stdout), expected, `accepted ${commit} ${path} proof retained`)
 }
-// 2026-11-07: retain TRACK-53 above; pin the reviewed TRACK-48 reload-jump fix below.
-for (const [name, expected] of [['register.tsx', 'a3787c4d3db84b270dd7b26a69bcb8de1d94d85b7967e822122b41b72ba0b7a6'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
+// 2026-11-07: retain TRACK-48 above; pin the reviewed TRACK-54 export split below.
+for (const [name, expected] of [['register.tsx', '6ddf341f0479ca9aced6e949cf70dce8561a2f958e1e07e9c0127247ec4f49bf'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
   assert.equal(hash(readFileSync(hook(name), 'utf8')), expected, `${name}: exact bulk-clear/P2.1 integration`)
 }
-assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '075c3350887caeb8dca4275e91662aa62b71544d38640a7274353d535148016c', 'exact declared architecture edges')
+assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '8b1b40df9ae3e5442ae15b0778570e9cd29d43eb626e1164c0e3416543543da3', 'exact declared architecture edges')
 const { paneRowMetrics } = await import('../../hooks/pane-row-metrics')
 const { paneViewport } = await import('../../hooks/pane-viewport-model')
 checkViewport(input => {

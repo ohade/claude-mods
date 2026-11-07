@@ -24,6 +24,7 @@ import { clampTo, clockText, questionLabels, buttonWidth } from './pane-layout'
 import { paneRowMetrics } from './pane-row-metrics'
 import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
+import { readBundle, writeBundle } from './export-bundle'
 import { paneRootView, paneItem } from './pane-root-view'
 import type { BannerRow } from './banner-layout'
 import { lookupPaneRows, reorderVisibleSteps, visibleQuestions } from './pane-order'
@@ -1991,6 +1992,27 @@ const resumeOwned = async ($: EngineInterface, id: string): Promise<void> => {
   await run
 }
 
+// TRACK-54: an imported body whose ledger is over IMPORT_INLINE_MAX is stored as a v:2 pointer to a
+// published ledger blob, the form compactBody gives a CLOSED body, so a large bundle fits the store
+// budget. A smaller body is stored inline, as before. A failed publication fails the import closed.
+const IMPORT_INLINE_MAX = 4 * 1024
+const importStored = async ($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<unknown> => {
+  if (!isInlineV1Body(value)) return value
+  const text = JSON.stringify(value.ledger)
+  const bytes = new TextEncoder().encode(text).length
+  if (bytes <= IMPORT_INLINE_MAX) return value
+  const ref = { checksum: await sha256Hex(text), bytes }
+  const pointer = Object.fromEntries(Object.entries(value).map(([name, field]) =>
+    name === 'v' ? [name, 2] : name === 'ledger' ? ['ledger_blob', ref] : [name, field]))
+  if (utf8Bytes({ [key]: pointer }) >= utf8Bytes({ [key]: value })) return value
+  const publication = await publishLedgerBlob($, context, text, ref)
+  if (publication !== undefined) throw new Error(`migration could not store session ${key.slice(2)} as a blob: ${'unavailable' in publication ? publication.unavailable : publication.rejected}`)
+  return pointer
+}
+
+// The engine's file calls for a migration bundle (export-bundle.ts); $.fs itself cannot be passed.
+const bundleFs = ($: EngineInterface) => ({ read: (path: string) => $.fs.read(path), write: (path: string, text: string) => $.fs.write(path, text) })
+
 const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path: string): Promise<string> => {
   if (await historyEnabled($)) return JSON.stringify({ v: 1, ok: false, reason: 'export/import is unavailable while TRACK_HISTORY_V3 is on' })
   const run = persistence.queue.then(async () => {
@@ -2010,14 +2032,11 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       const records = [] as Array<{ key: string; value: unknown }>
       for (const key of (await $.store.keys()).filter(key => key.startsWith('s:')).sort()) records.push({ key, value: await logicalBody($, await $.store.get(key)) })
       const checksum = await checksumOf(records)
-      await transactionOperation(context, async () => {
-        await $.fs.write(path, JSON.stringify({ v: 1, source_identity: $.plugin.root, checksum, records }))
-        const verified = JSON.parse(await $.fs.read(path) as string) as { checksum?: string; records?: unknown }
-        if (verified.checksum !== checksum || await checksumOf(verified.records) !== checksum) throw new Error('export read-back does not match')
-      })
+      // TRACK-54: one v1 file when it fits under the engine's 4 MiB limit, else a manifest and parts.
+      await transactionOperation(context, () => writeBundle(bundleFs($), path, { v: 1, source_identity: $.plugin.root, checksum, records }))
       return JSON.stringify({ v: 1, ok: true, checksum, records: records.length })
     }
-    const bundle = JSON.parse(await $.fs.read(path) as string) as { v?: number; source_identity?: string; checksum?: string; records?: Array<{ key: string; value: unknown }> }
+    const bundle = await readBundle(bundleFs($), path)
     if (bundle.v !== 1 || !Array.isArray(bundle.records) || bundle.checksum !== await checksumOf(bundle.records)) throw new Error('migration bundle is corrupt or incompatible')
     const records = bundle.records
     if (new Set(records.map(r => r.key)).size !== records.length || records.some(r => !r.key.startsWith('s:') || !SESSION_ID.test(r.key.slice(2)) || savedLedger(r.value) === undefined)) throw new Error('migration contains invalid or duplicate session records')
@@ -2048,6 +2067,7 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       if (current !== undefined && !sameValue(currentView, value) && !sameValue(currentView, record.value)) throw new Error(`migration conflict for session ${target}; both records were kept`)
       if (currentHead !== undefined && !sameValue(currentHead, head)) throw new Error(`migration conflict: session ${target} has a durable head; source was kept`)
       const isKept = isPointer && currentHead !== undefined
+      let stored: unknown = value
       if (!isKept && (!sameValue(current, value) || currentHead === undefined)) {
         if (target !== session) {
           const guard = await acquireLock($, 'guard', target)
@@ -2056,11 +2076,12 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
           const guardedContext = context
           heldGuards.set(target, { state: 'closed', release: () => transactionOperation(guardedContext, () => closeLock(guard)) })
         }
-        replacements[record.key] = value
+        stored = await importStored($, context!, record.key, value)
+        replacements[record.key] = stored
         replacements[`h:${target}`] = head
         if (current === undefined) imported.push(target)
       }
-      normalized.push(isKept ? { key: record.key, value: currentView, head, stored: current, isKept } : { key: record.key, value, head, stored: value, isKept })
+      normalized.push(isKept ? { key: record.key, value: currentView, head, stored: current, isKept } : { key: record.key, value, head, stored, isKept })
     }
     const index = await savedIndex(storeReads($))
     for (const record of normalized) {
@@ -2076,11 +2097,11 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
     const verified: string[] = []
     for (const record of normalized) {
       if (Object.hasOwn(replacements, record.key)) {
-        await writeVerified($, context, record.key, record.value)
+        await writeVerified($, context, record.key, record.stored)
         await writeVerified($, context, `h:${record.key.slice(2)}`, record.head)
       }
       const reread = await $.store.get(record.key)
-      if (!sameValue(record.isKept ? await logicalBody($, reread) : reread, record.value) || !sameValue(await $.store.get(`h:${record.key.slice(2)}`), record.head)) throw new Error(`migration verification failed for session ${record.key.slice(2)}; source was kept`)
+      if (!sameValue(record.isKept || record.stored !== record.value ? await logicalBody($, reread) : reread, record.value) || !sameValue(await $.store.get(`h:${record.key.slice(2)}`), record.head)) throw new Error(`migration verification failed for session ${record.key.slice(2)}; source was kept`)
       verified.push(record.key.slice(2))
     }
     await writeVerified($, context, SAVED_INDEX, index)
