@@ -24,6 +24,7 @@ import { clampTo, clockText, questionLabels, buttonWidth } from './pane-layout'
 import { paneRowMetrics } from './pane-row-metrics'
 import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
+import { readBundle, writeBundle } from './export-bundle'
 import { paneRootView, paneItem } from './pane-root-view'
 import type { BannerRow } from './banner-layout'
 import { lookupPaneRows, reorderVisibleSteps, visibleQuestions } from './pane-order'
@@ -1991,6 +1992,9 @@ const resumeOwned = async ($: EngineInterface, id: string): Promise<void> => {
   await run
 }
 
+// The engine's file calls for a migration bundle (export-bundle.ts); $.fs itself cannot be passed.
+const bundleFs = ($: EngineInterface) => ({ read: (path: string) => $.fs.read(path), write: (path: string, text: string) => $.fs.write(path, text) })
+
 const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path: string): Promise<string> => {
   if (await historyEnabled($)) return JSON.stringify({ v: 1, ok: false, reason: 'export/import is unavailable while TRACK_HISTORY_V3 is on' })
   const run = persistence.queue.then(async () => {
@@ -2010,14 +2014,11 @@ const migrateStore = async ($: EngineInterface, mode: 'export' | 'import', path:
       const records = [] as Array<{ key: string; value: unknown }>
       for (const key of (await $.store.keys()).filter(key => key.startsWith('s:')).sort()) records.push({ key, value: await logicalBody($, await $.store.get(key)) })
       const checksum = await checksumOf(records)
-      await transactionOperation(context, async () => {
-        await $.fs.write(path, JSON.stringify({ v: 1, source_identity: $.plugin.root, checksum, records }))
-        const verified = JSON.parse(await $.fs.read(path) as string) as { checksum?: string; records?: unknown }
-        if (verified.checksum !== checksum || await checksumOf(verified.records) !== checksum) throw new Error('export read-back does not match')
-      })
+      // TRACK-54: one v1 file when it fits under the engine's 4 MiB limit, else a manifest and parts.
+      await transactionOperation(context, () => writeBundle(bundleFs($), path, { v: 1, source_identity: $.plugin.root, checksum, records }))
       return JSON.stringify({ v: 1, ok: true, checksum, records: records.length })
     }
-    const bundle = JSON.parse(await $.fs.read(path) as string) as { v?: number; source_identity?: string; checksum?: string; records?: Array<{ key: string; value: unknown }> }
+    const bundle = await readBundle(bundleFs($), path)
     if (bundle.v !== 1 || !Array.isArray(bundle.records) || bundle.checksum !== await checksumOf(bundle.records)) throw new Error('migration bundle is corrupt or incompatible')
     const records = bundle.records
     if (new Set(records.map(r => r.key)).size !== records.length || records.some(r => !r.key.startsWith('s:') || !SESSION_ID.test(r.key.slice(2)) || savedLedger(r.value) === undefined)) throw new Error('migration contains invalid or duplicate session records')
