@@ -80,7 +80,7 @@ export const bindAnswerResponse = (ledger: Ledger, answer: Answer): { ledger: Le
   let changed = false
   const questions = ledger.questions.map(q => {
     if (q.id !== pending[0]!.id) return q
-    const { answerTurnId: _turn, answerOrder: _order, ...rest } = q
+    const { answerTurnId: _turn, answerOrder: _order, ...rest } = withoutStaleInstance(q, answer.row)
     changed = true
     return { ...rest, answerText: answer.answerText, answerKey: answer.row, answerRequestId: answer.requestId }
   })
@@ -97,8 +97,15 @@ export const markerForQuestion = (question: Question, completed: Block[], turnId
   return block
 }
 
+// A drawn instance belongs to the reply it was drawn in: a new answer source drops it until drawn.
+const withoutStaleInstance = (question: Question, answerKey: string | undefined): Question => {
+  if (question.answerKey === answerKey) return question
+  const { answerInstance: _instance, answerInstanceSession: _drawnIn, ...rest } = question
+  return rest
+}
+
 export const captureMarkerAnswer = (question: Question, values: Marker): Question => ({
-  ...question, status: 'answered', answeredAt: values.now, answerText: truncate(values.block.text, ANSWER_CHARS),
+  ...withoutStaleInstance(question, values.answerKey), status: 'answered', answeredAt: values.now, answerText: truncate(values.block.text, ANSWER_CHARS),
   answerTextHash: values.block.hash, answerRequestId: values.requestId, answerKey: values.answerKey,
   answerMarker: { turnId: values.turnId, order: values.order },
 })
