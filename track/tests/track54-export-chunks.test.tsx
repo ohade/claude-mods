@@ -1,9 +1,9 @@
 // TRACK-54: /track export failed on a real profile because the decoded store (14,236,624 bytes) went
 // out in one $.fs.write, and the engine rejects a read or write over 4 MiB (d.ts EngineInterface.fs).
 // The stand-ins below enforce that limit. A bundle that fits stays the v1 single file; a larger one
-// is written in parts no file of which passes the limit, and import reads the parts and verifies
-// them. Importing a split bundle whose records exceed the store budget is a separate defect (the
-// import writes bodies inline); these tests stop at the bundle. Written red-first.
+// is written in parts no file of which passes the limit, and import reads the parts, verifies them
+// and stores large bodies as blob pointers so the result fits the store budget. A repeated export
+// to the same path never overwrites the parts the previous manifest names. Written red-first.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, blobPool, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
@@ -22,8 +22,12 @@ const prepare = (on: On, records: Record<string, unknown>) => {
   const guardStates = Object.fromEntries(ids.map(id => [id, 'closed' as const]))
   const store = pluginStore(on, records, 64 * LIMIT, { guardStates })
   const files = new Map<string, string>()
+  // A write numbered `failAt` (counted from the last reset) fails, as a full disk would.
+  const faults = { failAt: 0, writes: 0 }
   on('session.id', () => ({ value: SESSION }))
   on('fs.write', (_, e) => {
+    faults.writes++
+    if (faults.failAt !== 0 && faults.writes === faults.failAt) throw new Error('disk full')
     const text = String(e.text)
     if (bytes(text) > LIMIT) throw new Error(`${bytes(text)} bytes exceeds the ${LIMIT}-byte $.fs.write limit`)
     files.set(e.path, text)
@@ -36,7 +40,7 @@ const prepare = (on: On, records: Record<string, unknown>) => {
     return { value: text }
   })
   const pool = blobPool(on)
-  return { store, files, pool }
+  return { store, files, pool, faults }
 }
 const run = async ($: Engine, args: string) => JSON.parse((await trackCommand($, args)).text ?? '{}')
 const big = () => Object.fromEntries(ids.map((id, n) => [`s:${id}`, record(n, 900_000)]))
@@ -90,6 +94,32 @@ test('a missing part refuses the import by name and changes no destination recor
   expect(result.ok).toBe(false)
   expect(result.reason).toContain(part)
   expect(new Map(store.held)).toEqual(before)
+})
+
+test('a split export imports back every record with its exact ledger', async ($, on) => {
+  const records = big()
+  const { store, pool } = prepare(on, records)
+  expect((await run($, 'export /backup.json')).ok).toBe(true)
+  for (const id of ids) store.held.delete(`s:${id}`)
+  const imported = await run($, 'import /backup.json')
+  expect(imported).toMatchObject({ v: 1, ok: true, imported: ids, verified: ids })
+  for (const [n, id] of ids.entries()) {
+    const logical = await pool.logical(store, `s:${id}`) as { ledger: { questions: Array<{ note: string }> } }
+    expect(logical.ledger.questions[0]!.note).toBe(record(n, 900_000).ledger.questions[0]!.note)
+  }
+})
+
+test('a failed repeat export to the same path leaves the previous bundle whole', async ($, on) => {
+  const { store, files, faults } = prepare(on, big())
+  expect((await run($, 'export /backup.json')).ok).toBe(true)
+  const previous = new Map(files)
+  store.held.set(`s:${ids[0]}`, record(0, 950_000))
+  faults.writes = 0
+  faults.failAt = 2
+  expect((await run($, 'export /backup.json')).ok).toBe(false)
+  const manifest = JSON.parse(files.get('/backup.json')!) as { parts: Array<{ name: string }> }
+  expect(files.get('/backup.json')).toBe(previous.get('/backup.json'))
+  for (const ref of manifest.parts) expect(files.get(`/${ref.name}`)).toBe(previous.get(`/${ref.name}`))
 })
 
 test('one record too large for any single file is refused by name, and nothing is written', async ($, on) => {

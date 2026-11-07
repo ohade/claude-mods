@@ -10,11 +10,13 @@ export const FILE_LIMIT = 4 * 1024 * 1024
 export type BundleRecord = { key: string; value: unknown }
 export type Bundle = { v: 1; source_identity: string; checksum: string; records: BundleRecord[] }
 type BundleFs = { write: (path: string, text: string) => Promise<void>; read: (path: string) => Promise<unknown> }
-type PartRef = { name: string; bytes: number; records: number }
+type PartRef = { name: string; bytes: number; sha256: string; records: number }
 type Manifest = { v: 2; source_identity: string; checksum: string; records: number; parts: PartRef[] }
 
 const encoder = new TextEncoder()
 const sizeOf = (text: string) => encoder.encode(text).length
+const sha256Of = async (text: string): Promise<string> =>
+  Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text))), b => b.toString(16).padStart(2, '0')).join('')
 const partPrefix = (index: number) => `{"v":2,"index":${index},"records":[`
 const PART_SUFFIX = ']}'
 // The longest prefix a part can have, so the limit check never depends on which part a record lands in.
@@ -60,11 +62,13 @@ export const writeBundle = async (fs: BundleFs, path: string, bundle: Bundle): P
   } else {
     const plan = planParts(bundle.records)
     const refs: PartRef[] = []
+    // Part names carry the bundle checksum, so a new export never overwrites the parts an older
+    // manifest at the same path still names; that manifest stays whole until the new one replaces it.
     for (const [n, texts] of plan.entries()) {
-      const name = `${nameOf(path)}.part-${n + 1}`
+      const name = `${nameOf(path)}.${bundle.checksum.slice(0, 16)}.part-${n + 1}`
       const text = `${partPrefix(n + 1)}${texts.join(',')}${PART_SUFFIX}`
       await fs.write(partPath(path, name), text)
-      refs.push({ name, bytes: sizeOf(text), records: texts.length })
+      refs.push({ name, bytes: sizeOf(text), sha256: await sha256Of(text), records: texts.length })
     }
     const manifest: Manifest = { v: 2, source_identity: bundle.source_identity, checksum: bundle.checksum, records: bundle.records.length, parts: refs }
     await fs.write(path, JSON.stringify(manifest))
@@ -88,9 +92,9 @@ export const readBundle = async (fs: BundleFs, path: string): Promise<{ v?: numb
     let text: string
     try { text = await readText(fs, where) }
     catch (error) { throw new Error(`migration part ${where} is missing or unreadable: ${error instanceof Error ? error.message : String(error)}`) }
-    if (sizeOf(text) !== ref.bytes) throw new Error(`migration part ${ref.name} does not match its manifest`)
+    if (sizeOf(text) !== ref.bytes || await sha256Of(text) !== ref.sha256) throw new Error(`migration part ${ref.name} is corrupt or incompatible with its manifest`)
     const part = JSON.parse(text) as { v?: number; index?: number; records?: unknown }
-    if (part.v !== 2 || part.index !== n + 1 || !Array.isArray(part.records) || part.records.length !== ref.records) throw new Error(`migration part ${ref.name} does not match its manifest`)
+    if (part.v !== 2 || part.index !== n + 1 || !Array.isArray(part.records) || part.records.length !== ref.records) throw new Error(`migration part ${ref.name} is corrupt or incompatible with its manifest`)
     records.push(...(part.records as BundleRecord[]))
   }
   if (records.length !== top.records) throw new Error('migration manifest record count does not match its parts')
