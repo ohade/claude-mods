@@ -2552,7 +2552,20 @@ const reportPorts = ($: EngineInterface, boundOwner?: ReportOwner): ReportPorts 
       const cwd = await $.session.cwd()
       const version = (await $.session.version()).version
       const disk = await observedDisk($)
-      const diagnostic = await diagnose(diagnosePorts($), {})
+      const diagnosticPorts = diagnosePorts($)
+      const strictAdmission = diagnosticPorts.isAdmitted
+      diagnosticPorts.isAdmitted = async (epoch, id) => {
+        if (epoch !== owner.epoch || id !== owner.session || !(await isCurrent(owner))) return false
+        const admitted = await strictAdmission(epoch, id)
+        if (!(await isCurrent(owner))) return false
+        if (admitted) return true
+        const currentLedger = await read($, ledger)
+        if (!(await isCurrent(owner))) return false
+        const currentDurability = await read($, durability)
+        if (!(await isCurrent(owner))) return false
+        return currentLedger.session_id === undefined && currentDurability.memorySession === undefined && sameValue(currentLedger, EMPTY_LEDGER)
+      }
+      const diagnostic = await diagnose(diagnosticPorts, {})
       if (!config?.startsWith('/') || 'deny' in diagnostic) throw new Error('preview context unavailable')
       const context = JSON.parse(diagnostic.result) as unknown
       if (!(await isCurrent(owner))) throw new Error('report owner changed')
