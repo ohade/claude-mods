@@ -1,11 +1,11 @@
 {
   "v": 1,
-  "version": "2.1.318",
-  "provenance": "Engine-written SDK from a fresh native Claude Code 2.1.318 load of Track 6803903 on 2026-11-04. Reviewed against the retained 2.1.317 declarations: additive optional fork effort, backdrop color-scheme and mobile Input/Select support; PushNotification status becomes optional and WebFetch gains an optional internal citable flag. SDK configuration and MCP declarations are unchanged. Digests only; generated API and machine-specific tool schemas remain local.",
+  "version": "2.1.319",
+  "provenance": "Engine-written SDK from the native Claude Code 2.1.319 load of the TRACK-30 candidate on 2026-11-07. Reviewed against the retained 2.1.318 declarations: backdrop operations move to theme.set/clear, which these mods do not use; command display-only text and turn-completion attribution are optional additions. Tool declarations add skill edits and image results and rename the widget context selector; these mods have no consumers. The MCP declaration digest records the isolated test profile's tool roster, not an API compatibility claim. The complete Track fixture suite passed 1352 tests across 164 files on this engine. Digests only; generated API and machine-specific tool schemas remain local.",
   "files": {
     "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
-    "track/.claude-plugin/types/claude-code/index.d.ts": "042ff9743dc3fee570ff699e51ebc1071252c3eec6116294a72bf0568e5aed37",
-    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "ae7194df9c5da3393936bb3cb6fb0ad0f5bdb0deb1cc8f30448b566cf2fbda63",
-    "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "0cab298516885f406c7762cf83b84334b5f5f02e1207abc79a02d136f518354b"
+    "track/.claude-plugin/types/claude-code/index.d.ts": "82a459b27010b760c44c7382179ee5cd8bdd08cebbe2ef61457134a795199f63",
+    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "386b874a35fb28d3a63907d46ead7a990fb8cef1d2e6cb89e48861508f2386dc",
+    "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "a44b5e4ebcf67a37478cf13f3d361f4c165c27ae1072d4d44d231e0b0d99ef6a"
   }
 }
