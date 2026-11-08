@@ -1,5 +1,5 @@
 import { atom, memberOf, read, update } from 'claude-code'
-import type { EngineInterface, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, Timer } from 'claude-code'
+import type { EngineInterface, HookStream, PluginState, ProcessSpawnChunk, ProcessSpawnResult, Register, RenderElement, RenderSurface, Timer } from 'claude-code'
 
 import type { Activity, FreshnessCandidate, FreshnessKind, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, StepFreshness, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
@@ -57,6 +57,18 @@ import { restoreSource } from './restore-source'
 import { proposeRestore } from './restore-proposal'
 import { SAVED_INDEX, commitSave, nextIndex, patchCompacted, rollbackSave, savedIndex } from './save-journal'
 import type { SaveJournal, SaveRecovery, SavedIndex, SavedReads } from './save-journal'
+
+
+type PrismantisSegment = { kind: 'markdown' | 'note'; key: string; text: string }
+
+declare module 'claude-code' {
+  interface EngineInterface {
+    prismantis: {
+      reply: (args: { surface: RenderSurface; requestId: string; text: string; isFirstOfReply: boolean; columns: number; segments: PrismantisSegment[] }) => Promise<RenderElement | undefined>
+      tint: (args: { key: string; color: string | null }) => Promise<void>
+    }
+  }
+}
 
 const PANE = 'track'
 // The pane's name: its tab label, and its first line, since a lone pane shows no tab.
@@ -295,7 +307,28 @@ const statusGlyph = (q: Question): string => (q.status === 'answered' ? '●' : 
 
 const shade = (level: number): string | undefined => (level > 0 ? FLASH_SHADES[Math.min(level, FLASH_SHADES.length) - 1] : undefined)
 
-const light = ($: EngineInterface, id: string, level: number) => update($, memberOf(flash, { requestId: id }), () => level)
+// Prismantis draws a message inside its own fill, which covers Track's outer shade, so the same
+// level is handed to it under the key its drawing reads: answer:<answerKey> for an answer block,
+// the full native request id for a plain reply or a prompt. Without Prismantis the call throws
+// and Track's own shade is the highlight.
+const ROW_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/
+const tintKey = (l: Ledger, id: string): string | undefined => {
+  if (l.questions.some(q => q.answerKey === id)) return `answer:${id}`
+  if (!ROW_KEY.test(id)) return id
+  const host = renderInstances.get(id)
+  return host !== undefined && rowKey(host) === id ? host : undefined
+}
+
+const light = async ($: EngineInterface, id: string, level: number): Promise<void> => {
+  await update($, memberOf(flash, { requestId: id }), () => level)
+  const key = tintKey(await read($, ledger), id)
+  if (key === undefined) return
+  try {
+    await $.prismantis.tint({ key, color: shade(level) ?? null })
+  } catch {
+    return
+  }
+}
 
 const reason = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -1707,6 +1740,7 @@ const saveFailureText = (subject: string): string => {
   return cause === undefined ? `${subject} is unsaved — ${persistence.failure}` : `${subject} save outcome pending — ${cause}`
 }
 import { classifyHistoryReceipt } from './history-receipts'
+
 // A pending outcome may have committed, so it never reads as "unsaved".
 class HistoryOutcomePending extends Error {}
 
@@ -4049,22 +4083,42 @@ export const register: Register = on => {
       const { Box, Markdown, Text } = $.ui.resolve(e)
       const l = await read($, ledger)
       const parts: RenderElement[] = []
+      const segments: PrismantisSegment[] = []
       let offset = 0
       for (const block of blocks) {
         const before = e.props.text.slice(offset, block.start).trim()
-        if (before !== '') parts.push(<Markdown key={`before:${block.start}`} text={before} />)
+        if (before !== '') {
+          parts.push(<Markdown key={`before:${block.start}`} text={before} />)
+          segments.push({ kind: 'markdown', key: `before:${block.start}`, text: before })
+        }
         const key = answerBlockKey(rowKey(e.requestId), block.id)
         const q = l.questions.find(one => one.answerKey === key && one.cleared !== true)
         if (q !== undefined) rememberRender($, key, e.requestId)
         if (q !== undefined && (q.answerInstance !== e.requestId || q.answerInstanceSession !== renderSaved.session)) keepAnswerInstance($, key, e.requestId)
         const level = q === undefined ? 0 : await read($, memberOf(flash, { requestId: key }))
         parts.push(<Box key={`answer:${key}`} backgroundColor={shade(level)}><Markdown text={block.text} /></Box>)
-        if (q !== undefined) parts.push(<Text key={`ack:${key}`} dimColor>{`✓ ${questionLabels(l.questions)(q.id)}. answered`}</Text>)
+        segments.push({ kind: 'markdown', key: `answer:${key}`, text: block.text })
+        if (q !== undefined) {
+          const ack = `✓ ${questionLabels(l.questions)(q.id)}. answered`
+          parts.push(<Text key={`ack:${key}`} dimColor>{ack}</Text>)
+          segments.push({ kind: 'note', key: `ack:${key}`, text: ack })
+        }
         offset = block.end
       }
       const after = e.props.text.slice(offset).trim()
-      if (after !== '') parts.push(<Markdown key="after-answers" text={after} />)
-      return <Box flexDirection="column">{parts}</Box>
+      if (after !== '') {
+        parts.push(<Markdown key="after-answers" text={after} />)
+        segments.push({ kind: 'markdown', key: 'after-answers', text: after })
+      }
+      // Prismantis draws the reply in its own frame from Track's segments and keys; Track's own
+      // tree stays for a session without it, or with one too old to draw segments.
+      let themed: RenderElement | undefined
+      try {
+        themed = await $.prismantis.reply({ surface: e.surface, requestId: e.requestId, text: e.props.text, isFirstOfReply: e.props.isFirstOfReply === true, columns: e.viewport?.columns ?? 100, segments })
+      } catch {
+        themed = undefined
+      }
+      return themed ?? <Box flexDirection="column">{parts}</Box>
     }
     const level = await read($, memberOf(flash, { requestId: rowKey(e.requestId) }))
     const { Box } = $.ui.resolve(e)
