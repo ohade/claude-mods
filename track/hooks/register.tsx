@@ -132,12 +132,31 @@ const rememberRender = ($: EngineInterface, key: string, id: string): void => {
   if (renderInstances.size > MESSAGES_CAP) renderInstances.delete(renderInstances.keys().next().value!)
   if (renderSaved.isQueued) return
   renderSaved.isQueued = true
-  $.clock.after(0, () => {
+  afterDrawing($, 'render instances not saved', async () => {
     renderSaved.isQueued = false
     const session = renderSaved.session
     if (session === undefined) return
-    void update($, renders, () => ({ session, rows: [...renderInstances] }))
-      .catch(error => $.ui.log(`track: render instances not saved: ${reason(error)}`, { to: 'debug' }))
+    await update($, renders, () => ({ session, rows: [...renderInstances] }))
+  })
+}
+
+// A save queued by a drawing runs through that drawing's `$`, and the engine refuses its writes
+// while that ui.render dispatch is still in flight (an outer mod such as Prismantis keeps drawing
+// after Track returns). A refused save is retried on a growing delay: once the drawing has ended,
+// the same call is allowed. Any other failure, or the last refusal, is logged as before.
+const DRAWING_RETRY_MS = [0, 50, 100, 200, 400, 800, 1600, 3200] as const
+const DRAWING_IN_FLIGHT = 'while ui.render is being dispatched'
+const afterDrawing = ($: EngineInterface, failure: string, save: () => Promise<void>, attempt = 0): void => {
+  $.clock.after(DRAWING_RETRY_MS[attempt]!, () => {
+    save().catch(error => {
+      const text = reason(error)
+      if (text.includes(DRAWING_IN_FLIGHT) && attempt + 1 < DRAWING_RETRY_MS.length) {
+        $.ui.log(`track: save deferred, drawing in flight (${failure} otherwise): ${text}`, { to: 'debug' })
+        afterDrawing($, failure, save, attempt + 1)
+        return
+      }
+      $.ui.log(`track: ${failure}: ${text}`, { to: 'debug' })
+    })
   })
 }
 
@@ -2500,25 +2519,24 @@ const updateLedger = async ($: EngineInterface, change: (current: Ledger) => Led
 
 // A marker answer's drawn instance, kept in its session's ledger and saved at once, so a cold
 // resume of the session can still jump to the reply ($.state, which holds renderInstances' copy,
-// lasts one process). Written from a timer: a write during a render is refused. The write is
-// rechecked at the time it runs: a changed or cleared answer, or another session's ledger, gets none.
+// lasts one process). Written after the drawing (afterDrawing): a write during a render is refused.
+// The write is rechecked at the time it runs: a changed or cleared answer, or another session's
+// ledger, gets none.
 const keepAnswerInstance = ($: EngineInterface, key: string, instance: string): void => {
-  $.clock.after(0, () => {
-    void (async () => {
-      const session = await $.session.id()
-      let changed = false
-      await updateLedger($, cur => {
-        changed = false
-        if (cur.session_id !== undefined && cur.session_id !== session) return cur
-        const questions = cur.questions.map(q => {
-          if (q.answerKey !== key || q.cleared === true || (q.answerInstance === instance && q.answerInstanceSession === session) || (q.session_id !== undefined && q.session_id !== session)) return q
-          changed = true
-          return { ...q, answerInstance: instance, answerInstanceSession: session }
-        })
-        return changed ? { ...cur, questions } : cur
+  afterDrawing($, 'answer instance not kept', async () => {
+    const session = await $.session.id()
+    let changed = false
+    await updateLedger($, cur => {
+      changed = false
+      if (cur.session_id !== undefined && cur.session_id !== session) return cur
+      const questions = cur.questions.map(q => {
+        if (q.answerKey !== key || q.cleared === true || (q.answerInstance === instance && q.answerInstanceSession === session) || (q.session_id !== undefined && q.session_id !== session)) return q
+        changed = true
+        return { ...q, answerInstance: instance, answerInstanceSession: session }
       })
-      if (changed) await saveLedger($)
-    })().catch(error => $.ui.log(`track: answer instance not kept: ${reason(error)}`, { to: 'debug' }))
+      return changed ? { ...cur, questions } : cur
+    })
+    if (changed) await saveLedger($)
   })
 }
 
