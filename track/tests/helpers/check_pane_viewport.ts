@@ -30,13 +30,14 @@ for (const [commit, path, expected] of [
   ['6f201d77bbe521b3c9b3bfcec3f65206888cd0cb', 'architecture/archview.toml', '075c3350887caeb8dca4275e91662aa62b71544d38640a7274353d535148016c'],
   ['7b990c645b3532b932ffdfa387175bab5cd2bd22', 'hooks/register.tsx', '6ddf341f0479ca9aced6e949cf70dce8561a2f958e1e07e9c0127247ec4f49bf'],
   ['ccf959c3d37b6379249dd2dff5a7ebcaf4f587fe', 'hooks/register.tsx', '13e7aec8e44f171eefc6bb7d2fcd4c62c1d5b8fa1e50f44cf07d18e2ac8917a3'],
+  ['cbae7eb76a7aef2af67d5b96450cc15ed449ceb0', 'hooks/register.tsx', '8a14b98ed1ee075b328714a77846937fc64efcf2644626f45beabbfeb21570ef'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
   assert.equal(hash(accepted.stdout), expected, `accepted ${commit} ${path} proof retained`)
 }
-// 2026-11-08: retain the cold-resume bytes above; pin the reviewed Prismantis highlight fix (Codex F1) below.
-for (const [name, expected] of [['register.tsx', '8a14b98ed1ee075b328714a77846937fc64efcf2644626f45beabbfeb21570ef'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
+// 2026-11-08: retain the Prismantis highlight bytes above; pin the reviewed draw-queued save fix (plan:5) below.
+for (const [name, expected] of [['register.tsx', '8c65b519e391996e7eb786ffc4ded6c57b319f7c28022752a8062bbf56267e74'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
   assert.equal(hash(readFileSync(hook(name), 'utf8')), expected, `${name}: exact bulk-clear/P2.1 integration`)
 }
 assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '8b1b40df9ae3e5442ae15b0778570e9cd29d43eb626e1164c0e3416543543da3', 'exact declared architecture edges')
