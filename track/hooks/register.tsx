@@ -310,13 +310,15 @@ const shade = (level: number): string | undefined => (level > 0 ? FLASH_SHADES[M
 // Prismantis draws a message inside its own fill, which covers Track's outer shade, so the same
 // level is handed to it under the key its drawing reads: answer:<answerKey> for an answer block,
 // the full native request id for a plain reply or a prompt. Without Prismantis the call throws
-// and Track's own shade is the highlight.
+// and Track's own shade is the highlight. A plain answer's answerKey is its bare row key, so the
+// row-key test runs first: that reply is tinted under its drawn host, never answer:<row>.
 const ROW_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/
 const tintKey = (l: Ledger, id: string): string | undefined => {
-  if (l.questions.some(q => q.answerKey === id)) return `answer:${id}`
-  if (!ROW_KEY.test(id)) return id
-  const host = renderInstances.get(id)
-  return host !== undefined && rowKey(host) === id ? host : undefined
+  if (ROW_KEY.test(id)) {
+    const host = renderInstances.get(id)
+    return host !== undefined && rowKey(host) === id ? host : undefined
+  }
+  return l.questions.some(q => q.answerKey === id) ? `answer:${id}` : id
 }
 
 const light = async ($: EngineInterface, id: string, level: number): Promise<void> => {
