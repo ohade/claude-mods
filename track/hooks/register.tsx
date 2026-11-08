@@ -142,20 +142,22 @@ const rememberRender = ($: EngineInterface, key: string, id: string): void => {
 
 // A save queued by a drawing runs through that drawing's `$`, and the engine refuses its writes
 // while that ui.render dispatch is still in flight (an outer mod such as Prismantis keeps drawing
-// after Track returns). A refused save is retried on a growing delay: once the drawing has ended,
-// the same call is allowed. Any other failure, or the last refusal, is logged as before.
+// after Track returns, and the host sets no limit on how long: a hook's budget leaves out its
+// next(e) and $ calls). A save refused for that reason waits on a growing delay, capped at the last
+// step, until the drawing has ended and the same call is allowed. Any other failure ends it with
+// the log line it always had.
 const DRAWING_RETRY_MS = [0, 50, 100, 200, 400, 800, 1600, 3200] as const
 const DRAWING_IN_FLIGHT = 'while ui.render is being dispatched'
 const afterDrawing = ($: EngineInterface, failure: string, save: () => Promise<void>, attempt = 0): void => {
-  $.clock.after(DRAWING_RETRY_MS[attempt]!, () => {
+  $.clock.after(DRAWING_RETRY_MS[Math.min(attempt, DRAWING_RETRY_MS.length - 1)]!, () => {
     save().catch(error => {
       const text = reason(error)
-      if (text.includes(DRAWING_IN_FLIGHT) && attempt + 1 < DRAWING_RETRY_MS.length) {
-        $.ui.log(`track: save deferred, drawing in flight (${failure} otherwise): ${text}`, { to: 'debug' })
-        afterDrawing($, failure, save, attempt + 1)
+      if (!text.includes(DRAWING_IN_FLIGHT)) {
+        $.ui.log(`track: ${failure}: ${text}`, { to: 'debug' })
         return
       }
-      $.ui.log(`track: ${failure}: ${text}`, { to: 'debug' })
+      if (attempt === 0) $.ui.log(`track: save deferred until the drawing ends: ${text}`, { to: 'debug' })
+      afterDrawing($, failure, save, attempt + 1)
     })
   })
 }
