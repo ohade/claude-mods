@@ -189,6 +189,10 @@ const moduleText = source('../../hooks/save-journal.ts')
 const moduleLines = moduleText.split('\n')
 const registerText = source('../../hooks/register.tsx')
 const registerLines = registerText.split('\n')
+// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): the native save adapter moved to
+// ledger-store.ts; its $-taking functions are function declarations, bodies unchanged.
+const storeText = source('../../hooks/ledger-store.ts')
+const storeLines = storeText.split('\n')
 const transform = (lines: string[], pairs: Array<[string, string]>): string[] =>
   lines.map(line => pairs.reduce((text, [from, to]) => text.split(from).join(to), line))
 const dedent = (lines: string[]): string[] => lines.map(line => line.replace(/^ {2}/, ''))
@@ -244,29 +248,32 @@ assert.deepEqual(
 
 // The native adapter: the open-writer check precedes the map read, reads stay raw, each write takes
 // a new guarded retention store, and the origin blob block keeps its checks under its own name.
-assert.deepEqual(span('N1', registerLines, 'const recoverSave = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {', closes), [
-  'const recoverSave = async ($: EngineInterface, context: WriteContext, id: string): Promise<void> => {',
+assert.deepEqual(span('N1', storeLines, 'export async function recoverSave($: EngineInterface, context: WriteContext, id: string): Promise<void> {', closes), [
+  'export async function recoverSave($: EngineInterface, context: WriteContext, id: string): Promise<void> {',
   '  assertWriteOpen(context)',
   '  await rollbackSave(saveJournal($, context), saveRecoveries, id)',
   '}',
 ], 'N1 recoverSave checks the open writer, then delegates to rollbackSave')
 
-assert.deepEqual(span('N2', registerLines, 'const storeReads = ($: EngineInterface): SavedReads => ({ read: key => $.store.get(key), keys: () => $.store.keys() })', line => line.startsWith('  restoreBlob: ')), [
-  'const storeReads = ($: EngineInterface): SavedReads => ({ read: key => $.store.get(key), keys: () => $.store.keys() })',
-  'const saveJournal = ($: EngineInterface, context: WriteContext): SaveJournal => ({ ...storeReads($),',
+assert.deepEqual(span('N2', storeLines, 'export function storeReads($: EngineInterface): SavedReads {', line => line.startsWith('  restoreBlob: ')), [
+  'export function storeReads($: EngineInterface): SavedReads {',
+  '  return ({ read: key => $.store.get(key), keys: () => $.store.keys() })',
+  '}',
+  'export function saveJournal($: EngineInterface, context: WriteContext): SaveJournal {',
+  '  return ({ ...storeReads($),',
   '  set: (key, value) => retentionStore($, context).set(key, value), delete: key => retentionStore($, context).delete(key),',
   '  writeVerified: (key, value) => writeVerified($, context, key, value), taint: () => { context.tainted = true },',
   '  restoreBlob: (pointer, text) => restorePreviousBlob($, context, pointer, text) })',
 ], 'N2 save journal callbacks: raw reads, guarded writes')
 
 assert.deepEqual(
-  span('N3', registerLines, 'const restorePreviousBlob = async ($: EngineInterface, context: WriteContext, pointer: { checksum?: unknown; bytes?: unknown } | undefined, text: string | undefined): Promise<void> => {', closes).slice(1, -1),
+  span('N3', storeLines, 'export async function restorePreviousBlob($: EngineInterface, context: WriteContext, pointer: { checksum?: unknown; bytes?: unknown } | undefined, text: string | undefined): Promise<void> {', closes).slice(1, -1),
   transform(dedent(span('N3', originLines, '    const text = recovery.previousBlobText', line => line === '  const failures: string[] = []').slice(1, -2)),
     [['previous.ledger_blob?.', 'pointer?.']]),
   'N3 restorePreviousBlob is the origin blob block bound to its parameters')
 
-assert.deepEqual(span('N4', registerLines, 'const writeVerified = async ($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> => {', closes), [
-  'const writeVerified = async ($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> => {',
+assert.deepEqual(span('N4', storeLines, 'export async function writeVerified($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> {', closes), [
+  'export async function writeVerified($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> {',
   '  await transactionOperation(context, () => writeRetentionValue(retentionStore($, context), key, value))',
   '}',
 ], 'N4 writeVerified keeps its outer transactionOperation')
@@ -278,7 +285,7 @@ for (const line of [
   '      commit: write => commitSave(saveJournal($, context), saveRecoveries, id, write),',
   '      clearRecovery: () => { saveRecoveries.delete(id) },',
   '    const index = await savedIndex(storeReads($))',
-]) assert.equal(registerLines.filter(other => other === line).length, 1, `N5 register has exactly one: ${line.trim()}`)
+]) assert.equal(storeLines.filter(other => other === line).length, 1, `N5 ledger-store has exactly one: ${line.trim()}`)
 // TRACK-46 slice 1 (2026-11-09, Ohad's standing approval): the saveRecoveries map moved to
 // track-state.ts with its SaveRecovery type import; register imports the one map from there.
 const stateLines = readFileSync(new URL('../../hooks/track-state.ts', import.meta.url), 'utf8').split('\n')
@@ -286,7 +293,9 @@ for (const line of [
   "import type { SaveRecovery } from './save-journal'",
   'export const saveRecoveries = new Map<string, SaveRecovery>()',
 ]) assert.equal(stateLines.filter(other => other === line).length, 1, `N5 track-state has exactly one: ${line.trim()}`)
-assert.equal(registerLines.filter(line => /^import \{[^}]*\bsaveRecoveries\b[^}]*\} from '\.\/track-state'$/.test(line)).length, 1, 'N5 register imports saveRecoveries from track-state')
+assert.equal(storeLines.filter(line => /^import \{[^}]*\bsaveRecoveries\b[^}]*\} from '\.\/track-state'$/.test(line)).length, 1, 'N5 ledger-store imports saveRecoveries from track-state')
+assert.doesNotMatch(registerText, /\bsaveRecoveries\b/, 'N5 register no longer touches saveRecoveries')
+assert.doesNotMatch(storeText, /^(?:export )?const saveRecoveries\b/m, 'N5 ledger-store does not declare saveRecoveries')
 assert.doesNotMatch(registerText, /^const saveRecoveries\b/m, 'N5 register no longer declares saveRecoveries')
 // P2.1 moved these three statements to the imported flow, retaining the native callbacks above.
 const flowLines = readFileSync(new URL('../../hooks/legacy-save-flow.ts', import.meta.url), 'utf8').split('\n')
@@ -297,6 +306,7 @@ for (const line of [
 ]) assert.equal(flowLines.filter(other => other === line).length, 1, `N5 imported flow has exactly one: ${line.trim()}`)
 for (const declaration of [/^const SAVED_INDEX\b/m, /^type SavedIndex\b/m, /^type SaveRecovery\b/m, /^const savedIndex\b/m, /^const patchCompacted\b/m]) {
   assert.doesNotMatch(registerText, declaration, `N5 register no longer declares ${declaration.source}`)
+  assert.doesNotMatch(storeText, new RegExp(declaration.source.replace(/^\^/, '^(?:export )?'), 'm'), `N5 ledger-store does not declare ${declaration.source}`)
 }
 
 console.log('check_save_journal: C1-C11, S0-S6 and N1-N5 passed')
