@@ -2031,7 +2031,9 @@ const resumeOwned = async ($: EngineInterface, id: string): Promise<void> => {
   const run = persistence.queue.then(async () => {
     const resumeFailure = async (error: unknown, context: WriteContext | undefined): Promise<void> => {
       if (context !== undefined) context.tainted = true
-      await update($, durability, current => ({ ...current, isUnsaved: true, reason: `resume: ${reason(error)}` }))
+      // A pending outcome keeps its leading marker, so no surface calls a possibly committed save unsaved.
+      const text = error instanceof HistoryOutcomePending ? reason(error) : `resume: ${reason(error)}`
+      await update($, durability, current => ({ ...current, isUnsaved: true, reason: text }))
       throw error
     }
     try {
