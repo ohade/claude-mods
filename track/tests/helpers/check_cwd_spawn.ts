@@ -15,6 +15,10 @@ const source = readFileSync(`${root}/hooks/register.tsx`, 'utf8')
 // one file that declares it.
 const stateSource = readFileSync(`${root}/hooks/track-state.ts`, 'utf8')
 const lockSource = readFileSync(`${root}/hooks/writer-lock.ts`, 'utf8')
+// TRACK-46 slice 10 (2026-11-09, Ohad's standing approval): the session/turn/prompt/Stop event handler
+// bodies moved to session-events.ts, a native adapter file.
+// deployDrift and checkDeployDrift moved with them; the drift probe is compiled from that file.
+const eventsSource = readFileSync(`${root}/hooks/session-events.ts`, 'utf8')
 const scratch = mkdtempSync(`${tmpdir()}/track-cwd-check-`)
 const deleted = `${scratch}/caller`
 const originalCwd = process.cwd()
@@ -104,7 +108,7 @@ try {
   await renewed.return({ code: null, signal: 'SIGTERM' })
   console.log('PASS: actual lease, write and reacquisition from a deleted cwd')
 
-  const drift = compile('const deployDrift =', 'export const register:', 'checkDeployDrift')
+  const drift = compile('export const deployDrift =', "// 'session.start': the registration stays in register.tsx.", 'checkDeployDrift', {}, eventsSource)
   await drift(engine)
   assert(runs.length >= 2, 'both main/live Git probes must run')
   for (const result of await Promise.all(runs)) assert.equal(result.exitCode, 0, 'Git probe must succeed from a deleted caller cwd')
