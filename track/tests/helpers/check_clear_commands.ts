@@ -108,5 +108,18 @@ const effectWiring = (file: ts.SourceFile, name: string): string => {
   const unit = parse(`const effect = ${normalized}`)
   return printer.printFile(unit)
 }
-for (const name of ['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps']) assert.equal(effectWiring(current, name), effectWiring(parse(baseline.stdout), name), `${name}: all native effects, lifetimes and ordering remain unchanged`)
+// TRACK-46 A1/C1 (Ohad's fix list, Codex-accepted 742ea67): these pane presses first admit the
+// current owner. The prelude is required here; every other effect is compared to the baseline.
+const ADMISSION = 'if (!(await paneOwner($))) return'
+const admitted = new Set(['clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps'])
+const withoutAdmission = (file: ts.SourceFile, name: string): ts.SourceFile => {
+  if (!admitted.has(name)) return file
+  const text = file.getFullText()
+  const declaration = all(file).filter(ts.isVariableDeclaration).find(node => node.name.getText(file) === name)!
+  const body = declaration.initializer!.getText(file)
+  assert.equal(body.split(ADMISSION).length - 1, 1, `${name}: admits the current owner exactly once`)
+  assert.ok(/=>\s*\{\s*if \(!\(await paneOwner\(\$\)\)\) return/.test(body), `${name}: owner admission comes before every effect`)
+  return parse(text.replace(body, body.replace(ADMISSION, '')))
+}
+for (const name of ['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps']) assert.equal(effectWiring(withoutAdmission(current, name), name), effectWiring(parse(baseline.stdout), name), `${name}: all native effects, lifetimes and ordering remain unchanged`)
 console.log('bulk clear: literal cases, same-reference arming, 4 wrong implementations rejected, frozen parity and native retry/effect placement pass (SOURCE/FIXTURE)')
