@@ -516,6 +516,10 @@ const observeRewind = async ($: EngineInterface, submitted?: string): Promise<bo
     $.ui.log(`track: ${persistence.failure}`, { to: 'debug' })
     return false
   }
+  // TRACK-46 A1/C1 (iv): rows another session owns are never judged against this session's
+  // transcript, where that session's calls are absent. A viewport check selects no session; the
+  // next owned event loads this session's rows, and a later check judges those.
+  if (l.session_id !== undefined && l.session_id !== session) return true
   if (pending === session && !(await saveLedger($))) return false
   if (!hasJudged) {
     return true

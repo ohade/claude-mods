@@ -88,6 +88,8 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
     taskHold: undefined as Latch | undefined,
     todoHold: undefined as Latch | undefined, updateHold: undefined as Latch | undefined,
     workHold: undefined as Latch | undefined, updateSuccess: true,
+    // When set, the transcript holds only the current session's saved calls.
+    ownTranscript: false,
     // Holds the first Track state write of its key that it matches, then clears itself.
     stateSetHold: undefined as { key: string; matches: (value: unknown) => boolean; latch: Latch } | undefined,
     modelReply: async (_text: string): Promise<'question' | 'not_question'> => 'not_question' }
@@ -172,7 +174,7 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
   const lines = logs(on)
   on('classic.SessionStart', (_, e) => { starts.push(e.session_id); return {} })
   on('session.messages', () => ({ value: [{ role: 'assistant', text: '', toolUses:
-    ['A', 'B', 'C'].flatMap(name => ['question', 'open', 'answer', 'result'].map(kind => ({
+    (controls.ownTranscript ? [{ [A]: 'A', [B]: 'B', [C]: 'C' }[controls.session]!] : ['A', 'B', 'C']).flatMap(name => ['question', 'open', 'answer', 'result'].map(kind => ({
       tool_use_id: `${name}-${kind}-call`, tool: 'fixture_saved_call', input: {},
     }))) }] }))
   on('prompt.submit', (_, e) => {
@@ -1957,4 +1959,44 @@ test("FIXTURE TRACK46 owner switch: a B reply's held last-text write never ties 
     held.release()
     await fixtureWait(reply, 'B reply cleanup')
   }
+})
+
+// TRACK-46 A1/C1 (iv): the prompt-box redraw schedules a rewind check with no prompt and no
+// session selection. After an identity change to B, memory still holds A's rows; the first check
+// must not judge them against B's transcript, where A's calls are absent, and remove them.
+test("FIXTURE TRACK46 owner switch: the first B viewport rewind check never judges A's rows against B's transcript", async ($, on) => {
+  on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Text', props: {}, children: ['hint'] }))
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.ownTranscript = true
+  fixture.controls.session = B
+  await $.ui.mount({ plugin: 'track', surface: 'terminal' as const, component: 'PromptHint' as const, requestId: 'hint',
+    props: { isDraft: true, isWorking: false, hint: '' } } as never)
+  await fixture.clock.advance(5000)
+  await fixture.clock.settle()
+  // Every write of each session's rows keeps all of them, memory ends on one session's full rows,
+  // and neither session's saved rows changed. (A probe saw A's memory written with no questions and
+  // no step result before B was loaded.)
+  const rows = (l: Ledger) => ({ questions: l.questions.map(q => [q.head, q.status, q.answerText]), steps: l.steps.map(s => [s.subject, s.resultText]) })
+  const written = (fixture.memory as unknown as { writes: Ledger[] }).writes
+  const full: Record<string, ReturnType<typeof rows>> = { [A]: rows(fixture.a.rows), [B]: rows(fixture.b.rows) }
+  expect(written.filter(l => l.session_id !== undefined && l.questions.length + l.steps.length > 0)
+    .filter(l => JSON.stringify(rows(l)) !== JSON.stringify(full[l.session_id!])).map(rows), 'no partial row set written').toEqual([])
+  expect([full[A], full[B]]).toContainEqual(rows(fixture.memory.value))
+  expect({ a: (await history(fixture, A, fixture.a)).ledger, b: (await history(fixture, B, fixture.b)).ledger })
+    .toEqual({ a: expectedHistory(fixture.a).ledger, b: expectedHistory(fixture.b).ledger })
+})
+
+test('FIXTURE TRACK46 owner switch: a viewport rewind check still removes a rewound question of its own session', async ($, on) => {
+  on('ui.render', { component: 'PromptHint' }, () => ({ type: 'Text', props: {}, children: ['hint'] }))
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.ownTranscript = true
+  fixture.memory.value = { ...fixture.memory.value, questions: [...fixture.memory.value.questions,
+    { session_id: A, id: 3, head: 'A rewound question', at: 30, turnId: 'A-saved-turn', status: 'open', trackedBy: 'A-gone-call' }] }
+  await $.ui.mount({ plugin: 'track', surface: 'terminal' as const, component: 'PromptHint' as const, requestId: 'hint',
+    props: { isDraft: true, isWorking: false, hint: '' } } as never)
+  await fixture.clock.advance(5000)
+  await fixture.clock.settle()
+  expect(fixture.memory.value.questions.map(q => q.head)).toEqual(['A answered question', 'A open question'])
 })
