@@ -35,7 +35,10 @@ assert.equal(digest(between(save, '    // A stale caller', '\n  }\n  let intent'
 assert.equal(digest(between(save, '    assertOwner(token)', '\n  } catch (error) {').replace('    intent = ', '    const intent = ')),
   '5418728d3ea6f45680abb65ecd62457c3b000f415a24648f4294b0c1320868d3', 'R5 admission and v3 routing equal the origin')
 assert.equal(digest(between(resume, '      if (context !== undefined)', '\n    }\n    try {')),
-  '0feb394cd510e1ddc27f50d0a1f3f9871f446135cebc5cc0a3ec04a0fa09c4ce', 'R5 resume failure taints, publishes and rethrows the original cause')
+  // 2026-11-09 (approved by Ohad): replaces 0feb394c... (6a444b3). The Codex-accepted TRACK-46 A7
+  // fix (ecd1bb5) keeps a pending outcome's own marker in the unsaved reason; taint, publish and
+  // rethrow are unchanged.
+  'f3c4507452f8278320f4eb7b98e3b88126f00bb8d6bb4473f3018eca0216ccff', 'R5 resume failure taints, publishes and rethrows the original cause')
 assert.ok(save.includes('await saveFailure(error, undefined)\n    return\n  }\n  const session = id'), 'R5 admission errors are handled once, before any legacy grant')
 assert.ok(resume.includes('await resumeFailure(error, undefined)\n      return\n    }\n    await inOwnGrant'), 'R5 resume admission errors are handled once, outside the grant')
 assert.ok(resume.includes("if (await historyEnabled($) && await resumeRouted($, id) === 'v3') return\n      await ensureWriter($, id)"), 'R5 resume v3 routing stays before the legacy grant')

@@ -31,14 +31,16 @@ for (const [commit, path, expected] of [
   ['7b990c645b3532b932ffdfa387175bab5cd2bd22', 'hooks/register.tsx', '6ddf341f0479ca9aced6e949cf70dce8561a2f958e1e07e9c0127247ec4f49bf'],
   ['ccf959c3d37b6379249dd2dff5a7ebcaf4f587fe', 'hooks/register.tsx', '13e7aec8e44f171eefc6bb7d2fcd4c62c1d5b8fa1e50f44cf07d18e2ac8917a3'],
   ['cbae7eb76a7aef2af67d5b96450cc15ed449ceb0', 'hooks/register.tsx', '8a14b98ed1ee075b328714a77846937fc64efcf2644626f45beabbfeb21570ef'],
+  ['6a444b37622025a7f7a1b673fadeb3960ff055ec', 'hooks/register.tsx', '8c65b519e391996e7eb786ffc4ded6c57b319f7c28022752a8062bbf56267e74'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
   assert.equal(hash(accepted.stdout), expected, `accepted ${commit} ${path} proof retained`)
 }
 const native = readFileSync(hook('register.tsx'), 'utf8')
-// 2026-11-08: retain the Prismantis highlight bytes above; pin the reviewed draw-queued save fix (plan:5) below.
-assert.equal(hash(native), '8c65b519e391996e7eb786ffc4ded6c57b319f7c28022752a8062bbf56267e74', 'exact bulk-clear/P2.1 integration bytes')
+// 2026-11-09 (approved by Ohad, "approve check"): retain the plan:5 bytes (6a444b3) above; pin the
+// Codex-accepted TRACK-46 fix list (S2, A7, A5, S3/C2, A2, A4, A1/C1 i-iv) below.
+assert.equal(hash(native), '7d563c4f072a632d4f56752a2771a47c5f9621a24ff7ccb661e1a3fcdb5fa693', 'exact bulk-clear/P2.1 integration bytes')
 const arch = readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')
 assert.equal(hash(arch), '8b1b40df9ae3e5442ae15b0778570e9cd29d43eb626e1164c0e3416543543da3', 'exact declared architecture edges')
 const { paneBanner } = await import('../../hooks/pane-banner-model')
