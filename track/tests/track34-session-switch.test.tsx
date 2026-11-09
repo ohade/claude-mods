@@ -88,8 +88,8 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
     taskHold: undefined as Latch | undefined,
     todoHold: undefined as Latch | undefined, updateHold: undefined as Latch | undefined,
     workHold: undefined as Latch | undefined, updateSuccess: true,
-    // Holds the first ledger write it matches, then clears itself.
-    ledgerSetHold: undefined as { matches: (value: Ledger) => boolean; latch: Latch } | undefined,
+    // Holds the first Track state write of its key that it matches, then clears itself.
+    stateSetHold: undefined as { key: string; matches: (value: unknown) => boolean; latch: Latch } | undefined,
     modelReply: async (_text: string): Promise<'question' | 'not_question'> => 'not_question' }
   const lease: { leaseFailure?: string; refuseSet?: (key: string, value: unknown) => string | undefined } = {}
   const identityReads: string[] = []
@@ -110,12 +110,12 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
     if (e.plugin === 'track' && e.key === 'ledger') {
       const value = e.value as Ledger
       if (value.steps.some(step => step.resultText === B_RESULT)) mutationAttempts.push(structuredClone(value))
-      const hold = controls.ledgerSetHold
-      if (hold?.matches(value) === true) {
-        controls.ledgerSetHold = undefined
-        hold.latch.enter()
-        return hold.latch.released.then(() => next(e))
-      }
+    }
+    const hold = controls.stateSetHold
+    if (e.plugin === 'track' && hold?.key === e.key && hold.matches(e.value)) {
+      controls.stateSetHold = undefined
+      hold.latch.enter()
+      return hold.latch.released.then(() => next(e))
     }
     return next(e)
   })
@@ -1763,8 +1763,8 @@ test('FIXTURE TRACK46 owner switch: a B clear press overlapping a C switch never
   const toB = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
   expect(toB.deny).toBeUndefined()
   const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
-  fixture.controls.ledgerSetHold = { latch: held,
-    matches: value => value.steps.some(s => s.subject === 'B saved step' && s.cleared === true) }
+  fixture.controls.stateSetHold = { key: 'ledger', latch: held,
+    matches: value => (value as Ledger).steps.some(s => s.subject === 'B saved step' && s.cleared === true) }
   const press = outcome(ui.press({ key: 'clear-completed' }))
   try {
     const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), press.then(() => 'returned')]), 'B clear write')
@@ -1783,4 +1783,92 @@ test('FIXTURE TRACK46 owner switch: a B clear press overlapping a C switch never
     held.release()
     await fixtureWait(press, 'B clear press cleanup')
   }
+})
+
+// Codex review of 2a0ecb2: an identity outage keeps the memory fallback, but the press is still
+// fenced to the memory owner it acted on. A held B write released after C is selected changes
+// nothing in C.
+test('FIXTURE TRACK46 owner switch: an identity-outage B clear press overlapping a C switch never changes C', async ($, on) => {
+  const held = latch()
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const toB = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
+  expect(toB.deny).toBeUndefined()
+  const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  fixture.controls.identityFailure = 'TRACK46 identity outage'
+  fixture.controls.identityFailOnce = true
+  fixture.controls.stateSetHold = { key: 'ledger', latch: held,
+    matches: value => (value as Ledger).steps.some(s => s.subject === 'B saved step' && s.cleared === true) }
+  const press = outcome(ui.press({ key: 'clear-completed' }))
+  try {
+    const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), press.then(() => 'returned')]), 'outage B clear write')
+    if (phase !== 'held') throw new Error('INVALID FIXTURE: the outage B clear press wrote nothing to hold')
+    if (fixture.controls.identityFailure !== '') throw new Error('INVALID FIXTURE: the press did not read the failing identity')
+    fixture.controls.session = C
+    const toC = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'C selection while outage B write held')
+    if (toC.deny !== undefined || toC.isError === true) throw new Error(`INVALID FIXTURE: C selection failed: ${JSON.stringify(toC)}`)
+    held.release()
+    await fixtureWait(press, 'outage B clear press completion')
+    await fixture.clock.settle()
+    expect(fixture.memory.value.session_id, 'C stays selected').toBe(C)
+    expect(fixture.memory.value.steps.find(s => s.id === 'plan:1')?.cleared, 'C completed step not cleared by the B press').toBeUndefined()
+    expect({ a: await history(fixture, A, fixture.a), c: await history(fixture, C, fixture.c) })
+      .toEqual({ a: expectedHistory(fixture.a), c: expectedHistory(fixture.c) })
+  } finally {
+    held.release()
+    await fixtureWait(press, 'outage B clear press cleanup')
+  }
+})
+
+test('FIXTURE TRACK46 owner switch: an identity-outage clear press with no switch still clears the memory owner', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const toB = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
+  expect(toB.deny).toBeUndefined()
+  const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  fixture.controls.identityFailure = 'TRACK46 identity outage'
+  fixture.controls.identityFailOnce = true
+  await ui.press({ key: 'clear-completed' })
+  await fixture.clock.settle()
+  expect(fixture.memory.value.session_id).toBe(B)
+  expect(fixture.memory.value.steps.find(s => s.id === 'plan:1')?.cleared, 'B completed step cleared on memory').toBe(true)
+})
+
+// CONTROL, Codex review of 2a0ecb2: clear all arms on its first press when steps are unfinished.
+// A B arm write held until C is selected must not arm C, or C's next single press would clear
+// C's unfinished step without confirmation. This passed on 2a0ecb2 before any arm change: C's
+// load reset the arm (null, version 151 to 152), so the held B arm lost its compare-and-set.
+test('FIXTURE TRACK46 owner switch: a held B clear-all arm released after a C switch does not arm C', async ($, on) => {
+  const held = latch()
+  const open = (id: string, name: string): Ledger['steps'] =>
+    [{ session_id: id, id: 'plan:2', source: 'plan', subject: `${name} unfinished step`, status: 'in_progress' }]
+  const fixture = await setup(on, undefined, { [B]: open(B, 'B'), [C]: open(C, 'C') })
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const toB = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
+  expect(toB.deny).toBeUndefined()
+  const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  fixture.controls.stateSetHold = { key: 'clearArm', latch: held, matches: value => typeof value === 'number' }
+  const press = outcome(ui.press({ key: 'clear-steps' }))
+  try {
+    const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), press.then(() => 'returned')]), 'B arm write')
+    if (phase !== 'held') throw new Error('INVALID FIXTURE: the B clear-all press wrote no arm to hold')
+    fixture.controls.session = C
+    const toC = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'C selection while B arm held')
+    if (toC.deny !== undefined || toC.isError === true) throw new Error(`INVALID FIXTURE: C selection failed: ${JSON.stringify(toC)}`)
+    held.release()
+    await fixtureWait(press, 'B arm press completion')
+  } finally {
+    held.release()
+    await fixtureWait(press, 'B arm press cleanup')
+  }
+  await ui.unmount()
+  const cUi = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  expect(await paneTexts(cUi), 'the pane now shows C').toContain('C unfinished step')
+  await cUi.press({ key: 'clear-steps' })
+  await fixture.clock.settle()
+  expect(fixture.memory.value.session_id).toBe(C)
+  expect(fixture.memory.value.steps.map(s => s.subject), "one C press only arms; C's unfinished step stays").toContain('C unfinished step')
 })

@@ -2241,14 +2241,17 @@ const clearQuestions = ($: EngineInterface): Promise<void> => pressOwned($, asyn
 // TRACK-46 A1/C1: a pane press is the session's own action, so it first selects the current
 // session, as tool calls do; it never changes the previous owner's rows. Its token fences every
 // ledger write, gate and save, so a press still running when another session is selected stops
-// instead of writing into that session. An identity outage acts on memory, unfenced, as before.
-const pressOwned = async ($: EngineInterface, press: (token: OwnerToken | undefined) => Promise<void>): Promise<void> => {
+// instead of writing into that session. An identity outage acts on memory, as before, fenced to
+// the memory owner and the ownership epoch it read (Codex review of 2a0ecb2).
+const pressOwned = async ($: EngineInterface, press: (token: OwnerToken) => Promise<void>): Promise<void> => {
+  const epoch = ownership.epoch
   const owned = await ensureOwner($)
   if (!owned.ok && !owned.isIdentity) {
     $.ui.toast(`track: ${owned.reason}`)
     return
   }
-  try { await press(owned.ok ? owned.token : undefined) }
+  const token = owned.ok ? owned.token : { owner: (await read($, ledger)).session_id ?? (await read($, durability)).memorySession ?? undefined, epoch }
+  try { await press(token) }
   catch (error) {
     if (!(error instanceof OwnerChanged)) throw error
     $.ui.toast(`track: ${error.message}`)
