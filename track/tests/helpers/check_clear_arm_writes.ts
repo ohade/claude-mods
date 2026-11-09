@@ -7,7 +7,9 @@ import { join } from 'node:path'
 // TRACK-46 slices 1-7 (2026-11-09, Ohad's standing approval): updateLedger and updateOwnedLedger moved
 // to track-state.ts. The native files are scanned together with a per-file line prefix, so a count
 // cannot merge or hide a declaration in either file.
-const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts', 'session-owner.ts', 'turn-guidance.ts', 'prompt-flow.ts', 'pane-actions.tsx']
+const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts', 'session-owner.ts', 'turn-guidance.ts', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts']
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
 const lines = NATIVE.flatMap(file => readFileSync(join(import.meta.dir, '../../hooks', file), 'utf8').split('\n').map(line => line))
 const fileOf = (line: number): string => { let n = line; for (const file of NATIVE) { const len = readFileSync(join(import.meta.dir, '../../hooks', file), 'utf8').split('\n').length; if (n <= len) return file; n -= len } return '?' }
 const RESET = "if (written.steps.filter(s => s.status !== 'completed').length === 0) await update($, clearArm, () => null)"
