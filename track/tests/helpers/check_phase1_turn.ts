@@ -8,7 +8,10 @@ assert.ok(existsSync(boundary), 'missing turn-policy boundary: turn-policy.ts')
 const source = readFileSync(boundary, 'utf8')
 // TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): the composition is the native adapter
 // files; none may re-declare a policy symbol, and the Stop guidance import moved to ledger-store.ts.
-const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts']
+const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts', 'session-events.ts']
+// TRACK-46 slice 10 (2026-11-09, Ohad's standing approval): the session/turn/prompt/Stop event handler
+// bodies moved to session-events.ts, a native adapter file.
+// The turn-policy import moved with them: natives[4] is the composition that imports it.
 const natives = NATIVE.map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8'))
 const composition = natives[0]!
 const store = natives[3]!
@@ -17,7 +20,7 @@ for (const symbol of symbols) {
   assert.match(source, new RegExp(`^(?:export )?const ${symbol}\\b`, 'm'), `turn-policy owns ${symbol}`)
   for (const file of natives) assert.doesNotMatch(file, new RegExp(`^(?:export )?(?:const|(?:async )?function) ${symbol}\\b`, 'm'), `composition must import ${symbol}`)
 }
-assert.match(composition, /from '\.\/turn-policy'/)
+assert.match(natives[4]!, /from '\.\/turn-policy'/)
 assert.ok(source.trimEnd().split('\n').length <= 100, 'turn-policy stays within 100 lines')
 for (const line of source.match(/^import .*$/gm) ?? []) {
   assert.match(line, line.startsWith('import type ') ? /from '\.\.\/types'$/ : /^import \{ (?:distinctIds|norm|visibleSteps) \} from '\.\/(?:ledger-policy|ledger-text|steps)'$/)
