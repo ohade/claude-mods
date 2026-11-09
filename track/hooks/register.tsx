@@ -624,6 +624,7 @@ const dropRewound = async ($: EngineInterface, submitted?: string): Promise<bool
 // ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
 // model not to answer it. The Stop gate stops holding the turn for it, as it is gone.
 const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
+  if (!(await paneOwner($))) return
   const q = (await read($, ledger)).questions.find(one => one.id === id)
   if (q === undefined) {
     return
@@ -2220,6 +2221,7 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
 // counting up, so a later Q<n> never reuses one the model saw.
 const clearQuestions = async ($: EngineInterface): Promise<void> => {
+  if (!(await paneOwner($))) return
   await updateLedger($, cur => clearQuestionRows(cur))
   await publishGate($)
   await saveLedger($)

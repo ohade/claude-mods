@@ -1692,3 +1692,20 @@ test('FIXTURE TRACK46 owner switch: /track status after an identity change repor
   expect(String(result.text), 'B open question, never A').toContain('B open question')
   expect(String(result.text)).not.toContain('A open question')
 })
+
+// TRACK-46 A1/C1 (i): clear all questions and a question's ✕ are pane presses too. After an
+// identity change they must select B first, withdraw B's questions, and leave A's saved rows.
+for (const [name, key] of [['clear all questions', 'clear-questions'], ['question withdraw', 'del-2']] as const) {
+  test(`FIXTURE TRACK46 owner switch: a pane ${name} press after an identity change acts on B and keeps A`, async ($, on) => {
+    const fixture = await setup(on)
+    await beginA($, fixture)
+    const ui = await $.ui.mount(pane('dock')) as unknown as { press: (q: { key: string }) => Promise<void> }
+    fixture.controls.session = B
+    await ui.press({ key })
+    await fixture.clock.settle()
+    expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
+    expect(fixture.memory.value.session_id, 'B was selected').toBe(B)
+    expect({ withdrawn: fixture.memory.value.withdrawn, open: fixture.memory.value.questions.some(q => q.id === 2) })
+      .toEqual({ withdrawn: [{ id: 2, head: 'B open question', session_id: B }], open: false })
+  })
+}
