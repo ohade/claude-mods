@@ -13,10 +13,14 @@ assert.ok(source.trimEnd().split('\n').length <= 100, 'Stop guidance stays withi
 assert.deepEqual(source.match(/^import .*$/gm), ["import type { PendingInput } from '../types'", "import { truncate, utf8Bytes } from './ledger-text'"])
 assert.doesNotMatch(source, /claude-code|EngineInterface|Runtime|\$\.|atom\(|setTimeout\(/, 'guidance is value-only')
 assert.match(source, /^const MINIMAL_INPUT_BYTES = 100$/m)
-assert.doesNotMatch(native, /^const (?:minimalInputReason|uncoveredBlock|MINIMAL_INPUT_BYTES)\b/m)
-assert.ok(native.includes("import { minimalInputReason, uncoveredBlock } from './stop-guidance'"))
-assert.ok(native.includes('reason: minimalInputReason(i, TRACK_QUESTION)'))
-assert.ok(native.includes('uncoveredBlock([inputs[index]!], ANSWER)'))
+// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): publishGate and fitInputReason moved to
+// ledger-store.ts with two of the three call sites; the Stop handler's site stays in register.tsx.
+const store = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
+for (const file of [native, store]) assert.doesNotMatch(file, /^(?:export )?(?:const|(?:async )?function) (?:minimalInputReason|uncoveredBlock|MINIMAL_INPUT_BYTES)\b/m)
+assert.ok(store.includes("import { minimalInputReason, uncoveredBlock } from './stop-guidance'"))
+assert.ok(native.includes("import { uncoveredBlock } from './stop-guidance'"))
+assert.ok(store.includes('reason: minimalInputReason(i, TRACK_QUESTION)'))
+assert.ok(store.includes('uncoveredBlock([inputs[index]!], ANSWER)'))
 assert.ok(native.includes('block: uncoveredBlock(inputs, ANSWER)'))
 const tree = ts.createSourceFile('stop-guidance.ts', source, ts.ScriptTarget.Latest, true)
 const bodies: Record<string, string> = {}
