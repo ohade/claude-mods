@@ -5,7 +5,9 @@ import type { Ledger, Question, Restore, Step } from '../../types'
 
 const modules = ['restore-records', 'restore-source', 'restore-proposal'] as const
 for (const name of modules) assert.ok(existsSync(new URL(`../../hooks/${name}.ts`, import.meta.url)), `missing restore boundary: ${name}.ts`)
-const composition = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+const composition = ['register.tsx', 'track-tools.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
 for (const name of modules) {
   const source = readFileSync(new URL(`../../hooks/${name}.ts`, import.meta.url), 'utf8')
   assert.match(composition, new RegExp(`from './${name}'`))
