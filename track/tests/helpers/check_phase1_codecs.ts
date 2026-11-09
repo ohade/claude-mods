@@ -8,7 +8,9 @@ const modules = {
   'ledger-text': ['HEAD_CHARS', 'ANSWER_CHARS', 'RESULT_CHARS', 'truncate', 'headOf', 'norm'],
   'stored-codecs': ['textField', 'savedPrompt', 'savedMarker', 'savedQuestion', 'savedRestore', 'savedStep', 'savedLedger'],
 }
-const composition = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+const composition = ['register.tsx', 'track-tools.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
 for (const name of Object.keys(modules)) {
   assert.ok(existsSync(new URL(`../../hooks/${name}.ts`, import.meta.url)), `missing storage boundary: ${name}.ts`)
 }
