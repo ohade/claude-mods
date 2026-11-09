@@ -10,9 +10,11 @@ import { runInNewContext } from 'node:vm'
 
 const root = resolve(import.meta.dir, '../..')
 const source = readFileSync(`${root}/hooks/register.tsx`, 'utf8')
-// TRACK-46 slice 1 (2026-11-09, Ohad's standing approval): reason and configDir moved to
-// track-state.ts. Each production function is compiled from the one file that declares it.
+// TRACK-46 slices 1-2 (2026-11-09, Ohad's standing approval): reason and configDir moved to
+// track-state.ts, the writer lock to writer-lock.ts. Each production function is compiled from the
+// one file that declares it.
 const stateSource = readFileSync(`${root}/hooks/track-state.ts`, 'utf8')
+const lockSource = readFileSync(`${root}/hooks/writer-lock.ts`, 'utf8')
 const scratch = mkdtempSync(`${tmpdir()}/track-cwd-check-`)
 const deleted = `${scratch}/caller`
 const originalCwd = process.cwd()
@@ -31,7 +33,7 @@ const compile = (start: string, end: string, name: string, dependencies: Record<
   const last = from.indexOf(end, first)
   assert(first >= 0 && last > first, `production function ${name} was not found`)
   assert.equal(from.indexOf(start, first + 1), -1, `production function ${name} is declared once`)
-  return runInNewContext(transpiler.transformSync(from.slice(first, last).replace(/^export /, '')) + `\n${name}`, {
+  return runInNewContext(transpiler.transformSync(from.slice(first, last).replace(/^export /gm, '')) + `\n${name}`, {
     writer, deploymentDriftMessage: () => undefined, Date, Promise, Error, ...dependencies,
   })
 }
@@ -92,7 +94,7 @@ try {
   rmdirSync(deleted)
   const reason = compile('export const reason =', '\n', 'reason', {}, stateSource)
   const configDir = compile('export async function configDir(', 'export const sha256Hex =', 'configDir', {}, stateSource)
-  const acquire = compile('const closeLock =', 'const ensureWriter =', 'acquireLock', { configDir, reason })
+  const acquire = compile('export const closeLock =', 'export async function ensureWriter(', 'acquireLock', { configDir, reason }, lockSource)
   const session = randomUUID()
   const lease = await acquire(engine, 'lease', session)
   const write = await acquire(engine, 'write', session)
