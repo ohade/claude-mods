@@ -9,7 +9,9 @@ assert.ok(existsSync(cancelBoundary), 'missing ownership boundary: cancel-policy
 assert.ok(existsSync(ownershipBoundary), 'missing ownership boundary: task-ownership.ts')
 // TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
 // track-tools.ts, a native adapter file; it is read here next to register.tsx.
-const composition = ['register.tsx', 'track-tools.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
+// TRACK-46 slice 9 (2026-11-09, Ohad's standing approval): the host task mirror handlers moved to
+// task-mirror.ts, a native adapter file; it is read here with the other native files.
+const composition = ['register.tsx', 'track-tools.ts', 'task-mirror.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
 const cancelSource = readFileSync(cancelBoundary, 'utf8')
 const ownershipSource = readFileSync(ownershipBoundary, 'utf8')
 for (const [source, symbols, module] of [
