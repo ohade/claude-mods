@@ -273,12 +273,21 @@ assert.deepEqual(span('N4', registerLines, 'const writeVerified = async ($: Engi
 
 for (const line of [
   "import { SAVED_INDEX, commitSave, nextIndex, patchCompacted, rollbackSave, savedIndex } from './save-journal'",
-  "import type { SaveJournal, SaveRecovery, SavedIndex, SavedReads } from './save-journal'",
+  "import type { SaveJournal, SavedIndex, SavedReads } from './save-journal'",
   '      nextIndex: bucket => nextIndex(storeReads($), id, bucket),',
   '      commit: write => commitSave(saveJournal($, context), saveRecoveries, id, write),',
   '      clearRecovery: () => { saveRecoveries.delete(id) },',
   '    const index = await savedIndex(storeReads($))',
 ]) assert.equal(registerLines.filter(other => other === line).length, 1, `N5 register has exactly one: ${line.trim()}`)
+// TRACK-46 slice 1 (2026-11-09, Ohad's standing approval): the saveRecoveries map moved to
+// track-state.ts with its SaveRecovery type import; register imports the one map from there.
+const stateLines = readFileSync(new URL('../../hooks/track-state.ts', import.meta.url), 'utf8').split('\n')
+for (const line of [
+  "import type { SaveRecovery } from './save-journal'",
+  'export const saveRecoveries = new Map<string, SaveRecovery>()',
+]) assert.equal(stateLines.filter(other => other === line).length, 1, `N5 track-state has exactly one: ${line.trim()}`)
+assert.equal(registerLines.filter(line => /^import \{[^}]*\bsaveRecoveries\b[^}]*\} from '\.\/track-state'$/.test(line)).length, 1, 'N5 register imports saveRecoveries from track-state')
+assert.doesNotMatch(registerText, /^const saveRecoveries\b/m, 'N5 register no longer declares saveRecoveries')
 // P2.1 moved these three statements to the imported flow, retaining the native callbacks above.
 const flowLines = readFileSync(new URL('../../hooks/legacy-save-flow.ts', import.meta.url), 'utf8').split('\n')
 for (const line of [
