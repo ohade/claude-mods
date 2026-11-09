@@ -16,10 +16,14 @@ for (const name of ['step-commands.ts', 'task-sync-commands.ts']) {
   assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|crypto|Promise|async|EngineInterface|checksumOf|setTimeout|setInterval)\b|\$(?!\{)/, `${name} accepts explicit data, no native capabilities or samplers`)
 }
 const native = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+// Each file is parsed on its own, so a call's retry ancestor stays in its file; newPlanStep's owner is track-tools.ts.
+const tools = readFileSync(new URL('../../hooks/track-tools.ts', import.meta.url), 'utf8')
 const tree = (source: string) => ts.createSourceFile('register.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 const all = (root: ts.Node): ts.Node[] => { const nodes: ts.Node[] = []; const visit = (node: ts.Node) => { nodes.push(node); ts.forEachChild(node, visit) }; visit(root); return nodes }
-const current = tree(native)
-const nodes = all(current)
+const current = tree(tools)
+const nodes = [...all(tree(native)), ...all(current)]
 const callName = (node: ts.Node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) ? node.expression.text : undefined
 const ownedRetry = (node: ts.Node): ts.Node | undefined => {
   for (let parent = node.parent; parent !== undefined; parent = parent.parent) if (callName(parent) === 'updateOwnedLedger') return parent
