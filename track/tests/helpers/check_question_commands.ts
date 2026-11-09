@@ -12,7 +12,9 @@ const source = readFileSync(file, 'utf8')
 assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|Promise|async|EngineInterface|checksumOf|setTimeout|setInterval)\b|\$(?!\{)/, 'question commands accept explicit values, never native capabilities or clock/hash samplers')
 // TRACK-46 slices 6-7 (2026-11-09, Ohad's standing approval): the response capture code moved to
 // prompt-flow.ts. Each native adapter file is parsed on its own, so a call's ancestors stay in its file.
-const NATIVE = ['register.tsx', 'prompt-flow.ts', 'pane-actions.tsx']
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+const NATIVE = ['register.tsx', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts']
 const nodes: ts.Node[] = []
 for (const file of NATIVE) {
   const native = readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')
