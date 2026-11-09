@@ -56,6 +56,7 @@ for (const [commit, path, expected] of [
   ['26c2183e4495a5d363ccca0e224012a8d156992a', 'architecture/archview.toml', '649f6fd4378c155312ca658ee2f32201a7b6b9044c622f35c1b809e2132014f2'],
   ['86399dc4938a89019623fe8c90f1e40a90f2b488', 'hooks/ui-render.tsx', '3b51a3cd844639d4ed08b413dbb0ef9e0a3c0ab414c83f62b4af68756cbbdd7b'],
   ['d97373db885ca75fc49e6ce38c2ec74f098229f7', 'hooks/ui-render.tsx', 'd6747322c4fef46f17242e1d554f4c1cb88cd94798ca3ae2fe92b809990a7519'],
+  ['adec4e764c65213ec3044e984c0de42cf26021dc', 'hooks/ui-render.tsx', 'b386d376f8afeacf4789596490f3bb338fc9f27feb9f6f1af1f13982abdb2f79'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -82,7 +83,9 @@ assert.equal(hash(readFileSync(hook('track-state.ts'), 'utf8')), 'b71da1704c0932
 // one-line rows change ui-render.tsx; its slice 11 bytes stay proven at 86399dc above.
 // 2026-11-09 (Ohad: rows may take a second line before the fold control; re-pointing with Codex
 // review): two-line folded rows change ui-render.tsx; its one-line bytes stay proven at d97373d.
-assert.equal(hash(readFileSync(hook('ui-render.tsx'), 'utf8')), 'b386d376f8afeacf4789596490f3bb338fc9f27feb9f6f1af1f13982abdb2f79', 'exact ui-renderx bytes')
+// 2026-11-09 (Ohad: the fold control follows the clock and results start under the row text;
+// re-pointing with Codex review): ui-render.tsx changes; its two-line bytes stay proven at adec4e7.
+assert.equal(hash(readFileSync(hook('ui-render.tsx'), 'utf8')), '3f56d49e76d56ef3febfe54f839258569f5c6daf40da3ef407dad3179a9f7756', 'exact ui-renderx bytes')
 assert.equal(hash(readFileSync(hook('session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(hash(readFileSync(hook('task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(hash(readFileSync(hook('track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')

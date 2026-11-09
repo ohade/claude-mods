@@ -34,7 +34,12 @@ assert.equal(oneLine.status, 0, 'accepted one-line rows ui-render source must ex
 assertPaneNative(oneLine.stdout, 'c10684b004e2dbe3a1e2d688252573919613034159fecc41735ea039f10da346', '72f6f5a1a025116204c945fe89874e1a3d8aeea5f414da32ac27b9671ee3f2d8')
 // 2026-11-09 (Ohad: rows may take a second line before the fold control; re-pointing with Codex
 // review): two-line folded rows change ui-render.tsx; its one-line bytes stay proven at d97373d.
-assertPaneNative(ui, 'de2ae670749c89681a757e89316a3b43dc60c7e4faf1d5253704f28127e33aae', 'c091924f2b6ce7579438cc0b9871b16fd725d940a3a8d3ed5bbb9f5000234a5b')
+const twoLine = spawnSync('git', ['show', 'adec4e764c65213ec3044e984c0de42cf26021dc:track/hooks/ui-render.tsx'], { cwd: W, encoding: 'utf8' })
+assert.equal(twoLine.status, 0, 'accepted two-line rows ui-render source must exist')
+assertPaneNative(twoLine.stdout, 'de2ae670749c89681a757e89316a3b43dc60c7e4faf1d5253704f28127e33aae', 'c091924f2b6ce7579438cc0b9871b16fd725d940a3a8d3ed5bbb9f5000234a5b')
+// 2026-11-09 (Ohad: the fold control follows the clock and results start under the row text;
+// re-pointing with Codex review): ui-render.tsx changes; its two-line bytes stay proven at adec4e7.
+assertPaneNative(ui, 'de2ae670749c89681a757e89316a3b43dc60c7e4faf1d5253704f28127e33aae', 'eef58ce4815f6980b5e6eb65e7f029632afb67ea4d5cc2ee3250eefe2cf9538d')
 // Audit repairs: retain both accepted integrations before pinning the authorized fixes.
 for (const [commit, path, expected] of [
   ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'],
@@ -78,6 +83,7 @@ for (const [commit, path, expected] of [
   ['26c2183e4495a5d363ccca0e224012a8d156992a', 'architecture/archview.toml', '649f6fd4378c155312ca658ee2f32201a7b6b9044c622f35c1b809e2132014f2'],
   ['86399dc4938a89019623fe8c90f1e40a90f2b488', 'hooks/ui-render.tsx', '3b51a3cd844639d4ed08b413dbb0ef9e0a3c0ab414c83f62b4af68756cbbdd7b'],
   ['d97373db885ca75fc49e6ce38c2ec74f098229f7', 'hooks/ui-render.tsx', 'd6747322c4fef46f17242e1d554f4c1cb88cd94798ca3ae2fe92b809990a7519'],
+  ['adec4e764c65213ec3044e984c0de42cf26021dc', 'hooks/ui-render.tsx', 'b386d376f8afeacf4789596490f3bb338fc9f27feb9f6f1af1f13982abdb2f79'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: W, encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -103,7 +109,9 @@ assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-state.ts'), 'utf8
 // one-line rows change ui-render.tsx; its slice 11 bytes stay proven at 86399dc above.
 // 2026-11-09 (Ohad: rows may take a second line before the fold control; re-pointing with Codex
 // review): two-line folded rows change ui-render.tsx; its one-line bytes stay proven at d97373d.
-assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), 'b386d376f8afeacf4789596490f3bb338fc9f27feb9f6f1af1f13982abdb2f79', 'exact ui-renderx bytes')
+// 2026-11-09 (Ohad: the fold control follows the clock and results start under the row text;
+// re-pointing with Codex review): ui-render.tsx changes; its two-line bytes stay proven at adec4e7.
+assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), '3f56d49e76d56ef3febfe54f839258569f5c6daf40da3ef407dad3179a9f7756', 'exact ui-renderx bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')

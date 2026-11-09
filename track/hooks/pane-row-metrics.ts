@@ -63,17 +63,20 @@ export const paneRowMetrics = (input: RowInput) => {
   const fullStepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
   const fullSubjectWidth = (s: Step) => Math.max(1, fullStepWidth(s) - (!compact && s.status === 'completed' ? 7 : 0))
   const stepToggle = (s: Step) => wrappedLines(s.subject, fullSubjectWidth(s)) > FOLDED_LINES
-  const toggleColumns = (s: Step) => stepToggle(s) && !compact ? TOGGLE_COLUMNS : 0
+  // Ohad 2026-11-09: the control sits after the clock; while any step folds, every step row keeps
+  // its column so the clocks stay aligned.
+  const stepFoldReserved = !compact && steps.some(stepToggle)
+  const toggleColumns = (_s: Step) => stepFoldReserved ? TOGGLE_COLUMNS : 0
   const stepWidth = (s: Step) => Math.max(1, fullStepWidth(s) - toggleColumns(s))
   const stepSubjectWidth = (s: Step) => Math.max(1, fullSubjectWidth(s) - toggleColumns(s))
   const stepOpen = (s: Step) => expanded[stepFoldKey(s)] === true
   const sHeadLines = (s: Step) => Math.min(stepOpen(s) ? Infinity : FOLDED_LINES, wrappedLines(s.subject, stepSubjectWidth(s)))
   const sLines = steps.map(s => sHeadLines(s) + stepControlsRows(s) +
-    (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
+    (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepSubjectWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
   const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
   const atWork = steps.findIndex(s => s.status !== 'completed')
   const revealOpen = questions.some(q => revealedText(q) !== undefined)
-  return { qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen }
+  return { qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen, stepFoldReserved }
 }
 export type PaneMetrics = ReturnType<typeof paneRowMetrics>

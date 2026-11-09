@@ -533,7 +533,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
     width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions: l.questions.length > 0, hasSteps: l.steps.length > 0,
     allLabel, doneLabel, questions, steps, opened, resultReveals, expanded, qEmpty, sEmpty, questionLabel, clockOf,
   })
-  const { qLabelWidth, sLabelWidth, roomy, titleRows, qControlsRows, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen } = metrics
+  const { qLabelWidth, sLabelWidth, roomy, titleRows, qControlsRows, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen, stepFoldReserved } = metrics
   const fitted = paneViewport({ metrics, width, bodyRows, qRing, sRing, at, openRows, questionCount: questions.length, stepCount: steps.length })
   const bannerRows: BannerRow[] = fitted.bannerRows
   const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden } = fitted
@@ -615,7 +615,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
         const lifecycle = s.status === 'paused' && s.note !== undefined && isLifecycleNote(s.note) ? s.note : undefined
         const resultRaw = resultReveals.get(s.id)
         const headShown = fitLines(s.subject, stepSubjectWidth(s), Math.min(stepOpen(s) ? Infinity : FOLDED_LINES, Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1))))
-        const resultShown = resultRaw === undefined ? undefined : fitLines(resultRaw, stepWidth(s), Math.max(1, sRows - stepControlsRows(s) - wrappedLines(headShown, stepSubjectWidth(s))))
+        const resultShown = resultRaw === undefined ? undefined : fitLines(resultRaw, stepSubjectWidth(s), Math.max(1, sRows - stepControlsRows(s) - wrappedLines(headShown, stepSubjectWidth(s))))
         // The follow-up note stays here: the pure view's source check reserves the word for state writes.
         const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
         return stepView({ Box, Button, Text }, {
@@ -623,6 +623,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
           result: stepResults.get(s.id), headShown, resultShown,
           width: stepWidth(s), subjectWidth: stepSubjectWidth(s),
           toggle: stepToggle(s) ? { open: stepOpen(s), onPress: () => toggleExpanded(stepFoldKey(s), 'steps', index) } : undefined,
+          foldReserved: stepFoldReserved,
           clockLabel: hasClock(s) ? clockOf(s) : undefined,
           follow,
           onToggleResult: toggleResult,

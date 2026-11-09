@@ -87,12 +87,13 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   const clockColumns = (s: Step) => compact || !hasClock(s) ? 0 : clockOf(s).length + 1
   const resultColumns = (s: Step) => !compact && s.status === 'completed' ? 7 : 0
   const stepToggle = (s: Step) => wrappedLines(s.subject, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s))) > FOLDED
-  const foldColumns = (s: Step) => !compact && stepToggle(s) ? FOLD : 0
+  // Ohad 2026-11-09: the control follows the clock; its column is kept on every step row while any step folds.
+  const foldColumns = (_s: Step) => !compact && steps.some(stepToggle) ? FOLD : 0
   const stepWidth = (s: Step) => Math.max(1, Math.max(1, sWidth - clockColumns(s)) - foldColumns(s))
   const stepSubjectWidth = (s: Step) => Math.max(1, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s)) - foldColumns(s))
   const stepOpen = (s: Step) => expanded[`s:${s.sourceId ?? s.id}`] === true
   const sLines = steps.map(s => (stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : Math.min(FOLDED, wrappedLines(s.subject, stepSubjectWidth(s)))) + stepControlsRows(s) +
-    (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
+    (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepSubjectWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
   const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
   const atWork = steps.findIndex(s => s.status !== 'completed')
@@ -146,7 +147,7 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
   const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
   const revealOpen = questions.some(q => revealedText(q) !== undefined)
-  return project({ qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen }, { bannerRows, qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden }, steps, questions)
+  return project({ qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen, stepFoldReserved: !compact && steps.some(stepToggle) }, { bannerRows, qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden }, steps, questions)
 }
 
 
