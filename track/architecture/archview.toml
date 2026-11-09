@@ -10,6 +10,7 @@ fail_on_cycles = true
 baseline = "archview-baseline.json"
 
 [archview.allowed]
+"turn-guidance.ts" = ["ledger-policy.ts", "ledger-store.ts", "prompt-context.ts", "steps.ts", "stop-guidance.ts", "task-ownership.ts", "track-state.ts", "turn-policy.ts"]
 "session-owner.ts" = ["checkpoint.ts", "ledger-store.ts", "track-state.ts"]
 "ledger-store.ts" = ["blob-store.ts", "checkpoint.ts", "durable-record.ts", "export-bundle.ts", "history-receipts.ts", "history-view.ts", "ledger-text.ts", "legacy-save-flow.ts", "prompt-context.ts", "prompt-intake.ts", "reconcile.ts", "retention.ts", "save-journal.ts", "size-index.ts", "stop-guidance.ts", "stored-codecs.ts", "track-state.ts", "turn-policy.ts", "writer-lock.ts"]
 "tool-contracts.ts" = []
@@ -49,7 +50,7 @@ baseline = "archview-baseline.json"
 "question-commands.ts" = ["ledger-policy.ts", "ledger-text.ts"]
 "question-identity.ts" = []
 "reconcile.ts" = ["durable-record.ts", "question-identity.ts"]
-"register.tsx" = ["answer-blocks.ts", "banner-layout.ts", "blob-store.ts", "build-identity.ts", "cancel-policy.ts", "checkpoint.ts", "clear-commands.ts", "deploy-drift.ts", "diagnose-bundle.ts", "diagnose-flow.ts", "durable-record.ts", "export-bundle.ts", "history-receipts.ts", "history-view.ts", "identity-read.ts", "ledger-policy.ts", "ledger-store.ts", "ledger-text.ts", "legacy-save-flow.ts", "pane-banner-model.ts", "pane-layout.ts", "pane-order.ts", "pane-question-view.tsx", "pane-root-view.tsx", "pane-row-metrics.ts", "pane-step-view.tsx", "pane-viewport-model.ts", "prompt-context.ts", "prompt-intake.ts", "question-commands.ts", "reconcile.ts", "restore-proposal.ts", "restore-records.ts", "restore-source.ts", "retention.ts", "save-journal.ts", "session-owner.ts", "size-index.ts", "step-commands.ts", "steps.ts", "stop-guidance.ts", "stored-codecs.ts", "task-ownership.ts", "task-sync-commands.ts", "terminal-text.ts", "tool-contracts.ts", "track-state.ts", "transcript-baseline.ts", "turn-policy.ts", "work-appearance.ts", "writer-lock.ts"]
+"register.tsx" = ["answer-blocks.ts", "banner-layout.ts", "blob-store.ts", "build-identity.ts", "cancel-policy.ts", "checkpoint.ts", "clear-commands.ts", "deploy-drift.ts", "diagnose-bundle.ts", "diagnose-flow.ts", "durable-record.ts", "export-bundle.ts", "history-receipts.ts", "history-view.ts", "identity-read.ts", "ledger-policy.ts", "ledger-store.ts", "ledger-text.ts", "legacy-save-flow.ts", "pane-banner-model.ts", "pane-layout.ts", "pane-order.ts", "pane-question-view.tsx", "pane-root-view.tsx", "pane-row-metrics.ts", "pane-step-view.tsx", "pane-viewport-model.ts", "prompt-context.ts", "prompt-intake.ts", "question-commands.ts", "reconcile.ts", "restore-proposal.ts", "restore-records.ts", "restore-source.ts", "retention.ts", "save-journal.ts", "session-owner.ts", "size-index.ts", "step-commands.ts", "steps.ts", "stop-guidance.ts", "stored-codecs.ts", "task-ownership.ts", "task-sync-commands.ts", "terminal-text.ts", "tool-contracts.ts", "track-state.ts", "transcript-baseline.ts", "turn-guidance.ts", "turn-policy.ts", "work-appearance.ts", "writer-lock.ts"]
 "restore-proposal.ts" = ["ledger-policy.ts", "reconcile.ts", "restore-records.ts"]
 "restore-records.ts" = ["reconcile.ts"]
 "restore-source.ts" = ["ledger-policy.ts", "stored-codecs.ts"]
@@ -74,6 +75,7 @@ baseline = "archview-baseline.json"
 "work-appearance.ts" = ["steps.ts"]
 
 [archview.externals]
+"turn-guidance.ts" = []
 "session-owner.ts" = []
 "ledger-store.ts" = []
 "track-state.ts" = []
