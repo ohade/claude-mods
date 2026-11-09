@@ -77,47 +77,6 @@ const FLASH_STEP_MS = 250
 // through in order, so a fade step already under way cannot clear a newer jump's lit list.
 // Module memory, as a reload only cuts a fade short; session.start puts out what is left.
 const fade = { timers: [] as Timer[], generation: 0, queue: Promise.resolve() as Promise<void> }
-// Exact render-instance IDs observed in this session, never guessed from transcript UUIDs.
-// This presentation cache is bounded and does not write the ledger or store during rendering.
-// A reload restarts it but does not redraw rows already on screen (TRACK-48), so a timer copies
-// it to $.state under its session, and session.start takes back only this session's copy.
-const renderInstances = new Map<string, string>()
-const renderSaved = { session: undefined as string | undefined, isQueued: false }
-const rememberRender = ($: EngineInterface, key: string, id: string): void => {
-  if (renderInstances.get(key) === id) return
-  renderInstances.set(key, id)
-  if (renderInstances.size > MESSAGES_CAP) renderInstances.delete(renderInstances.keys().next().value!)
-  if (renderSaved.isQueued) return
-  renderSaved.isQueued = true
-  afterDrawing($, 'render instances not saved', async () => {
-    renderSaved.isQueued = false
-    const session = renderSaved.session
-    if (session === undefined) return
-    await update($, renders, () => ({ session, rows: [...renderInstances] }))
-  })
-}
-
-// A save queued by a drawing runs through that drawing's `$`, and the engine refuses its writes
-// while that ui.render dispatch is still in flight (an outer mod such as Prismantis keeps drawing
-// after Track returns, and the host sets no limit on how long: a hook's budget leaves out its
-// next(e) and $ calls). A save refused for that reason waits on a growing delay, capped at the last
-// step, until the drawing has ended and the same call is allowed. Any other failure ends it with
-// the log line it always had.
-const DRAWING_RETRY_MS = [0, 50, 100, 200, 400, 800, 1600, 3200] as const
-const DRAWING_IN_FLIGHT = 'while ui.render is being dispatched'
-const afterDrawing = ($: EngineInterface, failure: string, save: () => Promise<void>, attempt = 0): void => {
-  $.clock.after(DRAWING_RETRY_MS[Math.min(attempt, DRAWING_RETRY_MS.length - 1)]!, () => {
-    save().catch(error => {
-      const text = reason(error)
-      if (!text.includes(DRAWING_IN_FLIGHT)) {
-        $.ui.log(`track: ${failure}: ${text}`, { to: 'debug' })
-        return
-      }
-      if (attempt === 0) $.ui.log(`track: save deferred until the drawing ends: ${text}`, { to: 'debug' })
-      afterDrawing($, failure, save, attempt + 1)
-    })
-  })
-}
 
 // An organization's managed plugin can bypass prompt.compose (the debug log then reads "track:
 // prompt.compose bypassed by <plugin>"), and a /retro ran its steps unlisted. While the rule has
@@ -378,10 +337,6 @@ const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', k
     $.ui.toast(`track: cannot jump — ${moved.deny}`)
   }
 }
-
-// $.session.messages() answers at most this many entries; past it, older tool calls look
-// absent though they are not, so the rewind check does nothing.
-const MESSAGES_CAP = 4096
 
 // The transcript last read for one session, as one cheap fingerprint per message. It lives only
 // in memory. A later read that starts with it grew; one that it starts with was rewound. A read
@@ -653,20 +608,6 @@ const dueActiveStepNudge = async ($: EngineInterface, start: Turn, token: OwnerT
   })
   return due
 }
-
-// An identity failure must not discard a tracking event. Null records explicitly
-// unknown ownership: a later save archives these rows instead of relabelling them.
-const captureMintOwner = async ($: EngineInterface): Promise<string | undefined> => {
-  try {
-    const session = await $.session.id()
-    return (await read($, durability)).memorySession === null ? undefined : session
-  } catch (error) {
-    await update($, durability, current => current.memorySession === undefined ? { ...current, memorySession: null } : current)
-    $.ui.log(`track: mint identity unavailable; rows kept for owner recovery: ${reason(error)}`, { to: 'debug' })
-    noteEvent($, 'identity.mint_unavailable')
-    return undefined
-  }
-}
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'finished_delegation', 'missing_waiting_request', 'untracked_edit']
 const BASH_NUDGE = 'track: this turn ran Bash without a step update; reconcile a step when the command was work.'
 
@@ -898,11 +839,12 @@ const claimUncoveredInputs = async ($: EngineInterface, payload: { session_id?: 
     return { held: true, block: uncoveredBlock(inputs, ANSWER) }
   }
 }
-import { PANE, TITLE, PANE_COLUMNS, PANE_ROWS, LOADED_IDENTITY, TRACK_QUESTION, MARK_ANSWERED, MARK_STEP, TRACK_STEPS, RESTORE_TRACKER, CHECKPOINT, LOOKUP_ROWS, REORDER_STEPS, SESSION_ID, MAX_PLAN_STEPS, STEP_RESULT, STEPS, ANSWER, RULE, CLASSIFIER_KEY, CLASSIFIER_MAX_CHARS, CLASSIFIER, AGENT_TASK, EMPTY_LEDGER, IDLE, CLEAR_ARM_MS, rowKey, textOf, reason, persistence, writer, acknowledgedLedger, eventRing, ringOwner, noteEvent, gateCache, freshTurn, configDir, sha256Hex, ownership, OwnerChanged, isOwnerCurrent, assertOwner, updateLedger, updateOwnedLedger } from './track-state'
-import type { OwnerToken, Owned } from './track-state'
+import { PANE, TITLE, PANE_COLUMNS, PANE_ROWS, LOADED_IDENTITY, TRACK_QUESTION, MARK_ANSWERED, MARK_STEP, TRACK_STEPS, RESTORE_TRACKER, CHECKPOINT, LOOKUP_ROWS, REORDER_STEPS, SESSION_ID, MAX_PLAN_STEPS, STEP_RESULT, STEPS, ANSWER, RULE, CLASSIFIER_KEY, CLASSIFIER_MAX_CHARS, CLASSIFIER, AGENT_TASK, EMPTY_LEDGER, IDLE, CLEAR_ARM_MS, rowKey, textOf, reason, persistence, writer, acknowledgedLedger, eventRing, noteEvent, gateCache, freshTurn, configDir, sha256Hex, ownership, OwnerChanged, isOwnerCurrent, assertOwner, updateLedger, updateOwnedLedger } from './track-state'
+import type { OwnerToken } from './track-state'
 import { closeLock } from './writer-lock'
-import { publishGate, readBodySnapshot, saveLedger, saveClassifierSetting, savePanePreference, historyEnabled, pendingCauseOf, savePendingCause, saveFailureText, historySnapshot, resumeOwned, migrateStore } from './ledger-store'
+import { publishGate, readBodySnapshot, saveLedger, saveClassifierSetting, savePanePreference, historyEnabled, pendingCauseOf, savePendingCause, saveFailureText, historySnapshot, migrateStore } from './ledger-store'
 import type { StopClaimSnapshot } from './ledger-store'
+import { renderInstances, renderSaved, rememberRender, MESSAGES_CAP, captureMintOwner, memoryToken, pressOwned, ownerChangedResult, isFailedCheckpointResult, restoreOwnerChangedResult, keepAnswerInstance, switchOwner, ensureOwner, observedDisk, identityLine } from './session-owner'
 
 
 
@@ -1029,26 +971,6 @@ const captureResponse = async ($: EngineInterface, text: string, requestId: stri
   if (changed) {
     await publishGate($, token)
     await saveLedger($, token)
-  }
-}
-
-// The owner Track's memory holds now, fenced to an ownership epoch read before the caller's
-// first await: a later session switch makes every write checked against it refuse.
-const memoryToken = async ($: EngineInterface, epoch: number): Promise<OwnerToken> =>
-  ({ owner: (await read($, ledger)).session_id ?? (await read($, durability)).memorySession ?? undefined, epoch })
-
-const pressOwned = async ($: EngineInterface, press: (token: OwnerToken) => Promise<void>): Promise<void> => {
-  const epoch = ownership.epoch
-  const owned = await ensureOwner($)
-  if (!owned.ok && !owned.isIdentity) {
-    $.ui.toast(`track: ${owned.reason}`)
-    return
-  }
-  const token = owned.ok ? owned.token : await memoryToken($, epoch)
-  try { await press(token) }
-  catch (error) {
-    if (!(error instanceof OwnerChanged)) throw error
-    $.ui.toast(`track: ${error.message}`)
   }
 }
 
@@ -1291,125 +1213,6 @@ const reorderTrackedSteps = async ($: EngineInterface, ids: unknown, token?: Own
   if (JSON.stringify(order) !== JSON.stringify(ids)) return failure('saved order differs from the requested order; read lookup_rows and retry')
   return { result: JSON.stringify({ ok: true, order }) }
 }
-
-// Native hooks must return a refusal themselves: a thrown error is skipped by the host.
-// Keep the completed tool's outcome visible even when Track cannot acknowledge it.
-const ownerChangedResult = (tool: string, ran?: { result?: unknown; context?: readonly string[] }) => {
-  const message = ran === undefined
-    ? `track: ${tool} was not recorded: session owner changed during the call.`
-    : `${tool} returned, but Track could not finish recording it: session owner changed during the call. Any native action already completed was not undone.`
-  return { ...ran, isError: true as const,
-    result: ran === undefined ? message : `${message}\nReturned result: ${typeof ran.result === 'string' ? ran.result : JSON.stringify(ran.result)}`,
-    context: [...(ran?.context ?? []), message] }
-}
-
-const isFailedCheckpointResult = (result: unknown): boolean => {
-  if (typeof result !== 'string') return false
-  try {
-    const receipt = JSON.parse(result) as Partial<Checkpoint> | null
-    return receipt?.v === 1 && receipt.ok === false
-  } catch {
-    // A non-JSON result is not a checkpoint refusal to preserve.
-    return false
-  }
-}
-
-const restoreOwnerChangedResult = (from: string, destination: string | undefined, ran?: { result?: unknown; context?: readonly string[] }) => {
-  const message = ran === undefined
-    ? 'track: session owner changed during the restore call. If changes were already applied to the original session, they were not undone. Check that session before retrying.'
-    : 'track: restore returned, but Track could not finish recording it: session owner changed during the call. Any native action already completed was not undone.'
-  return { ...ran, isError: true as const,
-    result: JSON.stringify(checkpointFailure(from, message, destination)),
-    context: [...(ran?.context ?? []), message,
-      ...(ran === undefined ? [] : [`Returned result: ${typeof ran.result === 'string' ? ran.result : JSON.stringify(ran.result)}`])] }
-}
-
-// A marker answer's drawn instance, kept in its session's ledger and saved at once, so a cold
-// resume of the session can still jump to the reply ($.state, which holds renderInstances' copy,
-// lasts one process). Written after the drawing (afterDrawing): a write during a render is refused.
-// The write is rechecked at the time it runs: a changed or cleared answer, or another session's
-// ledger, gets none.
-const keepAnswerInstance = ($: EngineInterface, key: string, instance: string): void => {
-  afterDrawing($, 'answer instance not kept', async () => {
-    const session = await $.session.id()
-    let changed = false
-    await updateLedger($, cur => {
-      changed = false
-      if (cur.session_id !== undefined && cur.session_id !== session) return cur
-      const questions = cur.questions.map(q => {
-        if (q.answerKey !== key || q.cleared === true || (q.answerInstance === instance && q.answerInstanceSession === session) || (q.session_id !== undefined && q.session_id !== session)) return q
-        changed = true
-        return { ...q, answerInstance: instance, answerInstanceSession: session }
-      })
-      return changed ? { ...cur, questions } : cur
-    })
-    if (changed) await saveLedger($)
-  })
-}
-
-const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
-  if (ownership.running?.id === id) return ownership.running.run
-  // A transition for another session finishes first, so A->B->C runs in order and never interleaves.
-  const prior = ownership.running?.run.catch(() => undefined) ?? Promise.resolve()
-  const run = prior.then(async () => {
-    ownership.epoch++
-    ringOwner.id = id
-    // Decide after queued transitions finish: A->B->A must clear B's atoms.
-    // A same-target direct resume fences old tokens while keeping its own atoms.
-    // An unowned ledger with no known memorySession (undefined or null) is a
-    // different target: clear the atoms to fail toward the safe side.
-    const owner = (await read($, ledger)).session_id ?? (await read($, durability)).memorySession
-    if (owner !== id) {
-      await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
-      await update($, activity, () => IDLE)
-      await update($, pending, p => ({ ...p, inputs: [] }))
-      // TRACK-46 A4: a classic resume runs no session.start, so the drawn-row cache would still
-      // name the old session; its rows are never this session's jump targets.
-      if (renderSaved.session !== id) {
-        renderInstances.clear()
-        renderSaved.session = id
-      }
-    }
-    await resumeOwned($, id)
-  })
-  const flight = { id, run }
-  ownership.running = flight
-  void run.catch(() => undefined).finally(() => { if (ownership.running === flight) ownership.running = undefined })
-  return run
-}
-
-const ensureOwner = async ($: EngineInterface): Promise<Owned> => {
-  const identity = (error: unknown): Owned => ({ ok: false, isIdentity: true, reason: `session identity unavailable: ${reason(error)}; this request did not run` })
-  let id: string
-  try { id = await $.session.id() } catch (error) { return identity(error) }
-  const owner = (await read($, ledger)).session_id ?? (await read($, durability)).memorySession
-  if (ownership.running === undefined && (owner === undefined || owner === id)) {
-    ringOwner.id = id
-    return { ok: true, token: { owner: id, epoch: ownership.epoch } }
-  }
-  try { await switchOwner($, id) }
-  catch (error) { return { ok: false, isIdentity: false, destination: id, reason: `session switch to ${id} failed: ${reason(error)}; this request did not run` } }
-  let now: string
-  try { now = await $.session.id() } catch (error) { return identity(error) }
-  if (now !== id) return { ok: false, isIdentity: false, destination: now, reason: `session changed from ${id} to ${now} during the ownership transition; this request did not run. Track holds ${id}'s saved rows, and the next event loads ${now}'s` }
-  return { ok: true, token: { owner: id, epoch: ownership.epoch } }
-}
-
-// Failure-intake D3: `observed_disk` is the checkout's HEAD now: evidence of drift, never of the loaded code.
-// (LOADED_IDENTITY, the D2 static identity, is declared with the module constants at the top of this file.)
-const observedDisk = async ($: EngineInterface): Promise<string | undefined> => {
-  const root = $.plugin.root
-  if (!root?.startsWith('/')) return undefined
-  try {
-    const result = await $.process.run(['git', '-C', root, 'rev-parse', 'HEAD'], { timeoutMs: 2000 })
-    const head = result.stdout.trim()
-    return result.exitCode === 0 && /^[0-9a-f]{40}$/.test(head) ? head : undefined
-  } catch {
-    return undefined
-  }
-}
-const identityLine = async ($: EngineInterface): Promise<string> =>
-  `track: loaded ${LOADED_IDENTITY.loaded === 'unknown' ? 'unknown' : LOADED_IDENTITY.loaded.slice(0, 8)} (disk ${(await observedDisk($))?.slice(0, 8) ?? 'unknown'})`
 
 const DIAGNOSE = 'mcp__track__diagnose'
 const INPUT_CLAIM_KIND = 'uncovered_input'
