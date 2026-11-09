@@ -38,6 +38,8 @@ for (const [commit, path, expected] of [
   ['bd7a0be8449a90c1d2719a3a5d690abced013ce5', 'architecture/archview.toml', '524079a66eaad1198c084d190fc23e678a01f720bd834f5182c517a31a5be30d'],
   ['b3f2af88a78ae41a63323a9e3967d58f96ac82c7', 'hooks/register.tsx', '5b38218f34f4ed53d22c24d5dd5ccd27f1cee7188dc88a90377d1f63f2d566a3'],
   ['b3f2af88a78ae41a63323a9e3967d58f96ac82c7', 'architecture/archview.toml', 'e18bfc81a16c29c332a353c467f6e8e199e1b0dd27cc27f31cb0c05709c33449'],
+  ['34e7478b26e2f482a1533dd421e7967279754c17', 'hooks/register.tsx', '1eba503559b018e9aeb1024bd94036cae93944c7b9bb6ec1deab18e0f41df6ac'],
+  ['34e7478b26e2f482a1533dd421e7967279754c17', 'architecture/archview.toml', '6a924648cfcbaffa81096c8db001228cff7f8d08422a43afb4ce6b84e0fd0abc'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -47,12 +49,13 @@ for (const [commit, path, expected] of [
 // Codex-accepted TRACK-46 fix list (S2, A7, A5, S3/C2, A2, A4, A1/C1 i-iv) below.
 // TRACK-46 slice 2 (Ohad's standing approval for reviewed refactor moves): retained at bd7a0be above.
 // TRACK-46 slice 3 (Ohad's standing approval for reviewed refactor moves): retained at b3f2af8 above.
+// TRACK-46 slice 4 (Ohad's standing approval for reviewed refactor moves): retained at 34e7478 above.
 // TRACK-46 slice 1 (2026-11-09, Ohad's standing approval for reviewed refactor moves): retain the
 // fix-list bytes (cfcab31) above; pin the slice-1 register and the track-state.ts it moved code into.
-for (const [name, expected] of [['register.tsx', '1eba503559b018e9aeb1024bd94036cae93944c7b9bb6ec1deab18e0f41df6ac'], ['ledger-store.ts', 'dc840582aa3f43f767001b7432308d91357ef5cbea82233811391616cb304c25'], ['writer-lock.ts', 'a6d981c2331da2571b7a52802f48541a73737932706617feab5127ca545a1413'], ['track-state.ts', 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
+for (const [name, expected] of [['register.tsx', '150409c3546a9717d1c74b431a4ae2eced1f5a96eeb7c026efc77e49949a8dd7'], ['session-owner.ts', '4ebaadd3ea362b3fa34aa17ff7f63872b3ce687fdf13c0f9b1c323e313bbb729'], ['ledger-store.ts', 'dc840582aa3f43f767001b7432308d91357ef5cbea82233811391616cb304c25'], ['writer-lock.ts', 'a6d981c2331da2571b7a52802f48541a73737932706617feab5127ca545a1413'], ['track-state.ts', 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb'], ['pane-layout.ts', 'c99c84921d0342a27bdc98c7b4ca55848e8112325d842e29e725709bfd3801a8']] as const) {
   assert.equal(hash(readFileSync(hook(name), 'utf8')), expected, `${name}: exact bulk-clear/P2.1 integration`)
 }
-assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), '6a924648cfcbaffa81096c8db001228cff7f8d08422a43afb4ce6b84e0fd0abc', 'exact declared architecture edges')
+assert.equal(hash(readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')), 'fbe030f32f0a760baff49f1b3160d00cc011127ed712b2ccb1fb98aa2dbb01a4', 'exact declared architecture edges')
 const { paneRowMetrics } = await import('../../hooks/pane-row-metrics')
 const { paneViewport } = await import('../../hooks/pane-viewport-model')
 checkViewport(input => {
