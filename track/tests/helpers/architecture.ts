@@ -17,9 +17,13 @@ if (diagnostics.length > 0) {
     diagnostics.map(row => ts.flattenDiagnosticMessageText(row.messageText, '\n')).join('\n'))
   process.exit(2)
 }
+// TRACK-46 (Ohad, 2026-11-09): the native adapter is this named set of files, which take the
+// engine handle or hold engine atoms. Every other module stays pure policy; add a file here only
+// with the reviewed move of native code into it.
+const NATIVE_ADAPTER = new Set(['hooks/register.tsx', 'hooks/track-state.ts'])
 const sdkImports: string[] = []
 for (const file of compiler.fileNames.filter(name => !name.endsWith('.d.ts'))) {
-  if (relative(root, file) === 'hooks/register.tsx') continue
+  if (NATIVE_ADAPTER.has(relative(root, file))) continue
   const source = ts.createSourceFile(file, ts.sys.readFile(file)!, ts.ScriptTarget.Latest, true)
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue
@@ -38,6 +42,22 @@ for (const file of compiler.fileNames.filter(name => !name.endsWith('.d.ts'))) {
     sdkImports.push(`${relative(root, file)}:${line}: SDK import ${name} must stay in the native adapter`)
   }
 }
+// An atom is read or written only where a const of that file declares it, so native files repeat
+// the declarations they use. Every declaration of one key must be the same text (key and default).
+const atomDecls = new Map<string, Set<string>>()
+for (const file of [...NATIVE_ADAPTER].map(name => resolve(root, name))) {
+  const source = ts.createSourceFile(file, ts.sys.readFile(file)!, ts.ScriptTarget.Latest, true)
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'atom') {
+      const text = node.getText(source)
+      const key = /key:\s*'([^']+)'/.exec(text)?.[1] ?? text
+      atomDecls.set(key, (atomDecls.get(key) ?? new Set()).add(text.replace(/\s+/g, ' ')))
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+}
+for (const [key, texts] of atomDecls) if (texts.size > 1) sdkImports.push(`atom '${key}' is declared differently: ${[...texts].join(' | ')}`)
 if (sdkImports.length > 0) {
   console.error(sdkImports.join('\n'))
   process.exit(1)
