@@ -4296,7 +4296,11 @@ export const register: Register = on => {
     // While "clear all" is armed, both copies ask to confirm, in red, until the arm ends.
     const unfinishedSteps = l.steps.filter(s => s.status !== 'completed').length
     const armedAt = await read($, clearArm)
-    const confirming = armedAt !== null && unfinishedSteps > 0
+    // TRACK-46 A2: a reload keeps the atom but cancels the reset timer, so the window is checked
+    // here too. An expired arm draws the ordinary label; it is left in place, because a press
+    // already treats it as unarmed and a reset here could race that press's new arm.
+    const armExpired = armedAt !== null && await $.clock.now() - armedAt >= CLEAR_ARM_MS
+    const confirming = armedAt !== null && !armExpired && unfinishedSteps > 0
     // The arm ends once no unfinished step is left, so later unfinished steps need a fresh first
     // press. Only this arm is ended: a newer arm or a confirmed clear has already replaced it.
     if (armedAt !== null && unfinishedSteps === 0) $.clock.after(0, () => { void update($, clearArm, at => (at === armedAt ? null : at)) })
