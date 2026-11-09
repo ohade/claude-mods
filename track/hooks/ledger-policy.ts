@@ -33,13 +33,15 @@ export const withoutStepResult = (step: Step): Step => {
 // A step at a new status. Its clock starts the first time it goes in progress and stops when it
 // is done; a done step that is opened again runs on from its first start. Any status write drops
 // a finished-work flag. A cancel, refusal, or interruption note stays only while the step is paused.
+// A hidden step given an unfinished status is active work again, so it is shown (TRACK-46 A5);
+// automatic parking skips hidden rows, so only an explicit status write reaches this.
 export const withStatus = (s: Step, status: Step['status'], now: number, turnId?: string | null): Step => {
-  const { endedAt: _ended, delegated, external_owner, activeTurnId: _turn, followUp: _follow, note, ...rest } = status === 'completed' ? s : withoutStepResult(s)
+  const { endedAt: _ended, delegated, external_owner, activeTurnId: _turn, followUp: _follow, note, cleared, ...rest } = status === 'completed' ? s : withoutStepResult(s)
   const startedAt = s.startedAt ?? (status === 'in_progress' ? now : undefined)
   const endedAt = status !== 'completed' || startedAt === undefined ? undefined : s.status === 'completed' && s.endedAt !== undefined ? s.endedAt : now
   const keepNote = !(s.status === 'paused' && status !== 'paused' && note !== undefined && isLifecycleNote(note))
 
-  return { ...rest, ...(keepNote && note !== undefined && { note }), status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const, ...(typeof external_owner === 'boolean' && { external_owner }) }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
+  return { ...rest, ...(cleared === true && status === 'completed' && { cleared }), ...(keepNote && note !== undefined && { note }), status, ...(status === 'in_progress' && typeof turnId === 'string' && { activeTurnId: turnId }), ...(delegated === true && status !== 'completed' && status !== 'waiting' && { delegated: true as const, ...(typeof external_owner === 'boolean' && { external_owner }) }), ...(startedAt !== undefined && { startedAt }), ...(endedAt !== undefined && { endedAt }) }
 }
 
 // A retained start time is not current activity (pending-step clock defect, 2026-10-08).
