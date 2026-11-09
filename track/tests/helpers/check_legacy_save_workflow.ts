@@ -3,12 +3,17 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 
-const native = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
-const tree = ts.createSourceFile('register.tsx', native, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): saveLedger moved to ledger-store.ts as a
+// function declaration (the engine follows $ across an import only into one); body unchanged.
+const native = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
+const tree = ts.createSourceFile('ledger-store.ts', native, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+assert.doesNotMatch(readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8'), /\bsaveLegacy\b/, 'register.tsx no longer runs the legacy save')
 const nodes: ts.Node[] = []
 const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
 visit(tree)
-const save = nodes.find((n): n is ts.VariableDeclaration => ts.isVariableDeclaration(n) && n.name.getText(tree) === 'saveLedger')!
+const saves = nodes.filter((n): n is ts.FunctionDeclaration => ts.isFunctionDeclaration(n) && n.name?.getText(tree) === 'saveLedger')
+assert.equal(saves.length, 1, 'one saveLedger declaration')
+const save = saves[0]!
 const grants: ts.CallExpression[] = []
 const findGrant = (n: ts.Node): void => {
   if (ts.isCallExpression(n) && n.expression.getText(tree) === 'inOwnGrant') grants.push(n)
