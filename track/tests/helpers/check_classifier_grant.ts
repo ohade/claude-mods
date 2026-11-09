@@ -3,9 +3,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const source = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): both functions moved to ledger-store.ts
+// as function declarations (the engine follows $ across an import only into one); bodies unchanged.
+const source = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
 const body = (name: string): string => {
-  const start = source.indexOf(`const ${name} = `)
+  const start = source.indexOf(`export async function ${name}(`)
+  assert.equal(source.indexOf(`export async function ${name}(`, start + 1), -1, `${name} is declared once`)
   assert.ok(start >= 0, `${name} declaration exists`)
   const end = source.indexOf('\n}', start)
   assert.ok(end > start, `${name} declaration closes`)
@@ -14,7 +17,7 @@ const body = (name: string): string => {
 const classifier = body('saveClassifierSetting')
 assert.ok(classifier.includes("await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }), 'classifier')"),
   'R5 classifier must use the shared grant lifecycle')
-assert.equal(classifier, `const saveClassifierSetting = async ($: EngineInterface, isOn: boolean): Promise<void> => {
+assert.equal(classifier, `export async function saveClassifierSetting($: EngineInterface, isOn: boolean): Promise<void> {
   const run = persistence.queue.then(async () => {
     const session = await $.session.id()
     await ensureWriter($, session)
