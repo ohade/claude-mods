@@ -13,9 +13,13 @@ assert.match(source, /^export const sameResultOwner\b/m, 'step component must ow
 assert.ok(source.trimEnd().split('\n').length <= 100)
 assert.deepEqual(source.match(/^import .*$/gm), ["import type { Step } from '../types'"])
 assert.doesNotMatch(source, /claude-code|EngineInterface|Runtime|\$\.|crypto\.|randomUUID|Date\.now|atom\(/)
-assert.ok(native.includes("import { visibleSteps, openStepsOf, openPlanSteps, sameResultOwner } from './steps'"))
-assert.doesNotMatch(native, /^const (?:openStepsOf|openPlanSteps|sameResultOwner)\b/m)
-assert.doesNotMatch(native, /^const openStepsContext\b/m, 'prompt guidance has only its new production owner')
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+const tools = readFileSync(new URL('../../hooks/track-tools.ts', import.meta.url), 'utf8')
+assert.ok(native.includes("import { visibleSteps, sameResultOwner } from './steps'"))
+assert.ok(tools.includes("import { visibleSteps, openStepsOf, openPlanSteps } from './steps'"))
+for (const file of [native, tools]) assert.doesNotMatch(file, /^(?:export )?const (?:openStepsOf|openPlanSteps|sameResultOwner)\b/m)
+for (const file of [native, tools]) assert.doesNotMatch(file, /^(?:export )?const openStepsContext\b/m, 'prompt guidance has only its new production owner')
 const bodies = (name: string, text: string): Record<string, string> => {
   const tree = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, name.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const hashes: Record<string, string> = {}
@@ -24,7 +28,7 @@ const bodies = (name: string, text: string): Record<string, string> => {
   }
   return hashes
 }
-const domain = bodies('steps.ts', source), adapter = bodies('register.tsx', native)
+const domain = bodies('steps.ts', source), adapter = bodies('track-tools.ts', tools)
 const contextOwner = bodies('prompt-context.ts', readFileSync(new URL('../../hooks/prompt-context.ts', import.meta.url), 'utf8'))
 assert.equal(domain.visibleSteps, '50851a99aecb28dbef515735e19e1d4dd56a94e9d0abac631aacb268856b4623')
 assert.equal(domain.openStepsOf, '4785e97ecbfee9a8a91dc2facdd4b26f1d14521a2f5dc7af457ddee660498387')
