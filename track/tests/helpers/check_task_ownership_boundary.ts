@@ -7,7 +7,9 @@ const cancelBoundary = new URL('../../hooks/cancel-policy.ts', import.meta.url)
 const ownershipBoundary = new URL('../../hooks/task-ownership.ts', import.meta.url)
 assert.ok(existsSync(cancelBoundary), 'missing ownership boundary: cancel-policy.ts')
 assert.ok(existsSync(ownershipBoundary), 'missing ownership boundary: task-ownership.ts')
-const composition = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+const composition = ['register.tsx', 'track-tools.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
 const cancelSource = readFileSync(cancelBoundary, 'utf8')
 const ownershipSource = readFileSync(ownershipBoundary, 'utf8')
 for (const [source, symbols, module] of [
@@ -24,7 +26,9 @@ for (const [source, symbols, module] of [
     assert.match(line, /^(?:import type \{ (?:Activity, Step|Step) \} from '\.\.\/types'|import \{ norm \} from '\.\/ledger-text')$/)
   }
 }
-for (const symbol of ['dropFinishedOwners', 'applyCancel']) assert.match(composition, new RegExp(`^const ${symbol}\\b`, 'm'), `${symbol} stays native`)
+// dropFinishedOwners moved with the tools to track-tools.ts as a function declaration (the engine follows $
+// across an import only into one); each symbol has exactly one native declaration.
+for (const symbol of ['dropFinishedOwners', 'applyCancel']) assert.equal(composition.match(new RegExp(`^(?:export )?(?:const|(?:async )?function) ${symbol}\\b`, 'gm'))?.length, 1, `${symbol} stays native`)
 
 // Imports follow named boundary assertions so the missing module yields assertion-red.
 const { cancelReasonOf, cancelOwner } = await import('../../hooks/cancel-policy')
