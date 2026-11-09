@@ -59,6 +59,8 @@ for (const [commit, path, expected] of [
   ['c738a09a5059123c179d1005a82f5b262777a476', 'architecture/archview.toml', '545549084074cccb81e80910995f41737907eb1444a58f3732371298c47170e5'],
   ['9b53b9a6b705796aa4fd4555f63a7738dbdcc13a', 'hooks/register.tsx', 'd0b5828da4e2d0583e16e056099f3be8cdf8fa4b0546c8014dc3576165781864'],
   ['9b53b9a6b705796aa4fd4555f63a7738dbdcc13a', 'architecture/archview.toml', '3668aa7811b5b5c6b311ef186656fbc26c09bd60fed58680cae7cf5ba2027b55'],
+  ['832dd3fde4ed4328e8f73f672537bc80203a9633', 'hooks/register.tsx', 'fc2c31d5bd583e5fd1f1e79673255e14ca271f56c791e9e9378fdad0a5062173'],
+  ['832dd3fde4ed4328e8f73f672537bc80203a9633', 'architecture/archview.toml', '605b1b74b0ad02a69aa21cdb6d8f39340d320e7951839b115dee97cca9759d38'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: W, encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -74,10 +76,12 @@ for (const [commit, path, expected] of [
 // TRACK-46 slice 7 (Ohad's standing approval for reviewed refactor moves): retained at 53cf6e4 above.
 // TRACK-46 slice 8 (Ohad's standing approval for reviewed refactor moves): retained at c738a09 above.
 // TRACK-46 slice 9 (Ohad's standing approval for reviewed refactor moves): retained at 9b53b9a above.
+// TRACK-46 slice 10 (Ohad's standing approval for reviewed refactor moves): retained at 832dd3f above.
 // TRACK-46 slice 1 (2026-11-09, Ohad's standing approval for reviewed refactor moves): retain the
 // fix-list bytes (cfcab31) above; pin the slice-1 register and the track-state.ts it moved code into.
-assert.equal(digest(native), 'fc2c31d5bd583e5fd1f1e79673255e14ca271f56c791e9e9378fdad0a5062173', 'exact bulk-clear/P2.1 integration bytes')
+assert.equal(digest(native), '9db81640dcfe4db3eb02cda92d54bbb1d1094eae82542a677c294b0a932c1e12', 'exact bulk-clear/P2.1 integration bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-state.ts'), 'utf8')), 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb', 'exact track-state bytes')
+assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/pane-actions.tsx'), 'utf8')), 'eae9f401e8e9b26c4c056765e3377043eda4387894231f58b3aecb4525c7d4c6', 'exact pane-actionsx bytes')
@@ -86,7 +90,7 @@ assert.equal(digest(readFileSync(resolve(W, 'track/hooks/turn-guidance.ts'), 'ut
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-owner.ts'), 'utf8')), '4ebaadd3ea362b3fa34aa17ff7f63872b3ce687fdf13c0f9b1c323e313bbb729', 'exact session-owner bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ledger-store.ts'), 'utf8')), 'dc840582aa3f43f767001b7432308d91357ef5cbea82233811391616cb304c25', 'exact ledger-store bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/writer-lock.ts'), 'utf8')), 'a6d981c2331da2571b7a52802f48541a73737932706617feab5127ca545a1413', 'exact writer-lock bytes')
-assert.equal(digest(readFileSync(resolve(W, 'track/architecture/archview.toml'), 'utf8')), '605b1b74b0ad02a69aa21cdb6d8f39340d320e7951839b115dee97cca9759d38', 'exact declared architecture edges')
+assert.equal(digest(readFileSync(resolve(W, 'track/architecture/archview.toml'), 'utf8')), '649f6fd4378c155312ca658ee2f32201a7b6b9044c622f35c1b809e2132014f2', 'exact declared architecture edges')
 const source = readFileSync(owner, 'utf8')
 assert.ok(source.trimEnd().split('\n').length <= 100, 'frame owner stays within readable 100 lines')
 const syntax = ts.createSourceFile('pane-root-view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
