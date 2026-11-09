@@ -35,7 +35,9 @@ test('A5 mark_step reopening a hidden completed step makes it visible, also in t
   await call($, { tool: 'mcp__track__mark_step', id: 'plan:1', status: 'in_progress' })
   expectActive(ledger.value.steps[0], 'mark_step')
   const saved = await pool.logical(store, `s:${SESSION}`) as { ledger: Ledger } | undefined
-  expect(saved?.ledger.steps[0]?.cleared, 'the saved row is visible after a reload').toBeUndefined()
+  const row = saved?.ledger.steps.find(s => s.id === 'plan:1')
+  expect(row?.status, 'the saved row exists and is active').toBe('in_progress')
+  expect(row?.cleared, 'the saved row is visible after a reload').toBeUndefined()
 })
 
 test('A5 TaskUpdate reopening a hidden completed task makes it visible', async ($, on) => {
