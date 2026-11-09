@@ -252,7 +252,8 @@ def uncovered_decision(snapshot):
         return {}
     # Validate the complete list before spending any hold on partial evidence.
     if not all(isinstance(row, dict) and type(row.get("id")) is int and row["id"] > 0
-               and isinstance(row.get("reason"), str) and row["reason"].strip() for row in rows):
+               and isinstance(row.get("reason"), str) and row["reason"].strip()
+               and row.get("legacy", True) is True for row in rows):
         unavailable("pending input repair receipt")
         return {}
     # TRACK-46 S2: a new process restarts input ids at 1 while claims are
@@ -262,10 +263,11 @@ def uncovered_decision(snapshot):
     if epoch is not None and not (isinstance(epoch, str) and epoch.strip() and len(epoch) <= 128):
         unavailable("pending input epoch")
         return {}
-    prefix = "input:" if epoch is None else f"input:{epoch}:"
+    # A legacy row was queued before its epoch existed and keeps its old claim name.
     reasons = []
     try:
         for row in rows:
+            prefix = "input:" if epoch is None or row.get("legacy") is True else f"input:{epoch}:"
             if claim_once(session, f'{prefix}{row["id"]}', INPUT_KIND):
                 reasons.append(row["reason"])
     except (OSError, ValueError):
