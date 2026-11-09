@@ -7,7 +7,12 @@ import { checkHistoryView } from './history_view_cases'
 const path = new URL('../../hooks/history-view.ts', import.meta.url)
 assert.ok(existsSync(path), 'missing history read component: history-view.ts')
 const source = readFileSync(path, 'utf8')
-const native = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): the history read adapter moved to
+// ledger-store.ts; register.tsx must not regain the history types.
+const native = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
+const register = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+assert.doesNotMatch(register, /^type History(?:Root|View) =/m)
+assert.doesNotMatch(register, /\breadHistoryView\b/)
 assert.ok(source.trimEnd().split('\n').length <= 100)
 assert.doesNotMatch(source, /claude-code|EngineInterface|\$\.|atom\(|crypto\.|Date\.now|process\.run/)
 assert.match(native, /import { readHistoryView } from '\.\/history-view'/)
