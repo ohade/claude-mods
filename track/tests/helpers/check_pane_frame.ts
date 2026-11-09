@@ -9,6 +9,9 @@ import { W, digest, checkFrame, loadTreeModule, assertNative, assertPaneNative }
 const owner = resolve(W, 'track/hooks/pane-root-view.tsx')
 assert.ok(existsSync(owner), 'missing production frame owner: pane-root-view.tsx')
 const native = readFileSync(resolve(W, 'track/hooks/register.tsx'), 'utf8')
+// TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
+// moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
+const ui = readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')
 // 2026-11-03: U2 changes question initializers, so retain the whole-file frame
 // extraction proof on its accepted candidate and check current pane ownership.
 const frameCandidate = spawnSync('git', ['show', 'c3d0f3017523dd93091b21fa2fd79982d30cfe55:track/hooks/register.tsx'], { cwd: W, encoding: 'utf8' })
@@ -21,7 +24,7 @@ assert.equal(coldResume.status, 0, 'accepted cold-resume source must exist')
 assertPaneNative(coldResume.stdout, '2a8e69dc1142bf6baef536724495b4e8ca376510dcf0c614be0d49b529f43a27')
 // 2026-11-09 (approved by Ohad): the Codex-accepted TRACK-46 A1/C1 fix passes the drawn ledger's
 // session to a question's ✕ (4a68cb9); pin that exact arrow.
-assertPaneNative(native, '4ef12b69b0e77739f0deb7d5714abb13eada99cbe950241a563cd2ac96f428cd')
+assertPaneNative(ui, '4ef12b69b0e77739f0deb7d5714abb13eada99cbe950241a563cd2ac96f428cd')
 // Audit repairs: retain both accepted integrations before pinning the authorized fixes.
 for (const [commit, path, expected] of [
   ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'],
@@ -61,6 +64,8 @@ for (const [commit, path, expected] of [
   ['9b53b9a6b705796aa4fd4555f63a7738dbdcc13a', 'architecture/archview.toml', '3668aa7811b5b5c6b311ef186656fbc26c09bd60fed58680cae7cf5ba2027b55'],
   ['832dd3fde4ed4328e8f73f672537bc80203a9633', 'hooks/register.tsx', 'fc2c31d5bd583e5fd1f1e79673255e14ca271f56c791e9e9378fdad0a5062173'],
   ['832dd3fde4ed4328e8f73f672537bc80203a9633', 'architecture/archview.toml', '605b1b74b0ad02a69aa21cdb6d8f39340d320e7951839b115dee97cca9759d38'],
+  ['26c2183e4495a5d363ccca0e224012a8d156992a', 'hooks/register.tsx', '9db81640dcfe4db3eb02cda92d54bbb1d1094eae82542a677c294b0a932c1e12'],
+  ['26c2183e4495a5d363ccca0e224012a8d156992a', 'architecture/archview.toml', '649f6fd4378c155312ca658ee2f32201a7b6b9044c622f35c1b809e2132014f2'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: W, encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -77,10 +82,12 @@ for (const [commit, path, expected] of [
 // TRACK-46 slice 8 (Ohad's standing approval for reviewed refactor moves): retained at c738a09 above.
 // TRACK-46 slice 9 (Ohad's standing approval for reviewed refactor moves): retained at 9b53b9a above.
 // TRACK-46 slice 10 (Ohad's standing approval for reviewed refactor moves): retained at 832dd3f above.
+// TRACK-46 slice 11 (Ohad's standing approval for reviewed refactor moves): retained at 26c2183 above.
 // TRACK-46 slice 1 (2026-11-09, Ohad's standing approval for reviewed refactor moves): retain the
 // fix-list bytes (cfcab31) above; pin the slice-1 register and the track-state.ts it moved code into.
-assert.equal(digest(native), '9db81640dcfe4db3eb02cda92d54bbb1d1094eae82542a677c294b0a932c1e12', 'exact bulk-clear/P2.1 integration bytes')
+assert.equal(digest(native), 'c4dbe2b648349c41a283027bbede8e5257eec5ee5d23b369fe94e64af5750304', 'exact bulk-clear/P2.1 integration bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-state.ts'), 'utf8')), 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb', 'exact track-state bytes')
+assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), '3b51a3cd844639d4ed08b413dbb0ef9e0a3c0ab414c83f62b4af68756cbbdd7b', 'exact ui-renderx bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')
@@ -90,7 +97,7 @@ assert.equal(digest(readFileSync(resolve(W, 'track/hooks/turn-guidance.ts'), 'ut
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-owner.ts'), 'utf8')), '4ebaadd3ea362b3fa34aa17ff7f63872b3ce687fdf13c0f9b1c323e313bbb729', 'exact session-owner bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ledger-store.ts'), 'utf8')), 'dc840582aa3f43f767001b7432308d91357ef5cbea82233811391616cb304c25', 'exact ledger-store bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/writer-lock.ts'), 'utf8')), 'a6d981c2331da2571b7a52802f48541a73737932706617feab5127ca545a1413', 'exact writer-lock bytes')
-assert.equal(digest(readFileSync(resolve(W, 'track/architecture/archview.toml'), 'utf8')), '649f6fd4378c155312ca658ee2f32201a7b6b9044c622f35c1b809e2132014f2', 'exact declared architecture edges')
+assert.equal(digest(readFileSync(resolve(W, 'track/architecture/archview.toml'), 'utf8')), 'a3ebeb1b2ab59c5ee59998655aa4ae31c48c57237570cace0b0b927ada40c0f8', 'exact declared architecture edges')
 const source = readFileSync(owner, 'utf8')
 assert.ok(source.trimEnd().split('\n').length <= 100, 'frame owner stays within readable 100 lines')
 const syntax = ts.createSourceFile('pane-root-view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
