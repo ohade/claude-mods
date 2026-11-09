@@ -1693,19 +1693,52 @@ test('FIXTURE TRACK46 owner switch: /track status after an identity change repor
   expect(String(result.text)).not.toContain('A open question')
 })
 
-// TRACK-46 A1/C1 (i): clear all questions and a question's ✕ are pane presses too. After an
-// identity change they must select B first, withdraw B's questions, and leave A's saved rows.
-for (const [name, key] of [['clear all questions', 'clear-questions'], ['question withdraw', 'del-2']] as const) {
-  test(`FIXTURE TRACK46 owner switch: a pane ${name} press after an identity change acts on B and keeps A`, async ($, on) => {
-    const fixture = await setup(on)
-    await beginA($, fixture)
-    const ui = await $.ui.mount(pane('dock')) as unknown as { press: (q: { key: string }) => Promise<void> }
-    fixture.controls.session = B
-    await ui.press({ key })
-    await fixture.clock.settle()
-    expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
-    expect(fixture.memory.value.session_id, 'B was selected').toBe(B)
-    expect({ withdrawn: fixture.memory.value.withdrawn, open: fixture.memory.value.questions.some(q => q.id === 2) })
-      .toEqual({ withdrawn: [{ id: 2, head: 'B open question', session_id: B }], open: false })
-  })
-}
+// TRACK-46 A1/C1 (i): clear all questions is a pane press too. After an identity change it must
+// select B first, withdraw B's open questions, and leave A's saved rows.
+test('FIXTURE TRACK46 owner switch: a pane clear all questions press after an identity change acts on B and keeps A', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  const ui = await $.ui.mount(pane('dock')) as unknown as { press: (q: { key: string }) => Promise<void> }
+  fixture.controls.session = B
+  await ui.press({ key: 'clear-questions' })
+  await fixture.clock.settle()
+  expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
+  expect(fixture.memory.value.session_id, 'B was selected').toBe(B)
+  expect({ withdrawn: fixture.memory.value.withdrawn, open: fixture.memory.value.questions.some(q => q.id === 2) })
+    .toEqual({ withdrawn: [{ id: 2, head: 'B open question', session_id: B }], open: false })
+})
+
+type PaneUi = { press: (q: { key: string }) => Promise<void>; unmount: () => Promise<void>
+  findAll: (q: { type?: string }) => Promise<Array<{ text?: string }>> }
+const paneTexts = async (ui: PaneUi) => (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? '')).join('\n')
+
+// A question's ✕ names the row it was drawn for. Both sessions have a Q2, so an ✕ drawn for A's
+// Q2 and pressed after B is selected must not withdraw B's Q2 (Codex review of e4e45a3).
+test('FIXTURE TRACK46 owner switch: an A question withdraw pressed after an identity change keeps B Q2 and A rows', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  expect(await paneTexts(ui), 'the ✕ was drawn for A Q2').toContain('A open question')
+  fixture.controls.session = B
+  await ui.press({ key: 'del-2' })
+  await fixture.clock.settle()
+  expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
+  expect(fixture.memory.value.session_id, 'B was selected').toBe(B)
+  expect({ withdrawn: fixture.memory.value.withdrawn, bQ2: fixture.memory.value.questions.find(q => q.id === 2)?.head })
+    .toEqual({ withdrawn: undefined, bQ2: 'B open question' })
+})
+
+test('FIXTURE TRACK46 owner switch: a B question withdraw drawn after B is selected withdraws B Q2', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const lookup = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
+  expect(lookup.deny).toBeUndefined()
+  const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  expect(await paneTexts(ui), 'the ✕ was drawn for B Q2').toContain('B open question')
+  await ui.press({ key: 'del-2' })
+  await fixture.clock.settle()
+  expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
+  expect({ withdrawn: fixture.memory.value.withdrawn, open: fixture.memory.value.questions.some(q => q.id === 2) })
+    .toEqual({ withdrawn: [{ id: 2, head: 'B open question', session_id: B }], open: false })
+})

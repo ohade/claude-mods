@@ -623,13 +623,18 @@ const dropRewound = async ($: EngineInterface, submitted?: string): Promise<bool
 
 // ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
 // model not to answer it. The Stop gate stops holding the turn for it, as it is gone.
-const withdraw = async ($: EngineInterface, id: number): Promise<void> => {
+// TRACK-46 A1/C1: the ✕ names the session whose row it was drawn for. Question numbers repeat
+// across sessions, so a press drawn for another session's row withdraws nothing.
+const withdraw = async ($: EngineInterface, id: number, drawnFor: string | undefined): Promise<void> => {
   if (!(await paneOwner($))) return
-  const q = (await read($, ledger)).questions.find(one => one.id === id)
-  if (q === undefined) {
-    return
-  }
-  await updateLedger($, cur => withdrawQuestion(cur, id, q.head))
+  let outcome = 'missing' as 'withdrawn' | 'missing' | 'other session'
+  await updateLedger($, cur => {
+    const q = cur.questions.find(one => one.id === id)
+    outcome = cur.session_id !== drawnFor ? 'other session' : q === undefined ? 'missing' : 'withdrawn'
+    return outcome === 'withdrawn' && q !== undefined ? withdrawQuestion(cur, id, q.head) : cur
+  })
+  if (outcome === 'other session') $.ui.toast(`track: Q${id} was drawn for another session; nothing was removed.`)
+  if (outcome !== 'withdrawn') return
   await publishGate($)
   await saveLedger($)
   $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
@@ -4454,7 +4459,7 @@ export const register: Register = on => {
             // revealRaw above supplies text only for the question and answer sides.
             reveal: revealShown === undefined ? undefined : { side: opened[String(q.id)] as 'q' | 'a', text: revealShown },
             question: questionControl, answer: answerControl,
-            onWithdraw: () => withdraw($, q.id),
+            onWithdraw: () => withdraw($, q.id, l.session_id),
           })
         })
     const stepHeaderControls = l.steps.length > 0 && clearButtons('')

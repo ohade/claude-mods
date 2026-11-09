@@ -111,7 +111,7 @@ const effectWiring = (file: ts.SourceFile, name: string): string => {
 // TRACK-46 A1/C1 (Ohad's fix list, Codex-accepted 742ea67): these pane presses first admit the
 // current owner. The prelude is required here; every other effect is compared to the baseline.
 const ADMISSION = 'if (!(await paneOwner($))) return'
-const admitted = new Set(['clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps'])
+const admitted = new Set(['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps'])
 const withoutAdmission = (file: ts.SourceFile, name: string): ts.SourceFile => {
   if (!admitted.has(name)) return file
   const text = file.getFullText()
