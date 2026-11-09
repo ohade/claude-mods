@@ -4,10 +4,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-// TRACK-46 slice 1 (2026-11-09, Ohad's standing approval): updateLedger and updateOwnedLedger moved
+// TRACK-46 slices 1-3 (2026-11-09, Ohad's standing approval): updateLedger and updateOwnedLedger moved
 // to track-state.ts. The native files are scanned together with a per-file line prefix, so a count
 // cannot merge or hide a declaration in either file.
-const NATIVE = ['register.tsx', 'track-state.ts']
+const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts']
 const lines = NATIVE.flatMap(file => readFileSync(join(import.meta.dir, '../../hooks', file), 'utf8').split('\n').map(line => line))
 const fileOf = (line: number): string => { let n = line; for (const file of NATIVE) { const len = readFileSync(join(import.meta.dir, '../../hooks', file), 'utf8').split('\n').length; if (n <= len) return file; n -= len } return '?' }
 const RESET = "if (written.steps.filter(s => s.status !== 'completed').length === 0) await update($, clearArm, () => null)"
