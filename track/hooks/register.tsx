@@ -3089,7 +3089,7 @@ export const register: Register = on => {
           assertAdmitted()
           added = undefined
           full = false
-          const admission = admitInput(p, { head, excerpt, textHash, turnId, wording, prompts })
+          const admission = admitInput(p, { head, excerpt, textHash, turnId, wording, prompts, labelling: new Set(classifying.keys()), needsRow: needsQuestion })
           added = admission.added
           full = admission.full
           // Permanent helper claims are named per epoch, so a restarted runtime's input 1 is new.
