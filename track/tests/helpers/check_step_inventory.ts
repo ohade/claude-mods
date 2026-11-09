@@ -16,10 +16,13 @@ assert.doesNotMatch(source, /claude-code|EngineInterface|Runtime|\$\.|crypto\.|r
 // TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
 // track-tools.ts, a native adapter file; it is read here next to register.tsx.
 const tools = readFileSync(new URL('../../hooks/track-tools.ts', import.meta.url), 'utf8')
-assert.ok(native.includes("import { visibleSteps, sameResultOwner } from './steps'"))
+// TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
+// moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
+const ui = readFileSync(new URL('../../hooks/ui-render.tsx', import.meta.url), 'utf8')
+assert.ok(ui.includes("import { visibleSteps, sameResultOwner } from './steps'"))
 assert.ok(tools.includes("import { visibleSteps, openStepsOf, openPlanSteps } from './steps'"))
-for (const file of [native, tools]) assert.doesNotMatch(file, /^(?:export )?const (?:openStepsOf|openPlanSteps|sameResultOwner)\b/m)
-for (const file of [native, tools]) assert.doesNotMatch(file, /^(?:export )?const openStepsContext\b/m, 'prompt guidance has only its new production owner')
+for (const file of [native, tools, ui]) assert.doesNotMatch(file, /^(?:export )?const (?:openStepsOf|openPlanSteps|sameResultOwner)\b/m)
+for (const file of [native, tools, ui]) assert.doesNotMatch(file, /^(?:export )?const openStepsContext\b/m, 'prompt guidance has only its new production owner')
 const bodies = (name: string, text: string): Record<string, string> => {
   const tree = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, name.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const hashes: Record<string, string> = {}
