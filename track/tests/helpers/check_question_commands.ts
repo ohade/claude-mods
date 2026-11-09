@@ -16,12 +16,14 @@ assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|Promise
 // track-tools.ts, a native adapter file; it is read here next to register.tsx.
 // TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
 // moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
-// register.tsx no longer uses any question command; each listed file must import the component.
-const NATIVE = ['ui-render.tsx', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts']
+// Every native file stays in the per-file call scan; register.tsx no longer uses a question command,
+// so only the four consumers must import the component (Codex's slice-11 finding, 17:14Z).
+const NATIVE = ['register.tsx', 'ui-render.tsx', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts']
+const CONSUMERS = new Set(['ui-render.tsx', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts'])
 const nodes: ts.Node[] = []
 for (const file of NATIVE) {
   const native = readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')
-  assert.match(native, /from '\.\/question-commands'/, `${file} imports the actual component`)
+  if (CONSUMERS.has(file)) assert.match(native, /from '\.\/question-commands'/, `${file} imports the actual component`)
   const tree = ts.createSourceFile(file, native, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
   visit(tree)
