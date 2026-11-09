@@ -13,8 +13,10 @@ for (const name of ['prompt-intake.ts', 'prompt-context.ts']) {
 }
 checkIntake(await import('../../hooks/prompt-intake'))
 checkContext(await import('../../hooks/prompt-context'))
-const native = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
-const tree = ts.createSourceFile('register.tsx', native, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+// TRACK-46 slice 10 (2026-11-09, Ohad's standing approval): the session/turn/prompt/Stop event handler
+// bodies moved to session-events.ts, a native adapter file.
+const native = readFileSync(new URL('../../hooks/session-events.ts', import.meta.url), 'utf8')
+const tree = ts.createSourceFile('session-events.ts', native, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 const nodes: ts.Node[] = []
 const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
 visit(tree)
