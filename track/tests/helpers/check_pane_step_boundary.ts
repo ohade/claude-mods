@@ -11,6 +11,9 @@ const appearance = readFileSync(hook('work-appearance.ts'), 'utf8')
 const elements = readFileSync(hook('pane-elements.ts'), 'utf8')
 const view = readFileSync(hook('pane-step-view.tsx'), 'utf8')
 const native = readFileSync(hook('register.tsx'), 'utf8')
+// TRACK-46 slice 7 (2026-11-09, Ohad's standing approval): the pane presses and flash/pulse code moved
+// to pane-actions.tsx with the work-appearance import; neither native file re-declares appearance.
+const actions = readFileSync(hook('pane-actions.tsx'), 'utf8')
 for (const [name, source] of [['work-appearance', appearance], ['pane-elements', elements], ['pane-step-view', view]] as const) {
   assert.ok(source.trimEnd().split('\n').length <= 100, `${name} stays within 100 lines`)
   assert.doesNotMatch(source, /from ['"]\.\/register['"]/, `${name} cannot import register`)
@@ -21,12 +24,12 @@ for (const source of [appearance, view]) {
 }
 for (const symbol of ['SPINNER', 'GREY_SHADES', 'AMBER_SHADES', 'WAITING_BLUE', 'isDelegatedWork', 'workState', 'stepLook']) {
   assert.match(appearance, new RegExp(`^export const ${symbol}\\b`, 'm'), `appearance owns ${symbol}`)
-  assert.doesNotMatch(native, new RegExp(`^(?:const|function) ${symbol}\\b`, 'm'), `native imports ${symbol}`)
+  for (const file of [native, actions]) assert.doesNotMatch(file, new RegExp(`^(?:export )?(?:const|(?:async )?function) ${symbol}\\b`, 'm'), `native imports ${symbol}`)
 }
-assert.doesNotMatch(native, /^type WorkState\b/m)
+for (const file of [native, actions]) assert.doesNotMatch(file, /^(?:export )?type WorkState\b/m)
 assert.match(appearance, /^export type WorkState\b/m)
 assert.match(view, /^export const stepView\b/m)
-assert.match(native, /from '\.\/work-appearance'/)
+assert.match(actions, /from '\.\/work-appearance'/)
 assert.match(native, /from '\.\/pane-step-view'/)
 assert.match(native, /steps\.slice\(sStart, sEnd\)\.map\(\(s, shownAt\) => \{\s*const index = sStart \+ shownAt/)
 assert.match(native, /onJumpResult:\s*(?:\(\w+\)|\w+)\s*=>\s*jump\(\$,\s*\[(\w+)\],\s*'start',\s*\1,\s*renderInstances\.get\(\1\)\)/, 'jump resolves instance on press')
