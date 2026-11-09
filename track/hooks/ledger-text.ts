@@ -14,12 +14,11 @@ export const truncate = (text: string, width: number): string => {
   return points.length > width ? `${points.slice(0, Math.max(1, width - 1)).join('')}…` : text
 }
 
-// The first line of a prompt, without image tags, cut to HEAD_CHARS.
-export const headOf = (text: string): string => {
-  const line = text.replace(/\[Image #\d+\]/g, '').trim().split('\n')[0] ?? ''
+// The first line of a prompt, without image tags.
+export const firstLineOf = (text: string): string => text.replace(/\[Image #\d+\]/g, '').trim().split('\n')[0] ?? ''
 
-  return truncate(line, HEAD_CHARS)
-}
+// The first line of a prompt, without image tags, cut to HEAD_CHARS.
+export const headOf = (text: string): string => truncate(firstLineOf(text), HEAD_CHARS)
 
 // A title for matching: lowercase, without a leading number or checkbox, punctuation, or
 // repeated spaces. A Task links to the plan step whose normalized title is the same.

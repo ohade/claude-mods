@@ -91,17 +91,18 @@ test('a tracked question keeps its explicitly verified prompt source and trackin
   expect(ledger.value.questions.at(-1)).toMatchObject({ rowKey: 'row-1', askedRequestId: 'request-1', trackedBy: 'toolu_a' })
 })
 
-test('a long summary is cut to 200 characters with an ellipsis', async ($, on) => {
+// 2026-11-10 (Ohad: "Refuse over 90"): a long summary is no longer cut to 200 characters and
+// saved; it is refused with its full length, and nothing is written.
+test('a long summary is refused with its full length and nothing is saved', async ($, on) => {
   const ledger = store<LedgerRow>(on, 'ledger', ledgerOf([]))
   store(on, 'turn', { currentId: 'turn-1', gatedTurnId: null })
   store(on, 'scroll', { questions: null, steps: null })
   const long = 'x'.repeat(250)
 
-  await track($, { summary: long })
+  const result = await track($, { summary: long })
 
-  const head = ledger.value.questions.at(-1)?.head ?? ''
-  expect(head).toHaveLength(200)
-  expect(head).toBe(`${long.slice(0, 199)}…`)
+  expect(deniedText(result)).toContain('summary is 250 characters')
+  expect(ledger.value.questions).toHaveLength(0)
 })
 
 test('only the first line of a multi-line summary is kept', async ($, on) => {

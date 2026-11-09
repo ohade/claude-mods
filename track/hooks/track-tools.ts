@@ -6,7 +6,7 @@ import type { Checkpoint } from './checkpoint'
 import { visibleSteps, openStepsOf, openPlanSteps } from './steps'
 import { ownersForLiveSteps } from './task-ownership'
 import { MAX_STEPS, STEP_STATUSES, MAX_QUESTIONS, keepRestores } from './ledger-policy'
-import { HEAD_CHARS, RESULT_CHARS, truncate, headOf } from './ledger-text'
+import { HEAD_CHARS, RESULT_CHARS, truncate, headOf, firstLineOf } from './ledger-text'
 import { savedLedger } from './stored-codecs'
 import { lookupPaneRows } from './pane-order'
 import { sameRecord as sameValue } from './durable-record'
@@ -24,12 +24,12 @@ import { reorderTrackedSteps } from './pane-actions'
 
 // Atom copies: identical to their register.tsx declarations (tests/helpers/architecture.ts).
 
-// Ohad 2026-11-09: rows should fit two pane lines. A longer title is still saved; the result
-// names it and asks for a shorter one (no refusal, per the earlier Codex advice).
+// Ohad 2026-11-10 ("Refuse over 90"): a title must fit two pane lines. A longer one is refused
+// before anything is written, and the model resends it shorter.
 export const LONG_TITLE = 90
-const lengthNote = (rows: { label: string; text: string }[]): string => {
+const titleRefusal = (rows: { label: string; text: string }[]): string | undefined => {
   const long = rows.map(row => ({ ...row, size: [...row.text].length })).filter(row => row.size > LONG_TITLE)
-  return long.length === 0 ? '' : ` Too long for two pane lines: ${long.map(row => `${row.label} (${row.size} characters)`).join(', ')}. Keep a title near 60 characters: a verb, its object and one detail.`
+  return long.length === 0 ? undefined : `track: ${long.map(row => `${row.label} is ${row.size} characters`).join(', ')}; a title must fit two pane lines (${LONG_TITLE} characters at most). Nothing was saved. Resend with a shorter title: a verb, its object and one detail.`
 }
 
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
@@ -120,6 +120,8 @@ export async function trackQuestionCall($: Parameters<TrackQuestionCallHook>[0],
   if (summary === '') {
     return { deny: 'track: summary is required.' }
   }
+  const tooLong = titleRefusal([{ label: 'summary', text: firstLineOf(String(e.summary ?? '')) }])
+  if (tooLong !== undefined) return { deny: tooLong }
   const before = await read($, ledger)
   const { existing, capacityExceeded: admissionCapacityExceeded } = questionAdmission(before, summary)
   if (existing !== undefined) {
@@ -165,7 +167,7 @@ export async function trackQuestionCall($: Parameters<TrackQuestionCallHook>[0],
   }
 
   // A plugin tool's result is text (or content blocks), never a bare object.
-  return { result: `Tracked as Q${minted?.id}: ${summary}. ${ANSWER.replaceAll('{id}', String(minted?.id))}. For deferral, use mcp__track__mark_answered with a note.${lengthNote([{ label: `Q${minted?.id}`, text: summary }])}` }
+  return { result: `Tracked as Q${minted?.id}: ${summary}. ${ANSWER.replaceAll('{id}', String(minted?.id))}. For deferral, use mcp__track__mark_answered with a note.` }
   } catch (error) {
     if (!(error instanceof OwnerChanged)) throw error
     return ownerChangedResult(e.tool)
@@ -256,11 +258,14 @@ export async function trackStepsCall($: Parameters<TrackStepsCallHook>[0], e: Pa
   if (e.agentId !== undefined) {
     return { deny: 'track: a subagent cannot set the session\'s steps.' }
   }
+  const given = (Array.isArray(e.steps) ? e.steps : []).map(t => firstLineOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
+  const tooLong = titleRefusal(given.map((text, i) => ({ label: `step ${i + 1}`, text })))
+  const titles = given.map(headOf)
+  if (tooLong !== undefined) return { deny: tooLong }
   await update($, scrollAt, cur => {
     assertOwner(token)
     return { ...cur, steps: null }
   })
-  const titles = (Array.isArray(e.steps) ? e.steps : []).map(t => headOf(String(t))).filter(t => t !== '').slice(0, MAX_PLAN_STEPS)
   if (titles.length === 0) {
     return { result: 'No steps given: pass steps as an array of one-line titles.' }
   }
@@ -289,9 +294,9 @@ export async function trackStepsCall($: Parameters<TrackStepsCallHook>[0], e: Pa
     await coverInput($, 'steps', { source_text: e.source_text }, token)
 
     if (anchor === undefined) {
-      return { result: `Tracking ${added.length} steps: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.${lengthNote(added.map(s => ({ label: s.id, text: s.subject })))}` }
+      return { result: `Tracking ${added.length} steps: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
     }
-    return { result: `Inserted after ${anchor}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.${lengthNote(added.map(s => ({ label: s.id, text: s.subject })))}` }
+    return { result: `Inserted after ${anchor}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
   }
   const beforeReplacement = e.replace === true ? [] : openPlanSteps((await read($, ledger)).steps)
   if (beforeReplacement.length > 0) return refusePlanReplacement(beforeReplacement)
@@ -306,7 +311,7 @@ export async function trackStepsCall($: Parameters<TrackStepsCallHook>[0], e: Pa
   if (unfinished.length > 0) return refusePlanReplacement(unfinished)
   await coverInput($, 'steps', { source_text: e.source_text }, token)
 
-  return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.${lengthNote(steps.map(s => ({ label: s.id, text: s.subject })))}` }
+  return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
   } catch (error) {
     if (!(error instanceof OwnerChanged)) throw error
     return ownerChangedResult(e.tool)

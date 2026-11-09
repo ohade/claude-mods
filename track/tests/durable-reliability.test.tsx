@@ -1,6 +1,7 @@
 // FIXTURE: persistence, source identity and repeat-safe restoration release gates.
 import { expect, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, blobPool, logs, pluginStore } from './kit'
+import { headOf } from '../hooks/ledger-text'
 
 const OLD = '11111111-2222-4333-8444-555555555555'
 const step = (id: string, status = 'pending') => ({ id, subject: id, source: 'plan', status })
@@ -102,8 +103,8 @@ test('a restored question answered on the next turn keeps the new answer text', 
   expect((l.value as any).questions[0]?.answerText).toBe('תשובה 😀')
 })
 
-test('Unicode summaries never split a surrogate pair at the size boundary', async ($, on) => {
-  const { l } = prepare(on)
-  await $.tool.call({ tool: 'mcp__track__track_question', summary: 'a'.repeat(198) + '😀😀' } as never)
-  expect((l.value as any).questions[0].head).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/u)
+// 2026-11-10: track_question now refuses summaries over 90 characters, so the 200-character cut
+// is checked on headOf itself, which still cuts prompt heads.
+test('Unicode summaries never split a surrogate pair at the size boundary', async () => {
+  expect(headOf('a'.repeat(198) + '😀😀')).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/u)
 })

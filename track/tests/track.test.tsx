@@ -593,13 +593,12 @@ test('question and step rows are indented the same under their headers', async (
 
 // Show the whole question; a long one wraps, and its next lines align with
 // the text, not under the dot.
-test('a long question unfolds to its whole text, its dot in a column of its own', async ($, on) => {
+test('a long question shows its whole text, its dot in a column of its own', async ($, on) => {
   const head = 'Why did the build fetch the cache when only the lint step was asked for in the brief?'
   const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
 
   const ui = await $.ui.mount(pane('dock'))
-  await ui.press({ key: 'x-q-4' })
 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
   expect(labelled(texts, 'Q1', head)).toBe(true)

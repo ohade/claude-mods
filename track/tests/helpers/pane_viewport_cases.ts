@@ -12,18 +12,17 @@ export type ViewportCaseInput = {
   clearWidths: number[]; hints: readonly { text: string }[]; hasQuestions: boolean; hasSteps: boolean
   allLabel: string; doneLabel: string; questions: Question[]; steps: Step[]
   opened: Readonly<Record<string, 'q' | 'a' | undefined>>; resultReveals: ReadonlyMap<string, string>
-  expanded: Readonly<Record<string, true | undefined>>
   qEmpty: string; sEmpty: string; questionLabel: (id: number | string) => string; clockOf: (s: Step) => string
   qRing: string; sRing: string; at: ScrollAt; openRows: BannerRow[]
 }
-type MetricProjection = { qLabelWidth: number; sLabelWidth: number; stepFoldReserved: boolean; qToggle: (q: Question) => boolean; qTextWidth: (q: Question) => number; qOpen: (q: Question) => boolean; stepToggle: (s: Step) => boolean; stepOpen: (s: Step) => boolean; roomy: boolean; titleRows: number; bottomRows: number; qButtons: number[]; sButtons: number[]; qWidth: number; sWidth: number; qControlsRows: number; qLines: number[]; sLines: number[]; needQ: number; needS: number; atWork: number; revealOpen: boolean; stepControlsRows: (s: Step) => number; stepWidth: (s: Step) => number; stepSubjectWidth: (s: Step) => number }
+type MetricProjection = { qLabelWidth: number; sLabelWidth: number; qTextWidth: (q: Question) => number; roomy: boolean; titleRows: number; bottomRows: number; qButtons: number[]; sButtons: number[]; qWidth: number; sWidth: number; qControlsRows: number; qLines: number[]; sLines: number[]; needQ: number; needS: number; atWork: number; revealOpen: boolean; stepControlsRows: (s: Step) => number; stepWidth: (s: Step) => number; stepSubjectWidth: (s: Step) => number }
 type ViewProjection = { bannerRows: BannerRow[]; qHead: number; sHead: number; qRows: number; sRows: number; qLast: number; sLast: number; qStart: number; qEnd: number; sStart: number; sEnd: number; qHidden: string; sHidden: string }
 export const project = (metrics: MetricProjection, viewport: ViewProjection, steps: Step[], questions: Question[]) => {
-  const { stepControlsRows, stepWidth, stepSubjectWidth, stepToggle, stepOpen, qToggle, qTextWidth, qOpen, ...values } = metrics
+  const { stepControlsRows, stepWidth, stepSubjectWidth, qTextWidth, ...values } = metrics
   return {
     metrics: values,
-    stepGeometry: steps.map(s => [stepControlsRows(s), stepWidth(s), stepSubjectWidth(s), stepToggle(s), stepOpen(s)]),
-    questionGeometry: questions.map(q => [qToggle(q), qTextWidth(q), qOpen(q)]),
+    stepGeometry: steps.map(s => [stepControlsRows(s), stepWidth(s), stepSubjectWidth(s)]),
+    questionGeometry: questions.map(q => [qTextWidth(q)]),
     viewport,
   }
 }
@@ -45,13 +44,13 @@ const HEADER_GAP = 2
 // A wide row's number cell: the label padded to at least three columns, a space, the rule, a gap.
 const NUMBER_EXTRA = 3
 const MIN_LABEL = 3
-// The fold control and its gap, after the text of a row that needs more than one line.
-const FOLD = 2
+// Ohad 2026-11-10: a row shows its whole text on up to three lines, with no expand control.
+const ROW = 3
 
 const hidden = (above: number, below: number): string =>
   [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
 export const referenceViewport = (input: ViewportCaseInput) => {
-  const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, expanded, qEmpty, sEmpty, questionLabel, clockOf, qRing, sRing, at, openRows } = input
+  const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf, qRing, sRing, at, openRows } = input
   const l = { questions: hasQuestions ? [true] : [], steps: hasSteps ? [true] : [] }
   let bannerRows = openRows
   const roomy = bodyRows >= 16
@@ -66,11 +65,7 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   // Status owns two cells, including the paused/hourglass glyphs, then a gap, then the number.
   const sWidth = Math.max(1, width - rowIndent - 3 - (compact ? 0 : sLabelWidth + NUMBER_EXTRA))
   const qControlsRows = compact ? 1 : 0
-  // Ohad 2026-11-09: a folded row may take two lines; the control appears only past two.
-  const FOLDED = 2
-  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > FOLDED
-  const qTextWidth = (q: Question) => Math.max(1, qWidth - (!compact && qToggle(q) ? FOLD : 0))
-  const qOpen = (q: Question) => expanded[`q:${q.id}`] === true
+  const qTextWidth = (_q: Question) => qWidth
   const revealedText = (q: Question): string | undefined => {
     const side = opened[String(q.id)]
     if (side === 'q' && q.head.trim() !== '') return q.head
@@ -79,20 +74,16 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   }
   const qLines = questions.map(q => {
     const extra = revealedText(q)
-    const head = qOpen(q) ? wrappedLines(q.head, qTextWidth(q)) : Math.min(FOLDED, wrappedLines(q.head, qTextWidth(q)))
+    const head = Math.min(ROW, wrappedLines(q.head, qTextWidth(q)))
     return head + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qTextWidth(q)))
   })
   // A narrow step always has a controls line: its number lives there.
   const stepControlsRows = (_s: Step) => compact ? 1 : 0
   const clockColumns = (s: Step) => compact || !hasClock(s) ? 0 : clockOf(s).length + 1
   const resultColumns = (s: Step) => !compact && s.status === 'completed' ? 7 : 0
-  const stepToggle = (s: Step) => wrappedLines(s.subject, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s))) > FOLDED
-  // Ohad 2026-11-09: the control follows the clock; its column is kept on every step row while any step folds.
-  const foldColumns = (_s: Step) => !compact && steps.some(stepToggle) ? FOLD : 0
-  const stepWidth = (s: Step) => Math.max(1, Math.max(1, sWidth - clockColumns(s)) - foldColumns(s))
-  const stepSubjectWidth = (s: Step) => Math.max(1, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s)) - foldColumns(s))
-  const stepOpen = (s: Step) => expanded[`s:${s.sourceId ?? s.id}`] === true
-  const sLines = steps.map(s => (stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : Math.min(FOLDED, wrappedLines(s.subject, stepSubjectWidth(s)))) + stepControlsRows(s) +
+  const stepWidth = (s: Step) => Math.max(1, sWidth - clockColumns(s))
+  const stepSubjectWidth = (s: Step) => Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s))
+  const sLines = steps.map(s => Math.min(ROW, wrappedLines(s.subject, stepSubjectWidth(s))) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepSubjectWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
   const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
@@ -147,7 +138,7 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
   const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
   const revealOpen = questions.some(q => revealedText(q) !== undefined)
-  return project({ qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen, stepFoldReserved: !compact && steps.some(stepToggle) }, { bannerRows, qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden }, steps, questions)
+  return project({ qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qTextWidth }, { bannerRows, qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden }, steps, questions)
 }
 
 
@@ -173,13 +164,13 @@ const fixture = (width: number, bodyRows: number, questions: Question[] = [], st
     clearWidths: [steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)],
     hints: compact ? [{ text: '/track hide' }, { text: 'ctrl+x x close' }] : [{ text: '/track hides · ctrl+x x closes for good' }],
     hasQuestions: questions.length > 0, hasSteps: steps.length > 0, allLabel, doneLabel, questions, steps,
-    opened: {}, resultReveals: new Map(), expanded: {}, qEmpty: '  None yet.', sEmpty: '  None yet.',
+    opened: {}, resultReveals: new Map(), qEmpty: '  None yet.', sEmpty: '  None yet.',
     questionLabel: questionLabels(questions), clockOf: s => s.startedAt === undefined ? '' : clockText((s.endedAt ?? Math.max(120_000, s.startedAt)) - s.startedAt),
     qRing: countLabel(questions.filter(q => q.status === 'answered').length, questions.length),
     sRing: countLabel(steps.filter(s => s.status === 'completed').length, steps.length), at: { questions: null, steps: null }, openRows, ...extra }
 }
 // The two long steps are unfolded, so they wrap as this literal needs.
-const whole = fixture(40, 13, [], [step('a'.repeat(32)), step('b'.repeat(32)), step('c')], { expanded: { [`s:${'a'.repeat(32)}`]: true, [`s:${'b'.repeat(32)}`]: true } })
+const whole = fixture(40, 13, [], [step('a'.repeat(32)), step('b'.repeat(32)), step('c')])
 whole.openRows = paneBanner({ l: { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: whole.steps }, now: { isWorking: true, agentCalls: [], askCalls: [], background: [] }, questions: [], steps: whole.steps, phase: 0, isUnsaved: true, unsavedReason: 'disk', pendingCause: undefined, width: 40, questionLabel: whole.questionLabel }).openRows
 const reveal = fixture(80, 9, [question(1)], [step('one'), step('two')], { opened: { '1': 'q' } })
 const shortReveal = { ...reveal, bodyRows: 8 }
@@ -213,7 +204,6 @@ export const checkViewport = (reader: Reader): void => {
     cases.push(fixture(width, height), fixture(width, height, [], [], { hasQuestions: true, hasSteps: true, qEmpty: '  all cleared', sEmpty: '  all cleared' }))
     for (const at of [{ questions: null, steps: null }, { questions: 0, steps: 0 }, { questions: 999, steps: 999 }]) {
       cases.push(fixture(width, height, questions, steps, { at }), fixture(width, height, questions, steps, { at, opened: { '9': 'q', '30': 'a' }, resultReveals: new Map([['Done', 'result '.repeat(16)]]) }))
-      cases.push(fixture(width, height, questions, steps, { at, expanded: { 'q:20': true, 'q:30': true, [`s:${'Long subject '.repeat(9)}`]: true, [`s:${'界'.repeat(25)}`]: true } }))
     }
   }
   cases.push(fixture(80, 16, [question(1, { answerText: 'native answer', answerKey: 'native' })], steps, { opened: { '1': 'a' } }))

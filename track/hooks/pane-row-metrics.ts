@@ -9,19 +9,12 @@ type RowInput = {
   clearWidths: number[]; hints: readonly { text: string }[]; hasQuestions: boolean; hasSteps: boolean
   allLabel: string; doneLabel: string; questions: Question[]; steps: Step[]
   opened: Readonly<Record<string, 'q' | 'a' | 'r' | undefined>>; resultReveals: ReadonlyMap<string, string>
-  // Rows the person unfolded to their whole text, keyed q:<id> and s:<sourceId or id>.
-  expanded: Readonly<Record<string, true | undefined>>
   qEmpty: string; sEmpty: string; questionLabel: (id: number | string) => string; clockOf: (s: Step) => string
 }
 
-// The fold control: one cell and its gap after the row text, drawn only when the text is cut.
-export const TOGGLE_COLUMNS = 2
-
-// Ohad 2026-11-09: a folded row may take a second line; only text needing more gets the control.
-export const FOLDED_LINES = 2
-
-// A step's fold key follows its logical row: a new plan reuses plan:<n> ids with a new sourceId.
-export const stepFoldKey = (s: Step): string => `s:${s.sourceId ?? s.id}`
+// Ohad 2026-11-10: a row shows its whole text on up to three lines, with no expand control; only
+// text needing a fourth line is cut. Titles over 90 characters are refused, so new rows fit two.
+export const ROW_LINES = 3
 
 // A number cell drawn as "S1  │": the padded label, a space and the rule, then the row's gap.
 export const labelColumn = (labelWidth: number): number => labelWidth + 3
@@ -29,7 +22,7 @@ export const labelColumn = (labelWidth: number): number => labelWidth + 3
 export const labelCell = (label: string, labelWidth: number): string => `${label.padEnd(labelWidth)} │`
 
 export const paneRowMetrics = (input: RowInput) => {
-  const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, expanded, qEmpty, sEmpty, questionLabel, clockOf } = input
+  const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf } = input
   const roomy = bodyRows >= 16
   const titleRows = roomy ? 2 : 1
   const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
@@ -43,12 +36,8 @@ export const paneRowMetrics = (input: RowInput) => {
   // Status owns two cells, including the paused/hourglass glyphs, then a gap, then the number column.
   const sWidth = Math.max(1, width - rowIndent - 3 - (compact ? 0 : labelColumn(sLabelWidth)))
   const qControlsRows = compact ? 1 : 0
-  // A row folds to FOLDED_LINES; the control that unfolds it shows only when the text needs more.
-  // A narrow pane draws the control on the controls line, so it costs no text width there.
-  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > FOLDED_LINES
-  const qTextWidth = (q: Question) => Math.max(1, qWidth - (qToggle(q) && !compact ? TOGGLE_COLUMNS : 0))
-  const qOpen = (q: Question) => expanded[`q:${q.id}`] === true
-  const qHeadLines = (q: Question) => Math.min(qOpen(q) ? Infinity : FOLDED_LINES, wrappedLines(q.head, qTextWidth(q)))
+  const qTextWidth = (_q: Question) => qWidth
+  const qHeadLines = (q: Question) => Math.min(ROW_LINES, wrappedLines(q.head, qTextWidth(q)))
   const revealedText = (q: Question): string | undefined => {
     const side = opened[String(q.id)]
     if (side === 'q' && q.head.trim() !== '') return q.head
@@ -62,21 +51,15 @@ export const paneRowMetrics = (input: RowInput) => {
   const stepControlsRows = (_s: Step) => compact ? 1 : 0
   const fullStepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
   const fullSubjectWidth = (s: Step) => Math.max(1, fullStepWidth(s) - (!compact && s.status === 'completed' ? 7 : 0))
-  const stepToggle = (s: Step) => wrappedLines(s.subject, fullSubjectWidth(s)) > FOLDED_LINES
-  // Ohad 2026-11-09: the control sits after the clock; while any step folds, every step row keeps
-  // its column so the clocks stay aligned.
-  const stepFoldReserved = !compact && steps.some(stepToggle)
-  const toggleColumns = (_s: Step) => stepFoldReserved ? TOGGLE_COLUMNS : 0
-  const stepWidth = (s: Step) => Math.max(1, fullStepWidth(s) - toggleColumns(s))
-  const stepSubjectWidth = (s: Step) => Math.max(1, fullSubjectWidth(s) - toggleColumns(s))
-  const stepOpen = (s: Step) => expanded[stepFoldKey(s)] === true
-  const sHeadLines = (s: Step) => Math.min(stepOpen(s) ? Infinity : FOLDED_LINES, wrappedLines(s.subject, stepSubjectWidth(s)))
+  const stepWidth = (s: Step) => fullStepWidth(s)
+  const stepSubjectWidth = (s: Step) => fullSubjectWidth(s)
+  const sHeadLines = (s: Step) => Math.min(ROW_LINES, wrappedLines(s.subject, stepSubjectWidth(s)))
   const sLines = steps.map(s => sHeadLines(s) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepSubjectWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
   const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
   const atWork = steps.findIndex(s => s.status !== 'completed')
   const revealOpen = questions.some(q => revealedText(q) !== undefined)
-  return { qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen, stepFoldReserved }
+  return { qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qTextWidth }
 }
 export type PaneMetrics = ReturnType<typeof paneRowMetrics>
