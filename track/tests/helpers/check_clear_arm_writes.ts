@@ -7,7 +7,9 @@ import { join } from 'node:path'
 // TRACK-46 slices 1-7 (2026-11-09, Ohad's standing approval): updateLedger and updateOwnedLedger moved
 // to track-state.ts. The native files are scanned together with a per-file line prefix, so a count
 // cannot merge or hide a declaration in either file.
-const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts', 'session-owner.ts', 'turn-guidance.ts', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts', 'task-mirror.ts', 'session-events.ts']
+const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts', 'session-owner.ts', 'turn-guidance.ts', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts', 'task-mirror.ts', 'session-events.ts', 'ui-render.tsx']
+// TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
+// moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
 // TRACK-46 slice 10 (2026-11-09, Ohad's standing approval): the session/turn/prompt/Stop event handler
 // bodies moved to session-events.ts, a native adapter file.
 // TRACK-46 slice 9 (2026-11-09, Ohad's standing approval): the host task mirror handlers moved to
