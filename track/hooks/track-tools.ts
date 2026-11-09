@@ -23,6 +23,15 @@ import { coverInput } from './prompt-flow'
 import { reorderTrackedSteps } from './pane-actions'
 
 // Atom copies: identical to their register.tsx declarations (tests/helpers/architecture.ts).
+
+// Ohad 2026-11-09: rows should fit two pane lines. A longer title is still saved; the result
+// names it and asks for a shorter one (no refusal, per the earlier Codex advice).
+export const LONG_TITLE = 90
+const lengthNote = (rows: { label: string; text: string }[]): string => {
+  const long = rows.map(row => ({ ...row, size: [...row.text].length })).filter(row => row.size > LONG_TITLE)
+  return long.length === 0 ? '' : ` Too long for two pane lines: ${long.map(row => `${row.label} (${row.size} characters)`).join(', ')}. Keep a title near 60 characters: a verb, its object and one detail.`
+}
+
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
 const turn = atom({ plugin: 'track', key: 'turn' } as const, { currentId: null, gatedTurnId: null } as Turn)
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
@@ -156,7 +165,7 @@ export async function trackQuestionCall($: Parameters<TrackQuestionCallHook>[0],
   }
 
   // A plugin tool's result is text (or content blocks), never a bare object.
-  return { result: `Tracked as Q${minted?.id}: ${summary}. ${ANSWER.replaceAll('{id}', String(minted?.id))}. For deferral, use mcp__track__mark_answered with a note.` }
+  return { result: `Tracked as Q${minted?.id}: ${summary}. ${ANSWER.replaceAll('{id}', String(minted?.id))}. For deferral, use mcp__track__mark_answered with a note.${lengthNote([{ label: `Q${minted?.id}`, text: summary }])}` }
   } catch (error) {
     if (!(error instanceof OwnerChanged)) throw error
     return ownerChangedResult(e.tool)
@@ -280,9 +289,9 @@ export async function trackStepsCall($: Parameters<TrackStepsCallHook>[0], e: Pa
     await coverInput($, 'steps', { source_text: e.source_text }, token)
 
     if (anchor === undefined) {
-      return { result: `Tracking ${added.length} steps: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+      return { result: `Tracking ${added.length} steps: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.${lengthNote(added.map(s => ({ label: s.id, text: s.subject })))}` }
     }
-    return { result: `Inserted after ${anchor}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+    return { result: `Inserted after ${anchor}: ${added.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.${lengthNote(added.map(s => ({ label: s.id, text: s.subject })))}` }
   }
   const beforeReplacement = e.replace === true ? [] : openPlanSteps((await read($, ledger)).steps)
   if (beforeReplacement.length > 0) return refusePlanReplacement(beforeReplacement)
@@ -297,7 +306,7 @@ export async function trackStepsCall($: Parameters<TrackStepsCallHook>[0], e: Pa
   if (unfinished.length > 0) return refusePlanReplacement(unfinished)
   await coverInput($, 'steps', { source_text: e.source_text }, token)
 
-  return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.` }
+  return { result: `Tracking ${steps.length} steps: ${steps.map(s => `${s.id} ${s.subject}`).join('; ')}. Mark each with mcp__track__mark_step as you go.${lengthNote(steps.map(s => ({ label: s.id, text: s.subject })))}` }
   } catch (error) {
     if (!(error instanceof OwnerChanged)) throw error
     return ownerChangedResult(e.tool)

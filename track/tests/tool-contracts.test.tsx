@@ -39,8 +39,9 @@ test('native tool registration preserves all discovery contracts and its lifecyc
   expect(trace.indexOf('owner') > 9).toBe(true)
   expect(trace.indexOf('housekeeping') > trace.indexOf('owner')).toBe(true)
   // 2026-11-09 (Ohad chose re-pointing with Codex review): only the summary and steps descriptions
-  // changed, to ask for short one-line titles; was c9cde67a…24f3.
-  expect(await checksumOf(canonical(payloads))).toBe('69aaca502956458349755ec254896a2381e3410a5f58ceab356507923fbfb00e')
+  // changed, to ask for short one-line titles; was c9cde67a…24f3. Then the same two descriptions say
+  // the pane shows two lines (Ohad allowed a second line); was 69aaca50…b00e.
+  expect(await checksumOf(canonical(payloads))).toBe('b82d99a4569cc6f858248a3d6e8c4a7114504686c88b8b9cc1e8aa3baa78c286')
   expect(payloads[0]!.inputSchema!.required).toEqual(['summary'])
   expect(payloads[1]!.inputSchema!.required).toEqual(['id', 'status'])
   expect(payloads[3]!.inputSchema!.required).toEqual(['from_session'])

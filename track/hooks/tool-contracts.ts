@@ -6,7 +6,7 @@ export const toolContracts = (steps: string, stepResult: string, statuses: reado
       'Register a substantive question from any sender before answering, or reuse its existing open id. For a known user source, pass source_text as its exact first line; it is verified against current prompt rows. Alternatively pass a known source_request_id. If the source cannot be verified, the question links to this tracking call. Returns the id for mark_answered.',
     inputSchema: {
       type: 'object',
-      properties: { summary: { type: 'string', description: 'A short bullet of about 60 characters restating the question: what is asked, no narration. The pane shows one line' }, source_request_id: { type: 'string', description: 'Optional known source row; validated against recorded prompts' }, source_text: { type: 'string', description: 'Optional exact first line of the source user message; unique current-turn matches keep its source jump' } },
+      properties: { summary: { type: 'string', description: 'A short bullet of about 60 characters restating the question: what is asked, no narration. The pane shows two lines' }, source_request_id: { type: 'string', description: 'Optional known source row; validated against recorded prompts' }, source_text: { type: 'string', description: 'Optional exact first line of the source user message; unique current-turn matches keep its source jump' } },
       required: ['summary'],
     },
   },
@@ -32,7 +32,7 @@ export const toolContracts = (steps: string, stepResult: string, statuses: reado
     inputSchema: {
       type: 'object',
       properties: {
-        steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each a short bullet of about 60 characters: a verb, its object and one detail that tells it apart. Leave out agent or model names, commands and history. The pane shows one line' },
+        steps: { type: 'array', items: { type: 'string' }, description: 'Step titles, in order, each a short bullet of about 60 characters: a verb, its object and one detail that tells it apart. Leave out agent or model names, commands and history. The pane shows two lines' },
         after: { type: 'string', minLength: 1, description: 'Insert after this non-blank step id (plan:2, task:7, ...) and keep the plan, or "last" for after the last plan row; omit for replacement' },
         replace: { type: 'boolean', description: 'Explicitly replace unfinished plan rows instead of preserving them; use after for additions' },
         source_text: { type: 'string', description: 'Optional exact first line of the user message these steps carry out; it registers that request' },
