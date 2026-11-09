@@ -253,7 +253,7 @@ declare module 'claude-code' {
       historyPending: { session_id: string; request_id: string; expect: { absent: true } | { seq: number; root_sha256: string } } | null
       // A restored row's saved text drawn in the pane, by question id: its question or answer side.
       reveal: Record<string, 'q' | 'a' | 'r' | undefined>
-      // Pane rows unfolded to their whole text, keyed q:<id> and s:<id>; rows start folded to one
+      // Pane rows unfolded to their whole text, keyed q:<id> and s:<sourceId or id>; rows start folded to one
       // line. Never saved.
       expanded: Record<string, true | undefined>
       // When the steps' "clear all" was pressed with unfinished steps, waiting for a second press;

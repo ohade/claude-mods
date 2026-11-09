@@ -7,7 +7,7 @@ import { hasClock, runningClocks, isLifecycleNote, STEP_STATUSES } from './ledge
 import { RESULT_CHARS, truncate } from './ledger-text'
 import { wrappedLines, fitLines } from './terminal-text'
 import { clampTo, clockText, questionLabels, buttonWidth } from './pane-layout'
-import { labelCell, paneRowMetrics } from './pane-row-metrics'
+import { labelCell, paneRowMetrics, stepFoldKey } from './pane-row-metrics'
 import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
 import { paneRootView, paneItem } from './pane-root-view'
@@ -34,7 +34,7 @@ const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hi
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | 'r' | undefined>)
-// Rows unfolded to their whole text, keyed q:<id> and s:<id>; every row starts folded to one line.
+// Rows unfolded to their whole text, keyed q:<id> and s:<sourceId or id>; every row starts folded.
 const expandedRows = atom({ plugin: 'track', key: 'expanded' } as const, {} as Record<string, true | undefined>)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
@@ -398,7 +398,15 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
   await read($, tick)
   const opened = await read($, reveal)
   const expanded = await read($, expandedRows)
-  const toggleExpanded = (key: string) => update($, expandedRows, cur => ({ ...cur, [key]: cur[key] === true ? undefined : true as const }))
+  // Opening a row anchors its region on it, as a reveal does, so the taller row stays in view.
+  const toggleExpanded = async (key: string, region: 'questions' | 'steps', index: number) => {
+    let opening = false
+    await update($, expandedRows, cur => {
+      opening = cur[key] !== true
+      return { ...cur, [key]: opening ? true as const : undefined }
+    })
+    if (opening) await update($, scrollAt, cur => ({ ...cur, [region]: index }))
+  }
   const clockRuns = runningClocks(l).length > 0
   if (ticking.timer === undefined && clockRuns) {
     startTick($)
@@ -594,7 +602,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
         const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qTextWidth(q), revealBudget) : undefined
         return questionView({ Box, Button, Text }, {
           id: q.id, glyph: statusGlyph(q), color, dim: q.status === 'deferred',
-          compact, rowIndent, width: qTextWidth(q), toggle: qToggle(q) ? { open: qOpen(q), onPress: () => toggleExpanded(`q:${q.id}`) } : undefined, label: labelCell(questionLabel(q.id), qLabelWidth), headShown,
+          compact, rowIndent, width: qTextWidth(q), toggle: qToggle(q) ? { open: qOpen(q), onPress: () => toggleExpanded(`q:${q.id}`, 'questions', index) } : undefined, label: labelCell(questionLabel(q.id), qLabelWidth), headShown,
           // revealRaw above supplies text only for the question and answer sides.
           reveal: revealShown === undefined ? undefined : { side: opened[String(q.id)] as 'q' | 'a', text: revealShown },
           question: questionControl, answer: answerControl,
@@ -614,7 +622,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
           step: s, index, label: labelCell(`S${index + 1}`, sLabelWidth), lifecycle, phase, work, compact, rowIndent,
           result: stepResults.get(s.id), headShown, resultShown,
           width: stepWidth(s), subjectWidth: stepSubjectWidth(s),
-          toggle: stepToggle(s) ? { open: stepOpen(s), onPress: () => toggleExpanded(`s:${s.id}`) } : undefined,
+          toggle: stepToggle(s) ? { open: stepOpen(s), onPress: () => toggleExpanded(stepFoldKey(s), 'steps', index) } : undefined,
           clockLabel: hasClock(s) ? clockOf(s) : undefined,
           follow,
           onToggleResult: toggleResult,

@@ -88,7 +88,7 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   const foldColumns = (s: Step) => !compact && stepToggle(s) ? FOLD : 0
   const stepWidth = (s: Step) => Math.max(1, Math.max(1, sWidth - clockColumns(s)) - foldColumns(s))
   const stepSubjectWidth = (s: Step) => Math.max(1, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s)) - foldColumns(s))
-  const stepOpen = (s: Step) => expanded[`s:${s.id}`] === true
+  const stepOpen = (s: Step) => expanded[`s:${s.sourceId ?? s.id}`] === true
   const sLines = steps.map(s => (stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : 1) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)

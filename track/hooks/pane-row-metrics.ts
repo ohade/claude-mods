@@ -9,13 +9,16 @@ type RowInput = {
   clearWidths: number[]; hints: readonly { text: string }[]; hasQuestions: boolean; hasSteps: boolean
   allLabel: string; doneLabel: string; questions: Question[]; steps: Step[]
   opened: Readonly<Record<string, 'q' | 'a' | 'r' | undefined>>; resultReveals: ReadonlyMap<string, string>
-  // Rows the person unfolded to their whole text, keyed q:<id> and s:<id>.
+  // Rows the person unfolded to their whole text, keyed q:<id> and s:<sourceId or id>.
   expanded: Readonly<Record<string, true | undefined>>
   qEmpty: string; sEmpty: string; questionLabel: (id: number | string) => string; clockOf: (s: Step) => string
 }
 
 // The fold control: one cell and its gap after the row text, drawn only when the text is cut.
 export const TOGGLE_COLUMNS = 2
+
+// A step's fold key follows its logical row: a new plan reuses plan:<n> ids with a new sourceId.
+export const stepFoldKey = (s: Step): string => `s:${s.sourceId ?? s.id}`
 
 // A number cell drawn as "S1  │": the padded label, a space and the rule, then the row's gap.
 export const labelColumn = (labelWidth: number): number => labelWidth + 3
@@ -60,7 +63,7 @@ export const paneRowMetrics = (input: RowInput) => {
   const toggleColumns = (s: Step) => stepToggle(s) && !compact ? TOGGLE_COLUMNS : 0
   const stepWidth = (s: Step) => Math.max(1, fullStepWidth(s) - toggleColumns(s))
   const stepSubjectWidth = (s: Step) => Math.max(1, fullSubjectWidth(s) - toggleColumns(s))
-  const stepOpen = (s: Step) => expanded[`s:${s.id}`] === true
+  const stepOpen = (s: Step) => expanded[stepFoldKey(s)] === true
   const sHeadLines = (s: Step) => stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : 1
   const sLines = steps.map(s => sHeadLines(s) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))

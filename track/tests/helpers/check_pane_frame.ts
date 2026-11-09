@@ -29,7 +29,7 @@ assert.equal(sliceEleven.status, 0, 'accepted slice 11 ui-render source must exi
 assertPaneNative(sliceEleven.stdout, '4ef12b69b0e77739f0deb7d5714abb13eada99cbe950241a563cd2ac96f428cd')
 // 2026-11-09 (Ohad chose re-pointing with Codex review): the number column, bold labels and
 // one-line rows change both row maps; pin those exact arrows on the live file.
-assertPaneNative(ui, 'd3f0eb802dc830c6ab9526c891cfd2b04d4016026fb98d9c2bfe6478827c50ef', '355d67fb56fb2b3f299bcbda8fc02ec7edf412a8437e6e35058d517ff51eabff')
+assertPaneNative(ui, 'c10684b004e2dbe3a1e2d688252573919613034159fecc41735ea039f10da346', '72f6f5a1a025116204c945fe89874e1a3d8aeea5f414da32ac27b9671ee3f2d8')
 // Audit repairs: retain both accepted integrations before pinning the authorized fixes.
 for (const [commit, path, expected] of [
   ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'],
@@ -95,7 +95,7 @@ assert.equal(digest(native), 'c4dbe2b648349c41a283027bbede8e5257eec5ee5d23b369fe
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-state.ts'), 'utf8')), 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb', 'exact track-state bytes')
 // 2026-11-09 (Ohad chose re-pointing with Codex review): the number column, bold labels and
 // one-line rows change ui-render.tsx; its slice 11 bytes stay proven at 86399dc above.
-assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), '117af8f7e63d4e1d36b1acaf7b8c6eb673de02d6a2a437f0b669707b01341f3c', 'exact ui-renderx bytes')
+assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), 'd6747322c4fef46f17242e1d554f4c1cb88cd94798ca3ae2fe92b809990a7519', 'exact ui-renderx bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')

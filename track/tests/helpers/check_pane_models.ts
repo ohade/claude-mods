@@ -79,7 +79,7 @@ assert.equal(hash(native), 'c4dbe2b648349c41a283027bbede8e5257eec5ee5d23b369fe94
 assert.equal(hash(readFileSync(hook('track-state.ts'), 'utf8')), 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb', 'exact track-state bytes')
 // 2026-11-09 (Ohad chose re-pointing with Codex review): the number column, bold labels and
 // one-line rows change ui-render.tsx; its slice 11 bytes stay proven at 86399dc above.
-assert.equal(hash(readFileSync(hook('ui-render.tsx'), 'utf8')), '117af8f7e63d4e1d36b1acaf7b8c6eb673de02d6a2a437f0b669707b01341f3c', 'exact ui-renderx bytes')
+assert.equal(hash(readFileSync(hook('ui-render.tsx'), 'utf8')), 'd6747322c4fef46f17242e1d554f4c1cb88cd94798ca3ae2fe92b809990a7519', 'exact ui-renderx bytes')
 assert.equal(hash(readFileSync(hook('session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(hash(readFileSync(hook('task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(hash(readFileSync(hook('track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')
