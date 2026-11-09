@@ -2243,6 +2243,43 @@ const clearQuestions = ($: EngineInterface): Promise<void> => pressOwned($, asyn
 // ledger write, gate and save, so a press still running when another session is selected stops
 // instead of writing into that session. An identity outage acts on memory, as before, fenced to
 // the memory owner and the ownership epoch it read (Codex review of 2a0ecb2).
+// TRACK-46 A1/C1 (iii): the reply observation after its admission, fenced by its token.
+const observeResponse = async ($: EngineInterface, requestId: string, text: string, token: OwnerToken): Promise<void> => {
+  let observed: (NonNullable<Turn['lastText']> & { requestId: string; order: number }) | undefined
+  await update($, turn, cur => {
+    assertOwner(token)
+    const order = (cur.eventOrder ?? 0) + 1
+    observed = { row: rowKey(requestId), requestId, turnId: cur.currentId, order, text: truncate(text, ANSWER_CHARS) }
+    return { ...cur, eventOrder: order, lastText: observed }
+  })
+  // Reserve event order before hashing. Keep full-word identity in bounded
+  // metadata; comparing only the saved prefix could attach a different answer.
+  const answer = { ...observed!, textHash: await checksumOf(text) }
+  await update($, turn, cur => {
+    assertOwner(token)
+    return cur.lastText?.requestId === answer.requestId && cur.lastText.order === answer.order
+      ? { ...cur, lastText: answer }
+      : cur
+  })
+  // Keep this message's observation. A later turn-atom write must never
+  // replace its text while leaving this message's UUID on the answer.
+  let changed = false
+  await updateLedger($, cur => {
+    assertOwner(token, cur)
+    if (answer.text === undefined) {
+      changed = false
+      return cur
+    }
+    const proposal = bindAnswerResponse(cur, { text, answerText: answer.text, textHash: answer.textHash, row: answer.row, requestId, turnId: answer.turnId, order: answer.order })
+    changed = proposal.changed
+    return proposal.ledger
+  })
+  if (changed) {
+    await publishGate($, token)
+    await saveLedger($, token)
+  }
+}
+
 // TRACK-46 A1/C1 (iii): the marker capture after its stored reply, fenced by the capture's token.
 const captureResponse = async ($: EngineInterface, text: string, requestId: string, observed: { turnId: string; order: number }, token: OwnerToken): Promise<void> => {
   const current = await read($, turn)
@@ -3008,36 +3045,17 @@ export const register: Register = on => {
   // Event order verifies a source, not whether its words answer the question.
   // A later response can move an explicit answer's call target to the same verified text;
   // it never supplies unknown answer words from narration.
+  // TRACK-46 A1/C1 (iii): the observation belongs to the session whose memory saw the reply. A
+  // session switch while it runs stops it, so a retry never ties the reply to the new session's
+  // turn; the stored reply still flows on.
   on('session.append', { door: 'response' }, async ($, e, next) => {
+    const epoch = ownership.epoch
     const text = textOf(e.message.content).trim()
     if (e.agentId === undefined && text !== '') {
-      let observed: (NonNullable<Turn['lastText']> & { requestId: string; order: number }) | undefined
-      await update($, turn, cur => {
-        const order = (cur.eventOrder ?? 0) + 1
-        observed = { row: rowKey(e.uuid), requestId: e.uuid, turnId: cur.currentId, order, text: truncate(text, ANSWER_CHARS) }
-        return { ...cur, eventOrder: order, lastText: observed }
-      })
-      // Reserve event order before hashing. Keep full-word identity in bounded
-      // metadata; comparing only the saved prefix could attach a different answer.
-      const answer = { ...observed!, textHash: await checksumOf(text) }
-      await update($, turn, cur => cur.lastText?.requestId === answer.requestId && cur.lastText.order === answer.order
-        ? { ...cur, lastText: answer }
-        : cur)
-      // Keep this message's observation. A later turn-atom write must never
-      // replace its text while leaving this message's UUID on the answer.
-      let changed = false
-      await updateLedger($, cur => {
-        if (answer.text === undefined) {
-          changed = false
-          return cur
-        }
-        const proposal = bindAnswerResponse(cur, { text, answerText: answer.text, textHash: answer.textHash, row: answer.row, requestId: e.uuid, turnId: answer.turnId, order: answer.order })
-        changed = proposal.changed
-        return proposal.ledger
-      })
-      if (changed) {
-        await publishGate($)
-        await saveLedger($)
+      try { await observeResponse($, e.uuid, text, await memoryToken($, epoch)) }
+      catch (error) {
+        if (!(error instanceof OwnerChanged)) throw error
+        $.ui.log('track: reply observation stopped: session owner changed during the reply.', { to: 'debug' })
       }
     }
 

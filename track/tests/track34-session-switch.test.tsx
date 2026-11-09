@@ -1926,3 +1926,35 @@ test('FIXTURE TRACK46 owner switch: a B marker reply with no switch answers B Q2
   expect({ session: fixture.memory.value.session_id, head: q2?.head, status: q2?.status, answerText: q2?.answerText })
     .toEqual({ session: B, head: 'B open question', status: 'answered', answerText: 'B marker answer.' })
 })
+
+// Codex review of 428b5aa: the first response handler records the reply as the turn's last text.
+// Held until C is selected and C's own turn is live, that write's retry must not relabel the B
+// reply as C's, or the capture would then answer C's Q2 with B's marker.
+test("FIXTURE TRACK46 owner switch: a B reply's held last-text write never ties the reply to C's turn", async ($, on) => {
+  const { fixture, held } = await captureFixture($, on, undefined)
+  fixture.controls.stateSetHold = { key: 'turn', latch: held,
+    matches: value => (value as Turn).lastText?.requestId === 'b-first-reply' }
+  const reply = outcome($.session.append(markerReply('b-first-reply') as never))
+  try {
+    const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), reply.then(() => 'returned')]), 'B last-text write')
+    if (phase !== 'held') throw new Error('INVALID FIXTURE: the B reply wrote no last text to hold')
+    fixture.controls.session = C
+    const toC = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'C selection while B last text held')
+    if (toC.deny !== undefined || toC.isError === true) throw new Error(`INVALID FIXTURE: C selection failed: ${JSON.stringify(toC)}`)
+    fixture.turn.value = { ...fixture.turn.value, currentId: 'C-live-turn' }
+    held.release()
+    const result = await fixtureWait(reply, 'B reply completion')
+    expect(result.error, 'the stored reply still flows').toBeUndefined()
+    await fixture.clock.settle()
+    expect(fixture.memory.value.session_id, 'C stays selected').toBe(C)
+    const q2 = fixture.memory.value.questions.find(q => q.id === 2)
+    expect({ head: q2?.head, status: q2?.status, answerText: q2?.answerText })
+      .toEqual({ head: 'C open question', status: 'open', answerText: undefined })
+    expect(fixture.turn.value.lastText?.requestId, 'C turn holds no B reply').not.toBe('b-first-reply')
+    expect({ a: await history(fixture, A, fixture.a), c: await history(fixture, C, fixture.c) })
+      .toEqual({ a: expectedHistory(fixture.a), c: expectedHistory(fixture.c) })
+  } finally {
+    held.release()
+    await fixtureWait(reply, 'B reply cleanup')
+  }
+})
