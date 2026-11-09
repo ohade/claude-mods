@@ -2229,7 +2229,18 @@ const clearQuestions = async ($: EngineInterface): Promise<void> => {
 // Clear all for steps (Ohad, 2026-10-28). With an unfinished step the first press only arms; a
 // second press within CLEAR_ARM_MS clears, and the unfinished steps it removed are told to the
 // model once on its next prompt, as withdrawn questions are. All completed: one press clears.
+// TRACK-46 A1/C1: a pane press is the session's own action, so it first selects the current
+// session, as tool calls do; it never changes the previous owner's rows. An identity outage acts
+// on memory, as before.
+const paneOwner = async ($: EngineInterface): Promise<boolean> => {
+  const owned = await ensureOwner($)
+  if (owned.ok || owned.isIdentity) return true
+  $.ui.toast(`track: ${owned.reason}`)
+  return false
+}
+
 const clearSteps = async ($: EngineInterface): Promise<void> => {
+  if (!(await paneOwner($))) return
   const now = await $.clock.now()
   // Read with its version, so the arm below goes live only if nothing wrote clearArm since this read.
   const held = await $.state.get({ plugin: 'track', key: 'clearArm' })
@@ -4306,11 +4317,13 @@ export const register: Register = on => {
     }
     const sDone = steps.filter(s => s.status === 'completed').length
     const clearAnsweredQuestions = async () => {
+      if (!(await paneOwner($))) return
       await updateLedger($, cur => hideAnsweredQuestions(cur))
       await publishGate($)
       await saveLedger($)
     }
     const clearCompletedSteps = async () => {
+      if (!(await paneOwner($))) return
       await updateLedger($, cur => hideCompletedSteps(cur))
       await publishGate($)
       await saveLedger($)

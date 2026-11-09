@@ -1678,6 +1678,10 @@ test('FIXTURE TRACK46 owner switch: a pane clear press after an identity change 
   expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
   expect(fixture.durability.value.memorySession, 'B was selected').toBe(B)
   expect(fixture.memory.value.session_id).toBe(B)
+  // The press is delivered to B: B's completed step is hidden in memory and in B's saved rows.
+  expect(fixture.memory.value.steps.find(s => s.id === 'plan:1' && s.subject === 'B saved step')?.cleared, 'B memory row cleared').toBe(true)
+  const savedB = (await history(fixture, B, fixture.b)).ledger
+  expect(savedB.steps.find(s => s.id === 'plan:1' && s.subject === 'B saved step')?.cleared, 'B saved row cleared').toBe(true)
 })
 
 test('FIXTURE TRACK46 owner switch: /track status after an identity change reports B rows', async ($, on) => {
