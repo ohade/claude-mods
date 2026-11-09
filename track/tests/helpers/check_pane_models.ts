@@ -48,6 +48,8 @@ for (const [commit, path, expected] of [
   ['53cf6e4a56acc9293cef9158f40071746200fa37', 'architecture/archview.toml', 'b9a842c7e97ba9fa2601df086ef724ae9d40facc2e7708de1d137e2dbc72712c'],
   ['c738a09a5059123c179d1005a82f5b262777a476', 'hooks/register.tsx', '239840f3ca0ef36233ef3c24f3feb2ae51a6e41fb24e9d38a677db9a54159b6b'],
   ['c738a09a5059123c179d1005a82f5b262777a476', 'architecture/archview.toml', '545549084074cccb81e80910995f41737907eb1444a58f3732371298c47170e5'],
+  ['9b53b9a6b705796aa4fd4555f63a7738dbdcc13a', 'hooks/register.tsx', 'd0b5828da4e2d0583e16e056099f3be8cdf8fa4b0546c8014dc3576165781864'],
+  ['9b53b9a6b705796aa4fd4555f63a7738dbdcc13a', 'architecture/archview.toml', '3668aa7811b5b5c6b311ef186656fbc26c09bd60fed58680cae7cf5ba2027b55'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: new URL('../../..', import.meta.url), encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -63,10 +65,12 @@ const native = readFileSync(hook('register.tsx'), 'utf8')
 // TRACK-46 slice 6 (Ohad's standing approval for reviewed refactor moves): retained at 1767237 above.
 // TRACK-46 slice 7 (Ohad's standing approval for reviewed refactor moves): retained at 53cf6e4 above.
 // TRACK-46 slice 8 (Ohad's standing approval for reviewed refactor moves): retained at c738a09 above.
+// TRACK-46 slice 9 (Ohad's standing approval for reviewed refactor moves): retained at 9b53b9a above.
 // TRACK-46 slice 1 (2026-11-09, Ohad's standing approval for reviewed refactor moves): retain the
 // fix-list bytes (cfcab31) above; pin the slice-1 register and the track-state.ts it moved code into.
-assert.equal(hash(native), 'd0b5828da4e2d0583e16e056099f3be8cdf8fa4b0546c8014dc3576165781864', 'exact bulk-clear/P2.1 integration bytes')
+assert.equal(hash(native), 'fc2c31d5bd583e5fd1f1e79673255e14ca271f56c791e9e9378fdad0a5062173', 'exact bulk-clear/P2.1 integration bytes')
 assert.equal(hash(readFileSync(hook('track-state.ts'), 'utf8')), 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb', 'exact track-state bytes')
+assert.equal(hash(readFileSync(hook('task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(hash(readFileSync(hook('track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')
 assert.equal(hash(readFileSync(hook('pane-actions.tsx'), 'utf8')), 'eae9f401e8e9b26c4c056765e3377043eda4387894231f58b3aecb4525c7d4c6', 'exact pane-actionsx bytes')
 assert.equal(hash(readFileSync(hook('prompt-flow.ts'), 'utf8')), 'ee1e7f8c21fec548c78cf590e62377de49f951848eca8280811198cbe6018f8d', 'exact prompt-flow bytes')
@@ -75,7 +79,7 @@ assert.equal(hash(readFileSync(hook('session-owner.ts'), 'utf8')), '4ebaadd3ea36
 assert.equal(hash(readFileSync(hook('ledger-store.ts'), 'utf8')), 'dc840582aa3f43f767001b7432308d91357ef5cbea82233811391616cb304c25', 'exact ledger-store bytes')
 assert.equal(hash(readFileSync(hook('writer-lock.ts'), 'utf8')), 'a6d981c2331da2571b7a52802f48541a73737932706617feab5127ca545a1413', 'exact writer-lock bytes')
 const arch = readFileSync(new URL('../../architecture/archview.toml', import.meta.url), 'utf8')
-assert.equal(hash(arch), '3668aa7811b5b5c6b311ef186656fbc26c09bd60fed58680cae7cf5ba2027b55', 'exact declared architecture edges')
+assert.equal(hash(arch), '605b1b74b0ad02a69aa21cdb6d8f39340d320e7951839b115dee97cca9759d38', 'exact declared architecture edges')
 const { paneBanner } = await import('../../hooks/pane-banner-model')
 checkPaneModels(paneBanner)
 console.log('banner ownership, native integration and frozen parity cases pass (SOURCE/FIXTURE)')
