@@ -23,7 +23,9 @@ assert.match(ui, /onPress: \(\) => ready \? jump\(\$, answerIds, 'start', answer
 assert.match(ui, /onPress: \(\) => toggleReveal\(q\.id, 'q', index\)/)
 assert.match(ui, /onPress: \(\) => toggleReveal\(q\.id, 'a', index\)/)
 assert.match(ui, /onWithdraw: \(\) => withdraw\(\$, q\.id, l\.session_id\)/, "the ✕ names the session its row was drawn for")
-assert.match(ui, /const revealShown = revealRaw !== undefined \? fitLines\(revealRaw, qWidth, revealBudget\) : undefined/)
+// 2026-11-09 (Ohad chose re-pointing with Codex review): a revealed side wraps at the row's text
+// width, which the fold control narrows when the question needs more than one line.
+assert.match(ui, /const revealShown = revealRaw !== undefined \? fitLines\(revealRaw, qTextWidth\(q\), revealBudget\) : undefined/)
 for (const key of ['row-q-', 'q-markers-', 'q-question-slot-', 'q-answer-slot-', 'q-text-', 'reveal-', 'del-']) {
   assert.ok(view.includes(key), `question view preserves ${key} keys`)
 }

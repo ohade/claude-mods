@@ -38,7 +38,9 @@ test('native tool registration preserves all discovery contracts and its lifecyc
   expect(trace.slice(0, 10)).toEqual(['command:track', ...NAMES.map(name => `tool:${name}`)])
   expect(trace.indexOf('owner') > 9).toBe(true)
   expect(trace.indexOf('housekeeping') > trace.indexOf('owner')).toBe(true)
-  expect(await checksumOf(canonical(payloads))).toBe('c9cde67a7ba48fc0ed8a6e3e45587ec063a914bc5c66515011458af2b57624f3')
+  // 2026-11-09 (Ohad chose re-pointing with Codex review): only the summary and steps descriptions
+  // changed, to ask for short one-line titles; was c9cde67a…24f3.
+  expect(await checksumOf(canonical(payloads))).toBe('69aaca502956458349755ec254896a2381e3410a5f58ceab356507923fbfb00e')
   expect(payloads[0]!.inputSchema!.required).toEqual(['summary'])
   expect(payloads[1]!.inputSchema!.required).toEqual(['id', 'status'])
   expect(payloads[3]!.inputSchema!.required).toEqual(['from_session'])

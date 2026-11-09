@@ -116,7 +116,9 @@ const invariantNodes = (file: ts.SourceFile) => nodes(file).flatMap(node => {
 }).sort()
 // questionsArrow: the exact questions row-map arrow digest the checked source must have. Accepted
 // sources keep the 0c14bba arrow; the live caller pins the reviewed cold-resume arrow.
-export const assertPaneNative = (source: string, questionsArrow: string = 'a401635d03b4ae327dd451756c14009e34ef9430e551e6125c4604088918e0d2'): void => {
+// stepsArrow: left out, the steps arrow must equal 0c14bba's; given, it is the exact digest the
+// checked source must have (2026-11-09, Ohad approved: the number column and one-line rows).
+export const assertPaneNative = (source: string, questionsArrow: string = 'a401635d03b4ae327dd451756c14009e34ef9430e551e6125c4604088918e0d2', stepsArrow?: string): void => {
   const current = tree(source)
   for (const name of names) assert.equal(norm(variable(current, name).initializer!, current), baseControls[name], `native ${name} equals actual original control expression`)
   const call = nodes(current).filter(ts.isCallExpression).find(node => node.expression.getText(current) === 'paneRootView')
@@ -125,7 +127,7 @@ export const assertPaneNative = (source: string, questionsArrow: string = 'a4016
     const field: ts.ObjectLiteralElementLike | undefined = call.arguments[1].properties.find(prop => prop.name?.getText(current) === name)
     assert.ok(field && (ts.isShorthandPropertyAssignment(field) && field.name.text === name || ts.isPropertyAssignment(field) && field.initializer.getText(current) === name), `native frame field ${name} passes its matching prepared node`)
   }
-  assert.equal(digest(norm(rowMap(current, 'steps').arguments[0]!, current)), digest(norm(rowMap(base, 'steps').arguments[0]!, base)), 'native steps full row-map arrow unchanged')
+  assert.equal(digest(norm(rowMap(current, 'steps').arguments[0]!, current)), stepsArrow ?? digest(norm(rowMap(base, 'steps').arguments[0]!, base)), stepsArrow === undefined ? 'native steps full row-map arrow unchanged' : 'native steps row-map arrow is the exact expected arrow')
   assert.equal(digest(norm(rowMap(base, 'questions').arguments[0]!, base)), 'a401635d03b4ae327dd451756c14009e34ef9430e551e6125c4604088918e0d2', 'accepted 0c14bba questions row-map arrow proof retained')
   assert.equal(digest(norm(rowMap(current, 'questions').arguments[0]!, current)), questionsArrow, 'native questions row-map arrow is the exact expected arrow')
   assert.equal(digest(norm(variable(current, 'clearButtons').initializer!, current)), digest(norm(variable(base, 'clearButtons').initializer!, base)), 'native clearButtons AST unchanged')

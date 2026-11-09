@@ -23,8 +23,13 @@ const coldResume = spawnSync('git', ['show', '6a444b37622025a7f7a1b673fadeb3960f
 assert.equal(coldResume.status, 0, 'accepted cold-resume source must exist')
 assertPaneNative(coldResume.stdout, '2a8e69dc1142bf6baef536724495b4e8ca376510dcf0c614be0d49b529f43a27')
 // 2026-11-09 (approved by Ohad): the Codex-accepted TRACK-46 A1/C1 fix passes the drawn ledger's
-// session to a question's ✕ (4a68cb9); pin that exact arrow.
-assertPaneNative(ui, '4ef12b69b0e77739f0deb7d5714abb13eada99cbe950241a563cd2ac96f428cd')
+// session to a question's ✕ (4a68cb9); that arrow stays proven on its accepted source, 86399dc.
+const sliceEleven = spawnSync('git', ['show', '86399dc4938a89019623fe8c90f1e40a90f2b488:track/hooks/ui-render.tsx'], { cwd: W, encoding: 'utf8' })
+assert.equal(sliceEleven.status, 0, 'accepted slice 11 ui-render source must exist')
+assertPaneNative(sliceEleven.stdout, '4ef12b69b0e77739f0deb7d5714abb13eada99cbe950241a563cd2ac96f428cd')
+// 2026-11-09 (Ohad chose re-pointing with Codex review): the number column, bold labels and
+// one-line rows change both row maps; pin those exact arrows on the live file.
+assertPaneNative(ui, 'd3f0eb802dc830c6ab9526c891cfd2b04d4016026fb98d9c2bfe6478827c50ef', '355d67fb56fb2b3f299bcbda8fc02ec7edf412a8437e6e35058d517ff51eabff')
 // Audit repairs: retain both accepted integrations before pinning the authorized fixes.
 for (const [commit, path, expected] of [
   ['1bdd7b52fd4ebcde8db795004183a608c351f499', 'hooks/register.tsx', 'f97a9daba7cae65b753341bba0fdc35a639fc9fc07f50117ee0db2a36fa27ded'],
@@ -66,6 +71,7 @@ for (const [commit, path, expected] of [
   ['832dd3fde4ed4328e8f73f672537bc80203a9633', 'architecture/archview.toml', '605b1b74b0ad02a69aa21cdb6d8f39340d320e7951839b115dee97cca9759d38'],
   ['26c2183e4495a5d363ccca0e224012a8d156992a', 'hooks/register.tsx', '9db81640dcfe4db3eb02cda92d54bbb1d1094eae82542a677c294b0a932c1e12'],
   ['26c2183e4495a5d363ccca0e224012a8d156992a', 'architecture/archview.toml', '649f6fd4378c155312ca658ee2f32201a7b6b9044c622f35c1b809e2132014f2'],
+  ['86399dc4938a89019623fe8c90f1e40a90f2b488', 'hooks/ui-render.tsx', '3b51a3cd844639d4ed08b413dbb0ef9e0a3c0ab414c83f62b4af68756cbbdd7b'],
 ] as const) {
   const accepted = spawnSync('git', ['show', `${commit}:track/${path}`], { cwd: W, encoding: 'utf8' })
   assert.equal(accepted.status, 0, `accepted ${commit} ${path} must exist`)
@@ -87,7 +93,9 @@ for (const [commit, path, expected] of [
 // fix-list bytes (cfcab31) above; pin the slice-1 register and the track-state.ts it moved code into.
 assert.equal(digest(native), 'c4dbe2b648349c41a283027bbede8e5257eec5ee5d23b369fe94e64af5750304', 'exact bulk-clear/P2.1 integration bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-state.ts'), 'utf8')), 'b71da1704c09321f13d74f617539fe0235cef6710b789a22eb7f3a3bb89061bb', 'exact track-state bytes')
-assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), '3b51a3cd844639d4ed08b413dbb0ef9e0a3c0ab414c83f62b4af68756cbbdd7b', 'exact ui-renderx bytes')
+// 2026-11-09 (Ohad chose re-pointing with Codex review): the number column, bold labels and
+// one-line rows change ui-render.tsx; its slice 11 bytes stay proven at 86399dc above.
+assert.equal(digest(readFileSync(resolve(W, 'track/hooks/ui-render.tsx'), 'utf8')), '117af8f7e63d4e1d36b1acaf7b8c6eb673de02d6a2a437f0b669707b01341f3c', 'exact ui-renderx bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/session-events.ts'), 'utf8')), 'c7bbb24692797af79c60a50fe9436091e975003f367e6b70c5fe79ecaa1a06e5', 'exact session-events bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/task-mirror.ts'), 'utf8')), '07cd1308204266fca1a011bee0e25cc4fcf0900690c124a8424b7fd9e9e86b68', 'exact task-mirror bytes')
 assert.equal(digest(readFileSync(resolve(W, 'track/hooks/track-tools.ts'), 'utf8')), '72216c8d0bfbe67a433ddeb799ec5273589887b847f0416a587addfdb0d51a7d', 'exact track-tools bytes')

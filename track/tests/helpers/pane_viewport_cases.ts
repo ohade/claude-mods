@@ -1,4 +1,6 @@
-// FIXTURE: immutable original513ef7b calculations, literal geometry and candidate parity.
+// FIXTURE: reference geometry and candidate parity. Written from 513ef7b's calculations; on
+// 2026-11-09 (Ohad chose re-pointing with Codex review) it takes the number column, the narrow
+// pane's number on the controls line, and rows folded to one line unless unfolded.
 import assert from 'node:assert/strict'
 import type { Question, ScrollAt, Step } from '../../types'
 import type { BannerRow } from '../../hooks/banner-layout'
@@ -10,14 +12,20 @@ export type ViewportCaseInput = {
   clearWidths: number[]; hints: readonly { text: string }[]; hasQuestions: boolean; hasSteps: boolean
   allLabel: string; doneLabel: string; questions: Question[]; steps: Step[]
   opened: Readonly<Record<string, 'q' | 'a' | undefined>>; resultReveals: ReadonlyMap<string, string>
+  expanded: Readonly<Record<string, true | undefined>>
   qEmpty: string; sEmpty: string; questionLabel: (id: number | string) => string; clockOf: (s: Step) => string
   qRing: string; sRing: string; at: ScrollAt; openRows: BannerRow[]
 }
-type MetricProjection = { roomy: boolean; titleRows: number; bottomRows: number; qButtons: number[]; sButtons: number[]; qWidth: number; sWidth: number; qControlsRows: number; qLines: number[]; sLines: number[]; needQ: number; needS: number; atWork: number; revealOpen: boolean; stepControlsRows: (s: Step) => number; stepWidth: (s: Step) => number; stepSubjectWidth: (s: Step) => number }
+type MetricProjection = { qLabelWidth: number; sLabelWidth: number; qToggle: (q: Question) => boolean; qTextWidth: (q: Question) => number; qOpen: (q: Question) => boolean; stepToggle: (s: Step) => boolean; stepOpen: (s: Step) => boolean; roomy: boolean; titleRows: number; bottomRows: number; qButtons: number[]; sButtons: number[]; qWidth: number; sWidth: number; qControlsRows: number; qLines: number[]; sLines: number[]; needQ: number; needS: number; atWork: number; revealOpen: boolean; stepControlsRows: (s: Step) => number; stepWidth: (s: Step) => number; stepSubjectWidth: (s: Step) => number }
 type ViewProjection = { bannerRows: BannerRow[]; qHead: number; sHead: number; qRows: number; sRows: number; qLast: number; sLast: number; qStart: number; qEnd: number; sStart: number; sEnd: number; qHidden: string; sHidden: string }
-export const project = (metrics: MetricProjection, viewport: ViewProjection, steps: Step[]) => {
-  const { stepControlsRows, stepWidth, stepSubjectWidth, ...values } = metrics
-  return { metrics: values, stepGeometry: steps.map(s => [stepControlsRows(s), stepWidth(s), stepSubjectWidth(s)]), viewport }
+export const project = (metrics: MetricProjection, viewport: ViewProjection, steps: Step[], questions: Question[]) => {
+  const { stepControlsRows, stepWidth, stepSubjectWidth, stepToggle, stepOpen, qToggle, qTextWidth, qOpen, ...values } = metrics
+  return {
+    metrics: values,
+    stepGeometry: steps.map(s => [stepControlsRows(s), stepWidth(s), stepSubjectWidth(s), stepToggle(s), stepOpen(s)]),
+    questionGeometry: questions.map(q => [qToggle(q), qTextWidth(q), qOpen(q)]),
+    viewport,
+  }
 }
 type Reader = (input: ViewportCaseInput) => ReturnType<typeof project>
 
@@ -34,11 +42,16 @@ const QUESTION_SHARE = 0.35
 const QUESTION_CHROME = 18
 // Columns between the items of a header or bar; a narrow pane wraps between items, never inside one.
 const HEADER_GAP = 2
+// A wide row's number cell: the label padded to at least three columns, a space, the rule, a gap.
+const NUMBER_EXTRA = 3
+const MIN_LABEL = 3
+// The fold control and its gap, after the text of a row that needs more than one line.
+const FOLD = 2
 
 const hidden = (above: number, below: number): string =>
   [above > 0 ? `↑${above}` : '', below > 0 ? `↓${below}` : ''].filter(Boolean).join(' ')
-export const originalViewport = (input: ViewportCaseInput) => {
-  const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf, qRing, sRing, at, openRows } = input
+export const referenceViewport = (input: ViewportCaseInput) => {
+  const { width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions, hasSteps, allLabel, doneLabel, questions, steps, opened, resultReveals, expanded, qEmpty, sEmpty, questionLabel, clockOf, qRing, sRing, at, openRows } = input
   const l = { questions: hasQuestions ? [true] : [], steps: hasSteps ? [true] : [] }
   let bannerRows = openRows
   const roomy = bodyRows >= 16
@@ -46,10 +59,16 @@ export const originalViewport = (input: ViewportCaseInput) => {
   const bottomRows = flowRows([...clearWidths, ...hints.map(hint => hint.text.length)], width, HEADER_GAP)
   const qButtons = l.questions.length > 0 ? [buttonWidth('q', allLabel), buttonWidth('a', doneLabel)] : []
   const sButtons = l.steps.length > 0 ? clearWidths : []
-  const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : QUESTION_CHROME))
-  // Status owns two cells, including the paused/hourglass glyphs, then a gap.
-  const sWidth = Math.max(1, width - rowIndent - 3)
+  const qLabelWidth = Math.max(MIN_LABEL, ...questions.map(q => questionLabel(q.id).length))
+  const sLabelWidth = Math.max(MIN_LABEL, `S${steps.length}`.length)
+  // A narrow pane draws the number and the fold control on the controls line instead.
+  const qWidth = Math.max(1, width - rowIndent - 2 - (compact ? 0 : qLabelWidth + NUMBER_EXTRA + QUESTION_CHROME))
+  // Status owns two cells, including the paused/hourglass glyphs, then a gap, then the number.
+  const sWidth = Math.max(1, width - rowIndent - 3 - (compact ? 0 : sLabelWidth + NUMBER_EXTRA))
   const qControlsRows = compact ? 1 : 0
+  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > 1
+  const qTextWidth = (q: Question) => Math.max(1, qWidth - (!compact && qToggle(q) ? FOLD : 0))
+  const qOpen = (q: Question) => expanded[`q:${q.id}`] === true
   const revealedText = (q: Question): string | undefined => {
     const side = opened[String(q.id)]
     if (side === 'q' && q.head.trim() !== '') return q.head
@@ -58,12 +77,19 @@ export const originalViewport = (input: ViewportCaseInput) => {
   }
   const qLines = questions.map(q => {
     const extra = revealedText(q)
-    return wrappedLines(`${questionLabel(q.id)}. ${q.head}`, qWidth) + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qWidth))
+    const head = qOpen(q) ? wrappedLines(q.head, qTextWidth(q)) : 1
+    return head + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qTextWidth(q)))
   })
-  const stepControlsRows = (s: Step) => compact && (hasClock(s) || s.status === 'completed') ? 1 : 0
-  const stepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
-  const stepSubjectWidth = (s: Step) => Math.max(1, stepWidth(s) - (!compact && s.status === 'completed' ? 7 : 0))
-  const sLines = steps.map((s, i) => wrappedLines(`S${i + 1}. ${s.subject}`, stepSubjectWidth(s)) + stepControlsRows(s) +
+  // A narrow step always has a controls line: its number lives there.
+  const stepControlsRows = (_s: Step) => compact ? 1 : 0
+  const clockColumns = (s: Step) => compact || !hasClock(s) ? 0 : clockOf(s).length + 1
+  const resultColumns = (s: Step) => !compact && s.status === 'completed' ? 7 : 0
+  const stepToggle = (s: Step) => wrappedLines(s.subject, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s))) > 1
+  const foldColumns = (s: Step) => !compact && stepToggle(s) ? FOLD : 0
+  const stepWidth = (s: Step) => Math.max(1, Math.max(1, sWidth - clockColumns(s)) - foldColumns(s))
+  const stepSubjectWidth = (s: Step) => Math.max(1, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s)) - foldColumns(s))
+  const stepOpen = (s: Step) => expanded[`s:${s.id}`] === true
+  const sLines = steps.map(s => (stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : 1) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
   const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)
@@ -118,7 +144,7 @@ export const originalViewport = (input: ViewportCaseInput) => {
   const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd } = fitted
   const [qHidden, sHidden] = [hidden(fitted.qStart, questions.length - fitted.qEnd), hidden(fitted.sStart, steps.length - fitted.sEnd)] as const
   const revealOpen = questions.some(q => revealedText(q) !== undefined)
-  return project({ roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth }, { bannerRows, qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden }, steps)
+  return project({ qLabelWidth, sLabelWidth, roomy, titleRows, bottomRows, qButtons, sButtons, qWidth, sWidth, qControlsRows, qLines, sLines, needQ, needS, atWork, revealOpen, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen }, { bannerRows, qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden }, steps, questions)
 }
 
 
@@ -144,12 +170,13 @@ const fixture = (width: number, bodyRows: number, questions: Question[] = [], st
     clearWidths: [steps.length > 0 ? buttonWidth('s', allLabel) : 0, buttonWidth('c', doneLabel)],
     hints: compact ? [{ text: '/track hide' }, { text: 'ctrl+x x close' }] : [{ text: '/track hides · ctrl+x x closes for good' }],
     hasQuestions: questions.length > 0, hasSteps: steps.length > 0, allLabel, doneLabel, questions, steps,
-    opened: {}, resultReveals: new Map(), qEmpty: '  None yet.', sEmpty: '  None yet.',
+    opened: {}, resultReveals: new Map(), expanded: {}, qEmpty: '  None yet.', sEmpty: '  None yet.',
     questionLabel: questionLabels(questions), clockOf: s => s.startedAt === undefined ? '' : clockText((s.endedAt ?? Math.max(120_000, s.startedAt)) - s.startedAt),
     qRing: countLabel(questions.filter(q => q.status === 'answered').length, questions.length),
     sRing: countLabel(steps.filter(s => s.status === 'completed').length, steps.length), at: { questions: null, steps: null }, openRows, ...extra }
 }
-const whole = fixture(40, 13, [], [step('a'.repeat(32)), step('b'.repeat(32)), step('c')])
+// The two long steps are unfolded, so they wrap as this literal needs.
+const whole = fixture(40, 13, [], [step('a'.repeat(32)), step('b'.repeat(32)), step('c')], { expanded: { [`s:${'a'.repeat(32)}`]: true, [`s:${'b'.repeat(32)}`]: true } })
 whole.openRows = paneBanner({ l: { v: 1, nextQuestionId: 1, prompts: [], questions: [], steps: whole.steps }, now: { isWorking: true, agentCalls: [], askCalls: [], background: [] }, questions: [], steps: whole.steps, phase: 0, isUnsaved: true, unsavedReason: 'disk', pendingCause: undefined, width: 40, questionLabel: whole.questionLabel }).openRows
 const reveal = fixture(80, 9, [question(1)], [step('one'), step('two')], { opened: { '1': 'q' } })
 const shortReveal = { ...reveal, bodyRows: 8 }
@@ -183,13 +210,14 @@ export const checkViewport = (reader: Reader): void => {
     cases.push(fixture(width, height), fixture(width, height, [], [], { hasQuestions: true, hasSteps: true, qEmpty: '  all cleared', sEmpty: '  all cleared' }))
     for (const at of [{ questions: null, steps: null }, { questions: 0, steps: 0 }, { questions: 999, steps: 999 }]) {
       cases.push(fixture(width, height, questions, steps, { at }), fixture(width, height, questions, steps, { at, opened: { '9': 'q', '30': 'a' }, resultReveals: new Map([['Done', 'result '.repeat(16)]]) }))
+      cases.push(fixture(width, height, questions, steps, { at, expanded: { 'q:20': true, 'q:30': true, [`s:${'Long subject '.repeat(9)}`]: true, [`s:${'界'.repeat(25)}`]: true } }))
     }
   }
   cases.push(fixture(80, 16, [question(1, { answerText: 'native answer', answerKey: 'native' })], steps, { opened: { '1': 'a' } }))
   for (const value of cases) {
     const before = snapshot(value)
     freeze(value)
-    assert.deepEqual(reader(value), originalViewport(value), `original513ef7b viewport parity width=${value.width} height=${value.bodyRows}`)
+    assert.deepEqual(reader(value), referenceViewport(value), `reference viewport parity width=${value.width} height=${value.bodyRows}`)
     assert.equal(snapshot(value), before, 'viewport leaves all input rows/maps/scroll positions unchanged')
   }
 }
