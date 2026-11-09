@@ -10,9 +10,9 @@ const commands = await import('../../hooks/question-commands')
 checkQuestionCommands(commands)
 const source = readFileSync(file, 'utf8')
 assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|Promise|async|EngineInterface|checksumOf|setTimeout|setInterval)\b|\$(?!\{)/, 'question commands accept explicit values, never native capabilities or clock/hash samplers')
-// TRACK-46 slice 6 (2026-11-09, Ohad's standing approval): the response capture code moved to
+// TRACK-46 slices 6-7 (2026-11-09, Ohad's standing approval): the response capture code moved to
 // prompt-flow.ts. Each native adapter file is parsed on its own, so a call's ancestors stay in its file.
-const NATIVE = ['register.tsx', 'prompt-flow.ts']
+const NATIVE = ['register.tsx', 'prompt-flow.ts', 'pane-actions.tsx']
 const nodes: ts.Node[] = []
 for (const file of NATIVE) {
   const native = readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')
