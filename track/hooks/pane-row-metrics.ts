@@ -17,6 +17,9 @@ type RowInput = {
 // The fold control: one cell and its gap after the row text, drawn only when the text is cut.
 export const TOGGLE_COLUMNS = 2
 
+// Ohad 2026-11-09: a folded row may take a second line; only text needing more gets the control.
+export const FOLDED_LINES = 2
+
 // A step's fold key follows its logical row: a new plan reuses plan:<n> ids with a new sourceId.
 export const stepFoldKey = (s: Step): string => `s:${s.sourceId ?? s.id}`
 
@@ -40,12 +43,12 @@ export const paneRowMetrics = (input: RowInput) => {
   // Status owns two cells, including the paused/hourglass glyphs, then a gap, then the number column.
   const sWidth = Math.max(1, width - rowIndent - 3 - (compact ? 0 : labelColumn(sLabelWidth)))
   const qControlsRows = compact ? 1 : 0
-  // A row folds to one line; the control that unfolds it shows only when the text needs more.
+  // A row folds to FOLDED_LINES; the control that unfolds it shows only when the text needs more.
   // A narrow pane draws the control on the controls line, so it costs no text width there.
-  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > 1
+  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > FOLDED_LINES
   const qTextWidth = (q: Question) => Math.max(1, qWidth - (qToggle(q) && !compact ? TOGGLE_COLUMNS : 0))
   const qOpen = (q: Question) => expanded[`q:${q.id}`] === true
-  const qHeadLines = (q: Question) => qOpen(q) ? wrappedLines(q.head, qTextWidth(q)) : 1
+  const qHeadLines = (q: Question) => Math.min(qOpen(q) ? Infinity : FOLDED_LINES, wrappedLines(q.head, qTextWidth(q)))
   const revealedText = (q: Question): string | undefined => {
     const side = opened[String(q.id)]
     if (side === 'q' && q.head.trim() !== '') return q.head
@@ -59,12 +62,12 @@ export const paneRowMetrics = (input: RowInput) => {
   const stepControlsRows = (_s: Step) => compact ? 1 : 0
   const fullStepWidth = (s: Step) => Math.max(1, sWidth - (compact || !hasClock(s) ? 0 : clockOf(s).length + 1))
   const fullSubjectWidth = (s: Step) => Math.max(1, fullStepWidth(s) - (!compact && s.status === 'completed' ? 7 : 0))
-  const stepToggle = (s: Step) => wrappedLines(s.subject, fullSubjectWidth(s)) > 1
+  const stepToggle = (s: Step) => wrappedLines(s.subject, fullSubjectWidth(s)) > FOLDED_LINES
   const toggleColumns = (s: Step) => stepToggle(s) && !compact ? TOGGLE_COLUMNS : 0
   const stepWidth = (s: Step) => Math.max(1, fullStepWidth(s) - toggleColumns(s))
   const stepSubjectWidth = (s: Step) => Math.max(1, fullSubjectWidth(s) - toggleColumns(s))
   const stepOpen = (s: Step) => expanded[stepFoldKey(s)] === true
-  const sHeadLines = (s: Step) => stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : 1
+  const sHeadLines = (s: Step) => Math.min(stepOpen(s) ? Infinity : FOLDED_LINES, wrappedLines(s.subject, stepSubjectWidth(s)))
   const sLines = steps.map(s => sHeadLines(s) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)

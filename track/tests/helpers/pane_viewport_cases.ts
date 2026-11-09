@@ -66,7 +66,9 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   // Status owns two cells, including the paused/hourglass glyphs, then a gap, then the number.
   const sWidth = Math.max(1, width - rowIndent - 3 - (compact ? 0 : sLabelWidth + NUMBER_EXTRA))
   const qControlsRows = compact ? 1 : 0
-  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > 1
+  // Ohad 2026-11-09: a folded row may take two lines; the control appears only past two.
+  const FOLDED = 2
+  const qToggle = (q: Question) => wrappedLines(q.head, qWidth) > FOLDED
   const qTextWidth = (q: Question) => Math.max(1, qWidth - (!compact && qToggle(q) ? FOLD : 0))
   const qOpen = (q: Question) => expanded[`q:${q.id}`] === true
   const revealedText = (q: Question): string | undefined => {
@@ -77,19 +79,19 @@ export const referenceViewport = (input: ViewportCaseInput) => {
   }
   const qLines = questions.map(q => {
     const extra = revealedText(q)
-    const head = qOpen(q) ? wrappedLines(q.head, qTextWidth(q)) : 1
+    const head = qOpen(q) ? wrappedLines(q.head, qTextWidth(q)) : Math.min(FOLDED, wrappedLines(q.head, qTextWidth(q)))
     return head + qControlsRows + (extra === undefined ? 0 : wrappedLines(extra, qTextWidth(q)))
   })
   // A narrow step always has a controls line: its number lives there.
   const stepControlsRows = (_s: Step) => compact ? 1 : 0
   const clockColumns = (s: Step) => compact || !hasClock(s) ? 0 : clockOf(s).length + 1
   const resultColumns = (s: Step) => !compact && s.status === 'completed' ? 7 : 0
-  const stepToggle = (s: Step) => wrappedLines(s.subject, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s))) > 1
+  const stepToggle = (s: Step) => wrappedLines(s.subject, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s))) > FOLDED
   const foldColumns = (s: Step) => !compact && stepToggle(s) ? FOLD : 0
   const stepWidth = (s: Step) => Math.max(1, Math.max(1, sWidth - clockColumns(s)) - foldColumns(s))
   const stepSubjectWidth = (s: Step) => Math.max(1, Math.max(1, Math.max(1, sWidth - clockColumns(s)) - resultColumns(s)) - foldColumns(s))
   const stepOpen = (s: Step) => expanded[`s:${s.sourceId ?? s.id}`] === true
-  const sLines = steps.map(s => (stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : 1) + stepControlsRows(s) +
+  const sLines = steps.map(s => (stepOpen(s) ? wrappedLines(s.subject, stepSubjectWidth(s)) : Math.min(FOLDED, wrappedLines(s.subject, stepSubjectWidth(s)))) + stepControlsRows(s) +
     (resultReveals.has(s.id) ? wrappedLines(resultReveals.get(s.id)!, stepWidth(s)) : 0))
   const needQ = questions.length > 0 ? qLines.reduce((a, b) => a + b, 0) : wrappedLines(qEmpty, width)
   const needS = steps.length > 0 ? sLines.reduce((a, b) => a + b, 0) : wrappedLines(sEmpty, width)

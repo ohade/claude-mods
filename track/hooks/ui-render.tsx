@@ -7,7 +7,7 @@ import { hasClock, runningClocks, isLifecycleNote, STEP_STATUSES } from './ledge
 import { RESULT_CHARS, truncate } from './ledger-text'
 import { wrappedLines, fitLines } from './terminal-text'
 import { clampTo, clockText, questionLabels, buttonWidth } from './pane-layout'
-import { labelCell, paneRowMetrics, stepFoldKey } from './pane-row-metrics'
+import { FOLDED_LINES, labelCell, paneRowMetrics, stepFoldKey } from './pane-row-metrics'
 import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
 import { paneRootView, paneItem } from './pane-root-view'
@@ -595,7 +595,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
             ? { dimColor: true, onPress: () => undefined }
             : { variant: answered ? 'primary' : undefined, hotkey: ready ? hotkey : undefined, onPress: () => toggleReveal(q.id, 'a', index) }
         const headBudget = Math.max(1, qRows - qControlsRows)
-        const headShown = fitLines(q.head, qTextWidth(q), qOpen(q) ? headBudget : 1)
+        const headShown = fitLines(q.head, qTextWidth(q), qOpen(q) ? headBudget : Math.min(FOLDED_LINES, headBudget))
         const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
         // A short region still draws one cut line. An empty press is not an answer.
         const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - wrappedLines(headShown, qTextWidth(q)))
@@ -614,7 +614,7 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
         const index = sStart + shownAt
         const lifecycle = s.status === 'paused' && s.note !== undefined && isLifecycleNote(s.note) ? s.note : undefined
         const resultRaw = resultReveals.get(s.id)
-        const headShown = fitLines(s.subject, stepSubjectWidth(s), stepOpen(s) ? Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1)) : 1)
+        const headShown = fitLines(s.subject, stepSubjectWidth(s), Math.min(stepOpen(s) ? Infinity : FOLDED_LINES, Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1))))
         const resultShown = resultRaw === undefined ? undefined : fitLines(resultRaw, stepWidth(s), Math.max(1, sRows - stepControlsRows(s) - wrappedLines(headShown, stepSubjectWidth(s))))
         // The follow-up note stays here: the pure view's source check reserves the word for state writes.
         const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
