@@ -20,7 +20,7 @@ if (diagnostics.length > 0) {
 // TRACK-46 (Ohad, 2026-11-09): the native adapter is this named set of files, which take the
 // engine handle or hold engine atoms. Every other module stays pure policy; add a file here only
 // with the reviewed move of native code into it.
-const NATIVE_ADAPTER = new Set(['hooks/register.tsx', 'hooks/track-state.ts', 'hooks/writer-lock.ts', 'hooks/ledger-store.ts', 'hooks/session-owner.ts', 'hooks/turn-guidance.ts', 'hooks/prompt-flow.ts'])
+const NATIVE_ADAPTER = new Set(['hooks/register.tsx', 'hooks/track-state.ts', 'hooks/writer-lock.ts', 'hooks/ledger-store.ts', 'hooks/session-owner.ts', 'hooks/turn-guidance.ts', 'hooks/prompt-flow.ts', 'hooks/pane-actions.tsx'])
 const sdkImports: string[] = []
 for (const file of compiler.fileNames.filter(name => !name.endsWith('.d.ts'))) {
   if (NATIVE_ADAPTER.has(relative(root, file))) continue
