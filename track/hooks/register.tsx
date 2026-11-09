@@ -2243,6 +2243,47 @@ const clearQuestions = ($: EngineInterface): Promise<void> => pressOwned($, asyn
 // ledger write, gate and save, so a press still running when another session is selected stops
 // instead of writing into that session. An identity outage acts on memory, as before, fenced to
 // the memory owner and the ownership epoch it read (Codex review of 2a0ecb2).
+// TRACK-46 A1/C1 (iii): the marker capture after its stored reply, fenced by the capture's token.
+const captureResponse = async ($: EngineInterface, text: string, requestId: string, observed: { turnId: string; order: number }, token: OwnerToken): Promise<void> => {
+  const current = await read($, turn)
+  if (current.currentId !== observed.turnId) return
+  assertOwner(token)
+  const shown = visibleSteps((await read($, ledger)).steps)
+  const arrows = waitingArrowIds(text, new Set(shown.map(step => step.id)), shown)
+  await update($, turn, cur => {
+    assertOwner(token)
+    if (cur.currentId !== observed.turnId || cur.lastText?.order !== observed.order) return cur
+    const fresh = cur.freshness?.turnId === observed.turnId ? cur.freshness : freshTurn(observed.turnId)
+    return { ...cur, freshness: { ...fresh, response: { turn_id: observed.turnId, request_id: requestId, arrow_ids: arrows } } }
+  })
+  await publishGate($, token)
+  const blocks = answerBlocks(text)
+  if (blocks.length === 0) return
+  const completed = await Promise.all(blocks.map(async block => ({ ...block, hash: await checksumOf(block.text) })))
+  let changed = false
+  await updateLedger($, cur => {
+    assertOwner(token, cur)
+    changed = false
+    const questions = cur.questions.map(q => {
+      const nativeKey = q.answerRequestId !== undefined ? answerBlockKey(rowKey(q.answerRequestId), q.id) : undefined
+      const block = markerForQuestion(q, completed, observed.turnId, observed.order, nativeKey)
+      if (block === undefined) return q
+      changed = true
+      return captureMarkerAnswer(q, { block, now: Date.now(), requestId, answerKey: answerBlockKey(rowKey(requestId), block.id), turnId: observed.turnId, order: observed.order })
+    })
+    return changed ? { ...cur, questions } : cur
+  })
+  if (changed) {
+    await publishGate($, token)
+    await saveLedger($, token)
+  }
+}
+
+// The owner Track's memory holds now, fenced to an ownership epoch read before the caller's
+// first await: a later session switch makes every write checked against it refuse.
+const memoryToken = async ($: EngineInterface, epoch: number): Promise<OwnerToken> =>
+  ({ owner: (await read($, ledger)).session_id ?? (await read($, durability)).memorySession ?? undefined, epoch })
+
 const pressOwned = async ($: EngineInterface, press: (token: OwnerToken) => Promise<void>): Promise<void> => {
   const epoch = ownership.epoch
   const owned = await ensureOwner($)
@@ -2250,7 +2291,7 @@ const pressOwned = async ($: EngineInterface, press: (token: OwnerToken) => Prom
     $.ui.toast(`track: ${owned.reason}`)
     return
   }
-  const token = owned.ok ? owned.token : { owner: (await read($, ledger)).session_id ?? (await read($, durability)).memorySession ?? undefined, epoch }
+  const token = owned.ok ? owned.token : await memoryToken($, epoch)
   try { await press(token) }
   catch (error) {
     if (!(error instanceof OwnerChanged)) throw error
@@ -3005,39 +3046,17 @@ export const register: Register = on => {
 
   // A completed marker pair is the model's explicit answer identification. Capture
   // only a stored main-model response, never peer hand-backs, tool output or progress.
+  // TRACK-46 A1/C1 (iii): the capture belongs to the session whose memory saw the reply. A
+  // session switch while it runs stops it: question numbers repeat across sessions.
   on('session.append', { door: 'response' }, async ($, e, next) => {
+    const epoch = ownership.epoch
     const observed = (await read($, turn)).lastText
     const stored = await next(e)
     if (stored.deny !== undefined || e.agentId !== undefined || e.origin.kind !== 'model' || stored.message.type !== 'assistant' || observed?.requestId !== e.uuid || observed.turnId === null || observed.order === undefined) return stored
-    const text = textOf(stored.message.content)
-    const current = await read($, turn)
-    if (current.currentId !== observed.turnId) return stored
-    const shown = visibleSteps((await read($, ledger)).steps)
-    const arrows = waitingArrowIds(text, new Set(shown.map(step => step.id)), shown)
-    await update($, turn, cur => {
-      if (cur.currentId !== observed.turnId || cur.lastText?.order !== observed.order) return cur
-      const fresh = cur.freshness?.turnId === observed.turnId ? cur.freshness : freshTurn(observed.turnId!)
-      return { ...cur, freshness: { ...fresh, response: { turn_id: observed.turnId!, request_id: stored.uuid, arrow_ids: arrows } } }
-    })
-    await publishGate($)
-    const blocks = answerBlocks(text)
-    if (blocks.length === 0) return stored
-    const completed = await Promise.all(blocks.map(async block => ({ ...block, hash: await checksumOf(block.text) })))
-    let changed = false
-    await updateLedger($, cur => {
-      changed = false
-      const questions = cur.questions.map(q => {
-        const nativeKey = q.answerRequestId !== undefined ? answerBlockKey(rowKey(q.answerRequestId), q.id) : undefined
-        const block = markerForQuestion(q, completed, observed.turnId!, observed.order!, nativeKey)
-        if (block === undefined) return q
-        changed = true
-        return captureMarkerAnswer(q, { block, now: Date.now(), requestId: stored.uuid, answerKey: answerBlockKey(rowKey(stored.uuid), block.id), turnId: observed.turnId!, order: observed.order! })
-      })
-      return changed ? { ...cur, questions } : cur
-    })
-    if (changed) {
-      await publishGate($)
-      await saveLedger($)
+    try { await captureResponse($, textOf(stored.message.content), stored.uuid, { turnId: observed.turnId, order: observed.order }, await memoryToken($, epoch)) }
+    catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      $.ui.log('track: answer capture stopped: session owner changed during the reply.', { to: 'debug' })
     }
     return stored
   })

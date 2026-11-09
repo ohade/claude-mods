@@ -1872,3 +1872,57 @@ test('FIXTURE TRACK46 owner switch: a held B clear-all arm released after a C sw
   expect(fixture.memory.value.session_id).toBe(C)
   expect(fixture.memory.value.steps.map(s => s.subject), "one C press only arms; C's unfinished step stays").toContain('C unfinished step')
 })
+
+// TRACK-46 A1/C1 (iii): a B reply's answer markers are captured after the current-turn check.
+// If C is selected while that capture is held, C's Q2 shares the number but must not take B's
+// answer. The hold is the capture's freshness write to the turn atom, after its turn check. (A
+// held gate publish cannot be used: C's selection publishes through the same queue.)
+const B_TURN = 'B-live-turn'
+const markerReply = (uuid: string) => ({ door: 'response', uuid, origin: { kind: 'model', model: 'fixture' },
+  message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'Reply.\n<!-- A2:start -->\nB marker answer.\n<!-- A2:end -->' }] } })
+const captureFixture = async ($: Engine, on: On, uuid: string | undefined) => {
+  const held = latch()
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const toB = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
+  expect(toB.deny).toBeUndefined()
+  fixture.turn.value = { ...fixture.turn.value, currentId: B_TURN }
+  if (uuid !== undefined) fixture.controls.stateSetHold = { key: 'turn', latch: held,
+    matches: value => (value as Turn).freshness?.response?.request_id === uuid }
+  return { fixture, held }
+}
+
+test('FIXTURE TRACK46 owner switch: a B marker capture held across a C switch never answers C Q2', async ($, on) => {
+  const { fixture, held } = await captureFixture($, on, 'b-marker-reply')
+  const reply = outcome($.session.append(markerReply('b-marker-reply') as never))
+  try {
+    const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), reply.then(() => 'returned')]), 'B capture turn write')
+    if (phase !== 'held') throw new Error('INVALID FIXTURE: the B reply wrote no freshness to hold')
+    if (fixture.memory.value.questions.find(q => q.id === 2)?.status !== 'open') throw new Error('INVALID FIXTURE: B Q2 was answered before the hold')
+    fixture.controls.session = C
+    const toC = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'C selection while B capture held')
+    if (toC.deny !== undefined || toC.isError === true) throw new Error(`INVALID FIXTURE: C selection failed: ${JSON.stringify(toC)}`)
+    held.release()
+    await fixtureWait(reply, 'B reply completion')
+    await fixture.clock.settle()
+    expect(fixture.memory.value.session_id, 'C stays selected').toBe(C)
+    const q2 = fixture.memory.value.questions.find(q => q.id === 2)
+    expect({ head: q2?.head, status: q2?.status, answerText: q2?.answerText })
+      .toEqual({ head: 'C open question', status: 'open', answerText: undefined })
+    expect({ a: await history(fixture, A, fixture.a), c: await history(fixture, C, fixture.c) })
+      .toEqual({ a: expectedHistory(fixture.a), c: expectedHistory(fixture.c) })
+  } finally {
+    held.release()
+    await fixtureWait(reply, 'B reply cleanup')
+  }
+})
+
+test('FIXTURE TRACK46 owner switch: a B marker reply with no switch answers B Q2', async ($, on) => {
+  const { fixture } = await captureFixture($, on, undefined)
+  await $.session.append(markerReply('b-marker-reply') as never)
+  await fixture.clock.settle()
+  const q2 = fixture.memory.value.questions.find(q => q.id === 2)
+  expect({ session: fixture.memory.value.session_id, head: q2?.head, status: q2?.status, answerText: q2?.answerText })
+    .toEqual({ session: B, head: 'B open question', status: 'answered', answerText: 'B marker answer.' })
+})
