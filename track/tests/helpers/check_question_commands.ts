@@ -10,12 +10,17 @@ const commands = await import('../../hooks/question-commands')
 checkQuestionCommands(commands)
 const source = readFileSync(file, 'utf8')
 assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|Promise|async|EngineInterface|checksumOf|setTimeout|setInterval)\b|\$(?!\{)/, 'question commands accept explicit values, never native capabilities or clock/hash samplers')
-const native = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
-assert.match(native, /from '\.\/question-commands'/, 'native imports the actual component')
-const tree = ts.createSourceFile('register.tsx', native, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+// TRACK-46 slice 6 (2026-11-09, Ohad's standing approval): the response capture code moved to
+// prompt-flow.ts. Each native adapter file is parsed on its own, so a call's ancestors stay in its file.
+const NATIVE = ['register.tsx', 'prompt-flow.ts']
 const nodes: ts.Node[] = []
-const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
-visit(tree)
+for (const file of NATIVE) {
+  const native = readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')
+  assert.match(native, /from '\.\/question-commands'/, `${file} imports the actual component`)
+  const tree = ts.createSourceFile(file, native, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+  const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
+  visit(tree)
+}
 const callName = (node: ts.Node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) ? node.expression.text : undefined
 for (const name of ['questionAdmission', 'questionSource', 'mintQuestion', 'withdrawQuestion', 'clearQuestionRows', 'hideAnsweredQuestions', 'mayMarkAnswer', 'markQuestion', 'bindAnswerResponse', 'markerForQuestion', 'captureMarkerAnswer']) {
   const calls = nodes.filter(node => callName(node) === name)
