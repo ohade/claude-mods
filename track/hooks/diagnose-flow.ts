@@ -19,7 +19,7 @@ export type DiagnosePorts = {
   readActivity: () => Promise<Activity>
   readPending: () => Promise<Pending>
   observedDisk: () => Promise<string | undefined>
-  claimStats: (session: string, turnId: string | null, heldInputs: number[]) => Promise<Array<{ name: string; kind: string; present: boolean }>>
+  claimStats: (session: string, turnId: string | null, heldInputs: number[], epoch?: string) => Promise<Array<{ name: string; kind: string; present: boolean }>>
   cachedGate: () => GateProjection | undefined
   events: () => ReadonlyArray<{ owner: string | undefined; entry: RingEntry }>
   identity: LoadedIdentity
@@ -44,7 +44,7 @@ export const diagnose = async (ports: DiagnosePorts, e: { agentId?: string }): P
   for (const step of visible) byStatus[step.status] = (byStatus[step.status] ?? 0) + 1
   const heldInputs = p.inputs.filter(input => input.held === true).map(input => input.id)
   let claims: Array<{ name: string; kind: string; present: boolean }> | null
-  try { claims = await ports.claimStats(id, t.currentId, heldInputs) } catch { claims = null }
+  try { claims = await ports.claimStats(id, t.currentId, heldInputs, p.epoch) } catch { claims = null }
   const cached = ports.cachedGate()
   const bundle: Bundle = {
     v: 1,

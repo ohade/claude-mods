@@ -958,7 +958,7 @@ const ensureWriter = async ($: EngineInterface, session: string): Promise<void> 
 
 // `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
 // any step, so the helper reports unknown ownership instead of a stale step.
-type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
+type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string }>; inputs_complete: boolean; input_epoch?: string; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
 type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 const GATE_SNAPSHOT_BYTES = 16 * 1024
 const FRESHNESS_KINDS: FreshnessKind[] = ['premature_completion', 'stale_in_progress', 'finished_delegation', 'missing_waiting_request', 'untracked_edit']
@@ -995,6 +995,7 @@ const publishGate = async ($: EngineInterface, token?: OwnerToken): Promise<Gate
       // 50 minimal rows under 100 bytes each reserve about 5 KB of the 16 KB snapshot budget.
       inputs: inputs.map(i => ({ id: i.id, reason: minimalInputReason(i, TRACK_QUESTION) })),
       inputs_complete: inputs.length === uncovered.length,
+      ...(p.epoch !== undefined && { input_epoch: p.epoch }),
       candidates: freshnessCandidates(t, l, a), attributed_task_ids: [...new Set([...Object.keys(a.owners ?? {}), ...(a.launchOwners ?? []).map(row => row.task)])], response: fresh?.response, held: fresh?.held ?? [],
       // The command Stop hook copies this into its task inventory: a launch numbered above it is newer.
       launch_seq: a.launchSeq ?? 0 }
@@ -2565,7 +2566,7 @@ const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
     if (owner !== id) {
       await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
       await update($, activity, () => IDLE)
-      await update($, pending, p => ({ inputs: [], nextId: p.nextId }))
+      await update($, pending, p => ({ ...p, inputs: [] }))
     }
     await resumeOwned($, id)
   })
@@ -2613,16 +2614,18 @@ const INPUT_CLAIM_KIND = 'uncovered_input'
 // stop-gate.py claim_name: sha256 of the compact JSON [session, turn, kind].
 const claimName = (session: string, turnId: string, kind: string): Promise<string> => sha256Hex(JSON.stringify([session, turnId, kind]))
 
+// The helper's claim turn for a pending input; stop-gate.py builds the same string.
+const inputClaimTurn = (id: number, epoch: string | undefined): string => epoch === undefined ? `input:${id}` : `input:${epoch}:${id}`
 // D9: stat only the claim names this session and turn can own; contents are never read and the
 // directory is never listed, so no other session is enumerated.
-const claimStats = async ($: EngineInterface, session: string, turnId: string | null, heldInputs: number[]): Promise<Array<{ name: string; kind: string; present: boolean }>> => {
+const claimStats = async ($: EngineInterface, session: string, turnId: string | null, heldInputs: number[], epoch?: string): Promise<Array<{ name: string; kind: string; present: boolean }>> => {
   // CLAUDE_CONFIG_DIR wins, as in configDir; HOME is asked only when it is unset.
   let config: string | undefined
   try { config = (await $.env.get('CLAUDE_CONFIG_DIR')) || await configDir($) } catch { config = undefined }
   if (!config?.startsWith('/')) return []
   const wanted: Array<[string, string]> = [
     ...(typeof turnId === 'string' && turnId !== '' ? FRESHNESS_KINDS.map(kind => [turnId, kind] as [string, string]) : []),
-    ...heldInputs.slice(0, MAX_INPUTS).map(id => [`input:${id}`, INPUT_CLAIM_KIND] as [string, string]),
+    ...heldInputs.slice(0, MAX_INPUTS).map(id => [inputClaimTurn(id, epoch), INPUT_CLAIM_KIND] as [string, string]),
   ]
   const stats: Array<{ name: string; kind: string; present: boolean }> = []
   for (const [claimTurn, kind] of wanted) {
@@ -2653,7 +2656,7 @@ const diagnosePorts = ($: EngineInterface): DiagnosePorts => ({
   readActivity: () => read($, activity),
   readPending: () => read($, pending),
   observedDisk: () => observedDisk($),
-  claimStats: (session, turnId, heldInputs) => claimStats($, session, turnId, heldInputs),
+  claimStats: (session, turnId, heldInputs, epoch) => claimStats($, session, turnId, heldInputs, epoch),
   cachedGate: () => gateCache.last,
   events: () => eventRing,
   identity: LOADED_IDENTITY,
@@ -3087,7 +3090,8 @@ export const register: Register = on => {
           const admission = admitInput(p, { head, excerpt, textHash, turnId, wording, prompts })
           added = admission.added
           full = admission.full
-          return admission.next
+          // Permanent helper claims are named per epoch, so a restarted runtime's input 1 is new.
+          return admission.added === undefined ? admission.next : { ...admission.next, epoch: p.epoch ?? crypto.randomUUID() }
         })
       } catch (error) {
         if (!(error instanceof OwnerChanged)) throw error

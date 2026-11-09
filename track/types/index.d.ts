@@ -183,7 +183,8 @@ export type Turn = {
 // what a source_request_id must name. `covered`: the kind of accepted row that covered it, and
 // `questionId` the question row, which covers no other input.
 export type PendingInput = { id: number; head: string; excerpt: string; textHash: string; rowKey?: string; turnId: string | null; covered?: 'question' | 'steps'; questionId?: number; held?: true; wording?: false; label?: 'question' | 'not_question' | 'unknown' }
-export type Pending = { inputs: PendingInput[]; nextId: number }
+// epoch: one runtime's input numbering (TRACK-46 S2); a new process restarts nextId at 1.
+export type Pending = { inputs: PendingInput[]; nextId: number; epoch?: string }
 
 // The first shown row of each pane region, or null to follow the news.
 export type ScrollAt = { questions: number | null; steps: number | null }

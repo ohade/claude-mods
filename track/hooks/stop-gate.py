@@ -255,10 +255,18 @@ def uncovered_decision(snapshot):
                and isinstance(row.get("reason"), str) and row["reason"].strip() for row in rows):
         unavailable("pending input repair receipt")
         return {}
+    # TRACK-46 S2: a new process restarts input ids at 1 while claims are
+    # permanent, so the module names its runtime epoch. Absent means a legacy
+    # publisher, whose claims keep their original names.
+    epoch = snapshot.get("input_epoch")
+    if epoch is not None and not (isinstance(epoch, str) and epoch.strip() and len(epoch) <= 128):
+        unavailable("pending input epoch")
+        return {}
+    prefix = "input:" if epoch is None else f"input:{epoch}:"
     reasons = []
     try:
         for row in rows:
-            if claim_once(session, f'input:{row["id"]}', INPUT_KIND):
+            if claim_once(session, f'{prefix}{row["id"]}', INPUT_KIND):
                 reasons.append(row["reason"])
     except (OSError, ValueError):
         unavailable("shared pending input claim")

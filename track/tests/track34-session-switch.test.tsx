@@ -243,7 +243,7 @@ const expectedStillA = (fixture: Fixture) => ({ memory: fixture.a.rows,
   a: expectedHistory(fixture.a), b: expectedHistory(fixture.b), c: expectedHistory(fixture.c), saved: fixture.saved,
   archives: [], ownership: { memorySession: A, baseline: baseline(fixture.a, A) }, starts: [A] })
 const pendingQuestion = async (text: string) => ({ inputs: [{ id: expect.any(Number), head: text,
-  excerpt: text, textHash: await hash(JSON.stringify(text)), turnId: null }], nextId: expect.any(Number) })
+  excerpt: text, textHash: await hash(JSON.stringify(text)), turnId: null }], nextId: expect.any(Number), epoch: expect.any(String) })
 const submit = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
 const markB = ($: Engine) => $.tool.call({ tool: 'mcp__track__mark_step', tool_use_id: B_MARK,
   id: 'plan:1', status: 'completed', result_text: B_RESULT } as never)
