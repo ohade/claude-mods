@@ -2572,6 +2572,12 @@ const switchOwner = ($: EngineInterface, id: string): Promise<void> => {
       await update($, turn, () => ({ currentId: null, gatedTurnId: null }))
       await update($, activity, () => IDLE)
       await update($, pending, p => ({ ...p, inputs: [] }))
+      // TRACK-46 A4: a classic resume runs no session.start, so the drawn-row cache would still
+      // name the old session; its rows are never this session's jump targets.
+      if (renderSaved.session !== id) {
+        renderInstances.clear()
+        renderSaved.session = id
+      }
     }
     await resumeOwned($, id)
   })
