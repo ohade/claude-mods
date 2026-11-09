@@ -95,31 +95,52 @@ const baseline = spawnSync('git', ['show', '95249cfaca36afe9e9ca3b72ffe4f6dad20b
 assert.equal(baseline.status, 0, 'repaired baseline exists')
 assert.equal(createHash('sha256').update(baseline.stdout).digest('hex'), '715775a1b94fa1e0443bfdb34726a9a47405905440fdc1e762a1436701e81889')
 const printer = ts.createPrinter({ removeComments: true })
-const effectWiring = (file: ts.SourceFile, name: string): string => {
-  const declarations = all(file).filter(ts.isVariableDeclaration).filter(node => node.name.getText(file) === name)
-  assert.equal(declarations.length, 1, `one native ${name} owner`)
-  const body = declarations[0]!.initializer!
-  const writers = all(body).filter(node => callName(node) === 'updateLedger') as ts.CallExpression[]
+// Prints one press body with its single ledger writer's callback reduced to `cur => cur`.
+const blockWiring = (file: ts.SourceFile, name: string, block: ts.Node): string => {
+  const writers = all(block).filter(node => callName(node) === 'updateLedger') as ts.CallExpression[]
   assert.equal(writers.length, 1, `${name} retains one native writer`)
   const callback = writers[0]!.arguments[1]!
-  const start = body.getStart(file)
-  const text = body.getText(file)
+  const start = block.getStart(file)
+  const text = block.getText(file)
   const normalized = text.slice(0, callback.getStart(file) - start) + 'cur => cur' + text.slice(callback.end - start)
-  const unit = parse(`const effect = ${normalized}`)
-  return printer.printFile(unit)
+  return printer.printFile(parse(`const effect = async () => ${normalized}`))
 }
-// TRACK-46 A1/C1 (Ohad's fix list, Codex-accepted 742ea67): these pane presses first admit the
-// current owner. The prelude is required here; every other effect is compared to the baseline.
-const ADMISSION = 'if (!(await paneOwner($))) return'
-const admitted = new Set(['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps'])
-const withoutAdmission = (file: ts.SourceFile, name: string): ts.SourceFile => {
-  if (!admitted.has(name)) return file
-  const text = file.getFullText()
-  const declaration = all(file).filter(ts.isVariableDeclaration).find(node => node.name.getText(file) === name)!
-  const body = declaration.initializer!.getText(file)
-  assert.equal(body.split(ADMISSION).length - 1, 1, `${name}: admits the current owner exactly once`)
-  assert.ok(/=>\s*\{\s*if \(!\(await paneOwner\(\$\)\)\) return/.test(body), `${name}: owner admission comes before every effect`)
-  return parse(text.replace(body, body.replace(ADMISSION, '')))
+const initializer = (file: ts.SourceFile, name: string): ts.ArrowFunction => {
+  const declarations = all(file).filter(ts.isVariableDeclaration).filter(node => node.name.getText(file) === name)
+  assert.equal(declarations.length, 1, `one native ${name} owner`)
+  const init = declarations[0]!.initializer!
+  assert.ok(ts.isArrowFunction(init), `${name} is an arrow function`)
+  return init
 }
-for (const name of ['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps']) assert.equal(effectWiring(withoutAdmission(current, name), name), effectWiring(parse(baseline.stdout), name), `${name}: all native effects, lifetimes and ordering remain unchanged`)
-console.log('bulk clear: literal cases, same-reference arming, 4 wrong implementations rejected, frozen parity and native retry/effect placement pass (SOURCE/FIXTURE)')
+// TRACK-46 A1/C1 (Ohad's fix list; 742ea67 admission, then the owner token as a write fence):
+// every pane press runs inside pressOwned, which admits the current owner first. Its token
+// fences the ledger write as the callback's first statement and goes to every gate and save.
+// With the token arguments removed, every other effect is compared to the 95249cf baseline.
+const FENCED = new Set(['publishGate', 'saveLedger'])
+const admittedBody = (file: ts.SourceFile, name: string): string => {
+  const outer = initializer(file, name)
+  const call = outer.body
+  assert.ok(ts.isCallExpression(call) && callName(call) === 'pressOwned' && call.arguments[0]?.getText(file) === '$', `${name}: every effect runs inside pressOwned($, ...)`)
+  const press = call.arguments[1]
+  assert.ok(press !== undefined && ts.isArrowFunction(press) && press.parameters.length === 1 && press.parameters[0]!.name.getText(file) === 'token', `${name}: the press receives the owner token`)
+  const fenced = all(press.body).filter(node => FENCED.has(callName(node) ?? '')) as ts.CallExpression[]
+  assert.ok(fenced.length > 0, `${name}: the press publishes or saves`)
+  for (const one of fenced) assert.ok(one.arguments.length === 2 && one.arguments[1]!.getText(file) === 'token', `${name}: ${callName(one)} carries the owner token`)
+  const writer = (all(press.body).filter(node => callName(node) === 'updateLedger') as ts.CallExpression[])[0]!
+  const callback = writer.arguments[1]!
+  assert.ok(ts.isArrowFunction(callback) && ts.isBlock(callback.body), `${name}: the ledger writer's callback is a block`)
+  const parameter = callback.parameters[0]!.name.getText(file)
+  assert.equal(callback.body.statements[0]?.getText(file), `assertOwner(token, ${parameter})`, `${name}: the ledger write is fenced before its decision`)
+  const start = press.body.getStart(file)
+  let text = press.body.getText(file)
+  for (const one of [...fenced].sort((x, y) => y.getStart(file) - x.getStart(file))) {
+    const comma = one.arguments[0]!.end - start
+    text = text.slice(0, comma) + text.slice(one.arguments[1]!.end - start)
+  }
+  const unit = parse(`const effect = async () => ${text}`)
+  return blockWiring(unit, name, (initializer(unit, 'effect').body))
+}
+const baselineBody = (file: ts.SourceFile, name: string): string => blockWiring(file, name, initializer(file, name).body)
+const baselineFile = parse(baseline.stdout)
+for (const name of ['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps']) assert.equal(admittedBody(current, name), baselineBody(baselineFile, name), `${name}: all native effects, lifetimes and ordering remain unchanged`)
+console.log('bulk clear: literal cases, same-reference arming, 4 wrong implementations rejected, frozen parity, owner-token fencing and native retry/effect placement pass (SOURCE/FIXTURE)')

@@ -88,6 +88,8 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
     taskHold: undefined as Latch | undefined,
     todoHold: undefined as Latch | undefined, updateHold: undefined as Latch | undefined,
     workHold: undefined as Latch | undefined, updateSuccess: true,
+    // Holds the first ledger write it matches, then clears itself.
+    ledgerSetHold: undefined as { matches: (value: Ledger) => boolean; latch: Latch } | undefined,
     modelReply: async (_text: string): Promise<'question' | 'not_question'> => 'not_question' }
   const lease: { leaseFailure?: string; refuseSet?: (key: string, value: unknown) => string | undefined } = {}
   const identityReads: string[] = []
@@ -108,6 +110,12 @@ const setup = async (on: On, bStoreWrites?: Array<{ key: string; value: unknown 
     if (e.plugin === 'track' && e.key === 'ledger') {
       const value = e.value as Ledger
       if (value.steps.some(step => step.resultText === B_RESULT)) mutationAttempts.push(structuredClone(value))
+      const hold = controls.ledgerSetHold
+      if (hold?.matches(value) === true) {
+        controls.ledgerSetHold = undefined
+        hold.latch.enter()
+        return hold.latch.released.then(() => next(e))
+      }
     }
     return next(e)
   })
@@ -1741,4 +1749,38 @@ test('FIXTURE TRACK46 owner switch: a B question withdraw drawn after B is selec
   expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
   expect({ withdrawn: fixture.memory.value.withdrawn, open: fixture.memory.value.questions.some(q => q.id === 2) })
     .toEqual({ withdrawn: [{ id: 2, head: 'B open question', session_id: B }], open: false })
+})
+
+// TRACK-46 A1/C1 (ii): a pane press admitted for B whose ledger write is still in flight when C
+// is selected must not change C. The held B write loses its compare-and-set to C's load; its
+// retry must refuse instead of clearing C's completed step or saving into C. The hold sits in
+// the fixture's ledger-write observer, which runs before the atom provider.
+test('FIXTURE TRACK46 owner switch: a B clear press overlapping a C switch never changes C', async ($, on) => {
+  const held = latch()
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const toB = await $.tool.call({ tool: 'mcp__track__lookup_rows' } as never)
+  expect(toB.deny).toBeUndefined()
+  const ui = await $.ui.mount(pane('dock')) as unknown as PaneUi
+  fixture.controls.ledgerSetHold = { latch: held,
+    matches: value => value.steps.some(s => s.subject === 'B saved step' && s.cleared === true) }
+  const press = outcome(ui.press({ key: 'clear-completed' }))
+  try {
+    const phase = await fixtureWait(Promise.race([held.entered.then(() => 'held'), press.then(() => 'returned')]), 'B clear write')
+    if (phase !== 'held') throw new Error('INVALID FIXTURE: the B clear press wrote nothing to hold')
+    fixture.controls.session = C
+    const toC = await fixtureWait($.tool.call({ tool: 'mcp__track__lookup_rows' } as never), 'C selection while B write held')
+    if (toC.deny !== undefined || toC.isError === true) throw new Error(`INVALID FIXTURE: C selection failed: ${JSON.stringify(toC)}`)
+    held.release()
+    await fixtureWait(press, 'B clear press completion')
+    await fixture.clock.settle()
+    expect(fixture.memory.value.session_id, 'C stays selected').toBe(C)
+    expect(fixture.memory.value.steps.find(s => s.id === 'plan:1')?.cleared, 'C completed step not cleared by the B press').toBeUndefined()
+    expect({ a: await history(fixture, A, fixture.a), c: await history(fixture, C, fixture.c) })
+      .toEqual({ a: expectedHistory(fixture.a), c: expectedHistory(fixture.c) })
+  } finally {
+    held.release()
+    await fixtureWait(press, 'B clear press cleanup')
+  }
 })

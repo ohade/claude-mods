@@ -625,20 +625,20 @@ const dropRewound = async ($: EngineInterface, submitted?: string): Promise<bool
 // model not to answer it. The Stop gate stops holding the turn for it, as it is gone.
 // TRACK-46 A1/C1: the ✕ names the session whose row it was drawn for. Question numbers repeat
 // across sessions, so a press drawn for another session's row withdraws nothing.
-const withdraw = async ($: EngineInterface, id: number, drawnFor: string | undefined): Promise<void> => {
-  if (!(await paneOwner($))) return
+const withdraw = ($: EngineInterface, id: number, drawnFor: string | undefined): Promise<void> => pressOwned($, async token => {
   let outcome = 'missing' as 'withdrawn' | 'missing' | 'other session'
   await updateLedger($, cur => {
+    assertOwner(token, cur)
     const q = cur.questions.find(one => one.id === id)
     outcome = cur.session_id !== drawnFor ? 'other session' : q === undefined ? 'missing' : 'withdrawn'
     return outcome === 'withdrawn' && q !== undefined ? withdrawQuestion(cur, id, q.head) : cur
   })
   if (outcome === 'other session') $.ui.toast(`track: Q${id} was drawn for another session; nothing was removed.`)
   if (outcome !== 'withdrawn') return
-  await publishGate($)
-  await saveLedger($)
+  await publishGate($, token)
+  await saveLedger($, token)
   $.ui.toast(`track: Q${id} removed; the model is told on your next prompt.`)
-}
+})
 
 // Called from a prompt redraw, which only draws: the cheap viewport test runs here, and the
 // store read and the open run from a timer, where state may be written.
@@ -2225,29 +2225,37 @@ const renderRestore = async ($: EngineInterface, ui: ReturnType<EngineInterface[
 // Clear all, per section. Unlike Clear completed, the rows leave and the ring restarts. Open
 // and deferred questions are withdrawn, so the model is told not to answer them; ids go on
 // counting up, so a later Q<n> never reuses one the model saw.
-const clearQuestions = async ($: EngineInterface): Promise<void> => {
-  if (!(await paneOwner($))) return
-  await updateLedger($, cur => clearQuestionRows(cur))
-  await publishGate($)
-  await saveLedger($)
+const clearQuestions = ($: EngineInterface): Promise<void> => pressOwned($, async token => {
+  await updateLedger($, cur => {
+    assertOwner(token, cur)
+    return clearQuestionRows(cur)
+  })
+  await publishGate($, token)
+  await saveLedger($, token)
   $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
-}
+})
 
 // Clear all for steps (Ohad, 2026-10-28). With an unfinished step the first press only arms; a
 // second press within CLEAR_ARM_MS clears, and the unfinished steps it removed are told to the
 // model once on its next prompt, as withdrawn questions are. All completed: one press clears.
 // TRACK-46 A1/C1: a pane press is the session's own action, so it first selects the current
-// session, as tool calls do; it never changes the previous owner's rows. An identity outage acts
-// on memory, as before.
-const paneOwner = async ($: EngineInterface): Promise<boolean> => {
+// session, as tool calls do; it never changes the previous owner's rows. Its token fences every
+// ledger write, gate and save, so a press still running when another session is selected stops
+// instead of writing into that session. An identity outage acts on memory, unfenced, as before.
+const pressOwned = async ($: EngineInterface, press: (token: OwnerToken | undefined) => Promise<void>): Promise<void> => {
   const owned = await ensureOwner($)
-  if (owned.ok || owned.isIdentity) return true
-  $.ui.toast(`track: ${owned.reason}`)
-  return false
+  if (!owned.ok && !owned.isIdentity) {
+    $.ui.toast(`track: ${owned.reason}`)
+    return
+  }
+  try { await press(owned.ok ? owned.token : undefined) }
+  catch (error) {
+    if (!(error instanceof OwnerChanged)) throw error
+    $.ui.toast(`track: ${error.message}`)
+  }
 }
 
-const clearSteps = async ($: EngineInterface): Promise<void> => {
-  if (!(await paneOwner($))) return
+const clearSteps = ($: EngineInterface): Promise<void> => pressOwned($, async token => {
   const now = await $.clock.now()
   // Read with its version, so the arm below goes live only if nothing wrote clearArm since this read.
   const held = await $.state.get({ plugin: 'track', key: 'clearArm' })
@@ -2257,6 +2265,7 @@ const clearSteps = async ($: EngineInterface): Promise<void> => {
   // Decided on the steps this same write removes, so a step reopened meanwhile is never cleared
   // without a confirming press (refuter R16 finding 7).
   await updateLedger($, cur => {
+    assertOwner(token, cur)
     const decision = planStepClear(cur, armed)
     arming = decision.arming
     return decision.ledger
@@ -2268,10 +2277,10 @@ const clearSteps = async ($: EngineInterface): Promise<void> => {
     return
   }
   await update($, clearArm, () => null)
-  await saveLedger($)
-  await publishGate($)
+  await saveLedger($, token)
+  await publishGate($, token)
   $.ui.toast('track: steps cleared.')
-}
+})
 
 const openPane = async ($: EngineInterface): Promise<boolean> => {
   const opened = await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS, rows: PANE_ROWS })
@@ -4323,18 +4332,22 @@ export const register: Register = on => {
       if (opening) await update($, scrollAt, cur => ({ ...cur, steps: index }))
     }
     const sDone = steps.filter(s => s.status === 'completed').length
-    const clearAnsweredQuestions = async () => {
-      if (!(await paneOwner($))) return
-      await updateLedger($, cur => hideAnsweredQuestions(cur))
-      await publishGate($)
-      await saveLedger($)
-    }
-    const clearCompletedSteps = async () => {
-      if (!(await paneOwner($))) return
-      await updateLedger($, cur => hideCompletedSteps(cur))
-      await publishGate($)
-      await saveLedger($)
-    }
+    const clearAnsweredQuestions = () => pressOwned($, async token => {
+      await updateLedger($, cur => {
+        assertOwner(token, cur)
+        return hideAnsweredQuestions(cur)
+      })
+      await publishGate($, token)
+      await saveLedger($, token)
+    })
+    const clearCompletedSteps = () => pressOwned($, async token => {
+      await updateLedger($, cur => {
+        assertOwner(token, cur)
+        return hideCompletedSteps(cur)
+      })
+      await publishGate($, token)
+      await saveLedger($, token)
+    })
     // The steps' two clear controls, above the steps and again below them. Both sit outside the
     // scrolling region, so a scroll never moves them. The copies share hotkeys: the engine lets the
     // later one win, and both do the same thing. Each is an item of its own, so a narrow pane wraps
