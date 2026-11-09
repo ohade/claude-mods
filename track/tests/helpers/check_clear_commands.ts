@@ -72,11 +72,19 @@ assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|crypto|
 const parse = (text: string) => ts.createSourceFile('register.tsx', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 const all = (root: ts.Node): ts.Node[] => { const nodes: ts.Node[] = []; const visit = (node: ts.Node) => { nodes.push(node); ts.forEachChild(node, visit) }; visit(root); return nodes }
 const callName = (node: ts.Node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) ? node.expression.text : undefined
-const current = parse(readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8'))
+// TRACK-46 slice 7 (2026-11-09, Ohad's standing approval): clearQuestions and clearSteps moved to
+// pane-actions.tsx as function declarations whose body returns the same pressOwned call; the inline
+// presses stay in register.tsx. Each file is parsed on its own; a name must occur in exactly one.
+const NATIVE = ['register.tsx', 'pane-actions.tsx'].map(file => parse(readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')))
+const ownerOf = (name: string): ts.SourceFile => {
+  const files = NATIVE.filter(file => all(file).some(node => (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node)) && node.name?.getText(file) === name))
+  assert.equal(files.length, 1, `${name} is declared in exactly one native file`)
+  return files[0]!
+}
 for (const name of Object.keys(commands)) {
-  const calls = all(current).filter(node => callName(node) === name) as ts.CallExpression[]
-  assert.equal(calls.length, 1, `native delegates ${name} once`)
-  const call = calls[0]!
+  const found = NATIVE.flatMap(file => (all(file).filter(node => callName(node) === name) as ts.CallExpression[]).map(call => ({ file, call })))
+  assert.equal(found.length, 1, `native delegates ${name} once`)
+  const { file: current, call } = found[0]!
   let callback: ts.ArrowFunction | undefined
   for (let parent = call.parent; parent !== undefined; parent = parent.parent) {
     if (ts.isArrowFunction(parent) && callName(parent.parent) === 'updateLedger' && (parent.parent as ts.CallExpression).arguments[1] === parent) { callback = parent; break }
@@ -105,9 +113,17 @@ const blockWiring = (file: ts.SourceFile, name: string, block: ts.Node): string 
   const normalized = text.slice(0, callback.getStart(file) - start) + 'cur => cur' + text.slice(callback.end - start)
   return printer.printFile(parse(`const effect = async () => ${normalized}`))
 }
-const initializer = (file: ts.SourceFile, name: string): ts.ArrowFunction => {
+const initializer = (file: ts.SourceFile, name: string): { body: ts.Node } => {
   const declarations = all(file).filter(ts.isVariableDeclaration).filter(node => node.name.getText(file) === name)
-  assert.equal(declarations.length, 1, `one native ${name} owner`)
+  const functions = all(file).filter(ts.isFunctionDeclaration).filter(node => node.name?.getText(file) === name)
+  assert.equal(declarations.length + functions.length, 1, `one native ${name} owner`)
+  if (functions.length === 1) {
+    // A function declaration (the engine follows $ across an import only into one) must be exactly
+    // `{ return <the arrow's former concise body> }`.
+    const statements = functions[0]!.body?.statements ?? []
+    assert.ok(statements.length === 1 && ts.isReturnStatement(statements[0]!) && statements[0]!.expression !== undefined, `${name} only returns its press`)
+    return { body: (statements[0] as ts.ReturnStatement).expression! }
+  }
   const init = declarations[0]!.initializer!
   assert.ok(ts.isArrowFunction(init), `${name} is an arrow function`)
   return init
@@ -142,5 +158,5 @@ const admittedBody = (file: ts.SourceFile, name: string): string => {
 }
 const baselineBody = (file: ts.SourceFile, name: string): string => blockWiring(file, name, initializer(file, name).body)
 const baselineFile = parse(baseline.stdout)
-for (const name of ['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps']) assert.equal(admittedBody(current, name), baselineBody(baselineFile, name), `${name}: all native effects, lifetimes and ordering remain unchanged`)
+for (const name of ['clearQuestions', 'clearSteps', 'clearAnsweredQuestions', 'clearCompletedSteps']) assert.equal(admittedBody(ownerOf(name), name), baselineBody(baselineFile, name), `${name}: all native effects, lifetimes and ordering remain unchanged`)
 console.log('bulk clear: literal cases, same-reference arming, 4 wrong implementations rejected, frozen parity, owner-token fencing and native retry/effect placement pass (SOURCE/FIXTURE)')
