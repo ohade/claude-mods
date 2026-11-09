@@ -10,6 +10,9 @@ import { runInNewContext } from 'node:vm'
 
 const root = resolve(import.meta.dir, '../..')
 const source = readFileSync(`${root}/hooks/register.tsx`, 'utf8')
+// TRACK-46 slice 1 (2026-11-09, Ohad's standing approval): reason and configDir moved to
+// track-state.ts. Each production function is compiled from the one file that declares it.
+const stateSource = readFileSync(`${root}/hooks/track-state.ts`, 'utf8')
 const scratch = mkdtempSync(`${tmpdir()}/track-cwd-check-`)
 const deleted = `${scratch}/caller`
 const originalCwd = process.cwd()
@@ -23,11 +26,12 @@ const variables: Record<string, string | undefined> = { HOME: process.env.HOME, 
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'TRACK_LOCK_DIR' && name !== 'TRACK_LOCK_PROTOCOL'))
 const spawned: Array<{ argv: readonly string[]; cwd?: string; env?: Record<string, string> }> = []
 const transpiler = new Bun.Transpiler({ loader: 'tsx' })
-const compile = (start: string, end: string, name: string, dependencies: Record<string, unknown> = {}) => {
-  const first = source.indexOf(start)
-  const last = source.indexOf(end, first)
+const compile = (start: string, end: string, name: string, dependencies: Record<string, unknown> = {}, from = source) => {
+  const first = from.indexOf(start)
+  const last = from.indexOf(end, first)
   assert(first >= 0 && last > first, `production function ${name} was not found`)
-  return runInNewContext(transpiler.transformSync(source.slice(first, last)) + `\n${name}`, {
+  assert.equal(from.indexOf(start, first + 1), -1, `production function ${name} is declared once`)
+  return runInNewContext(transpiler.transformSync(from.slice(first, last).replace(/^export /, '')) + `\n${name}`, {
     writer, deploymentDriftMessage: () => undefined, Date, Promise, Error, ...dependencies,
   })
 }
@@ -86,8 +90,8 @@ try {
   mkdirSync(deleted)
   process.chdir(deleted)
   rmdirSync(deleted)
-  const reason = compile('const reason =', '\n', 'reason')
-  const configDir = compile('const configDir =', 'const stepStop =', 'configDir')
+  const reason = compile('export const reason =', '\n', 'reason', {}, stateSource)
+  const configDir = compile('export async function configDir(', 'export const sha256Hex =', 'configDir', {}, stateSource)
   const acquire = compile('const closeLock =', 'const ensureWriter =', 'acquireLock', { configDir, reason })
   const session = randomUUID()
   const lease = await acquire(engine, 'lease', session)
