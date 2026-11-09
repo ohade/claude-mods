@@ -3625,15 +3625,21 @@ export const register: Register = on => {
       return next(e)
     }
     const callId = e.tool_use_id
+    const token = ownedCalls.get(callId)
     await update($, activity, a => ({ ...a, agentCalls: [...a.agentCalls, callId] }))
     try {
       const ran = await next(e)
       const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
-      if (launched?.status === 'async_launched' && typeof launched.agentId === 'string') {
+      // TRACK-46 A1/C1: a launch that returns after another session was selected belongs to the
+      // old owner, so it never enters the new owner's activity (as for Bash).
+      if (launched?.status === 'async_launched' && typeof launched.agentId === 'string' && (token === undefined || isOwnerCurrent(token))) {
         const agentId = launched.agentId
         const steps = (await read($, ledger)).steps
         const ids = agentLaunchOwner(steps, (await read($, turn)).currentId)
-        await update($, activity, a => ({ ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids, steps), ...rememberLaunch(a, agentId) }))
+        await update($, activity, a => {
+          assertOwner(token)
+          return { ...a, background: [...a.background.filter(id => id !== agentId), agentId], ...rememberOwner(a, agentId, ids, steps), ...rememberLaunch(a, agentId) }
+        })
       }
 
       return ran

@@ -1630,3 +1630,29 @@ test('FIXTURE TRACK34 session switch 40: an A skill command held at its command.
     await fixtureWait(request, 'late-writes command cleanup')
   }
 })
+
+// TRACK-46 A1/C1 (ii): an A Agent call held in native execution while B is selected must not
+// record its launched background agent, owner or launch receipt in B's activity.
+test('FIXTURE TRACK46 owner switch: a held A Agent launch never enters B activity', async ($, on) => {
+  const fixture = await setup(on)
+  const held = latch()
+  on('tool.call', { tool: 'Agent' }, async () => {
+    held.enter()
+    await held.released
+    return { result: { status: 'async_launched', agentId: 'A-launched-agent' } }
+  })
+  await beginA($, fixture)
+  const request = outcome($.tool.call({ tool: 'Agent', tool_use_id: 'track46-a-agent', prompt: 'A work' } as never))
+  try {
+    await selectBWhileHeld($, fixture, held, request)
+    held.release()
+    await fixtureWait(request, 'Agent completion')
+    const activity = fixture.activity.value
+    expect({ background: activity.background, owners: Object.keys(activity.owners ?? {}),
+      launches: (activity.launchOwners ?? []).map(row => row.task), calls: activity.agentCalls })
+      .toEqual({ background: [], owners: [], launches: [], calls: [] })
+  } finally {
+    held.release()
+    await fixtureWait(request, 'Agent cleanup')
+  }
+})
