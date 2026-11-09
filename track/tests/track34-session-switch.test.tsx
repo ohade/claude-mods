@@ -5,7 +5,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { PluginState } from 'claude-code'
 import { describeCheckpoint } from '../hooks/checkpoint'
 import type { Activity, Ledger, Pending, Turn } from '../types'
-import { EMPTY, atomStore, blobPool, logs, pluginStore } from './kit'
+import { EMPTY, atomStore, blobPool, logs, pane, pluginStore, trackCommand } from './kit'
 import type { Engine, On } from './kit'
 
 const A = 'aaaaaaaa-0000-4000-8000-000000000034'
@@ -1655,4 +1655,36 @@ test('FIXTURE TRACK46 owner switch: a held A Agent launch never enters B activit
     held.release()
     await fixtureWait(request, 'Agent cleanup')
   }
+})
+
+// TRACK-46 A1/C1 (i): the host identity changed to B, and the next Track action is /track order
+// or a pane press. It must select B first and act on B; A's saved rows stay as they were.
+test('FIXTURE TRACK46 owner switch: /track order after an identity change lists B rows', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const result = await trackCommand($, 'order') as { text?: string }
+  expect(String(result.text), 'B rows, never A rows').toContain('B saved step')
+  expect(String(result.text)).not.toContain('A saved step')
+})
+
+test('FIXTURE TRACK46 owner switch: a pane clear press after an identity change acts on B and keeps A', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  const ui = await $.ui.mount(pane('dock')) as unknown as { press: (q: { key: string }) => Promise<void> }
+  fixture.controls.session = B
+  await ui.press({ key: 'clear-completed' })
+  await fixture.clock.settle()
+  expect(await history(fixture, A, fixture.a), 'A saved rows unchanged').toEqual(expectedHistory(fixture.a))
+  expect(fixture.durability.value.memorySession, 'B was selected').toBe(B)
+  expect(fixture.memory.value.session_id).toBe(B)
+})
+
+test('FIXTURE TRACK46 owner switch: /track status after an identity change reports B rows', async ($, on) => {
+  const fixture = await setup(on)
+  await beginA($, fixture)
+  fixture.controls.session = B
+  const result = await trackCommand($, 'status') as { text?: string }
+  expect(String(result.text), 'B open question, never A').toContain('B open question')
+  expect(String(result.text)).not.toContain('A open question')
 })

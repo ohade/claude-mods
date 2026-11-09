@@ -3909,7 +3909,17 @@ export const register: Register = on => {
 
   on('command.run', { command: 'track' }, async ($, e) => {
     const arg = e.args.trim()
-    if (arg === 'order') return { text: JSON.stringify({ ok: true, rows: lookupPaneRows(await read($, ledger)) }) }
+    // TRACK-46 A1/C1: a read-only answer first selects the current session, as tool calls do, so
+    // it never reports the previous owner's rows. An identity outage still reads memory.
+    const ownerRefusal = async (): Promise<string | undefined> => {
+      const owned = await ensureOwner($)
+      return !owned.ok && !owned.isIdentity ? `track: ${owned.reason}` : undefined
+    }
+    if (arg === 'order') {
+      const refused = await ownerRefusal()
+      if (refused !== undefined) return { text: JSON.stringify({ ok: false, reason: refused }) }
+      return { text: JSON.stringify({ ok: true, rows: lookupPaneRows(await read($, ledger)) }) }
+    }
     if (/^reorder(?:\s|$)/.test(arg)) {
       let ids: unknown
       try { ids = JSON.parse(arg.slice('reorder'.length).trim()) } catch {
@@ -3933,6 +3943,8 @@ export const register: Register = on => {
         : 'track: the Haiku question classifier is off; the wording check decides. /track classifier on starts it.' }
     }
     if (arg === 'status') {
+      const refused = await ownerRefusal()
+      if (refused !== undefined) return { text: refused }
       const l = await read($, ledger)
       const open = l.questions.filter(q => q.status === 'open').map(q => `Q${q.id} ${q.head}`)
 
