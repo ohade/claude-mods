@@ -1,18 +1,18 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, PluginState, Register, RenderElement, RenderSurface, Timer } from 'claude-code'
 
-import type { Activity, Ledger, Pane, Pending, PendingInput, Prompt, Question, Restore, ScrollAt, Step, Turn } from '../types'
+import type { Activity, Ledger, Pane, Pending, PendingInput, Question, Restore, ScrollAt, Step, Turn } from '../types'
 import { appliedChecksum, checkpointFailure, checksumOf, describeCheckpoint, matchesCheckpoint } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { visibleSteps, openStepsOf, openPlanSteps, sameResultOwner } from './steps'
 import { MAX_INPUTS, admitInput } from './prompt-intake'
 import { unregisteredContext, promptContext, remainingNotices } from './prompt-context'
-import { gateable, looksLikeQuestion, needsQuestion, ofTurn, waitingArrowIds } from './turn-policy'
+import { gateable, looksLikeQuestion, needsQuestion } from './turn-policy'
 import { cancelReasonOf, cancelOwner } from './cancel-policy'
 import { launchOwner, agentLaunchOwner, ownersForLiveSteps, rememberOwner, rememberLaunch } from './task-ownership'
-import { MAX_STEPS, withoutStepResult, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_PROMPTS, MAX_QUESTIONS, keepRestores } from './ledger-policy'
-import { HEAD_CHARS, ANSWER_CHARS, RESULT_CHARS, truncate, headOf, norm } from './ledger-text'
+import { MAX_STEPS, withStatus, hasClock, runningClocks, isLifecycleNote, STEP_STATUSES, MAX_QUESTIONS, keepRestores } from './ledger-policy'
+import { HEAD_CHARS, RESULT_CHARS, truncate, headOf } from './ledger-text'
 import { savedLedger } from './stored-codecs'
 import { toolContracts } from './tool-contracts'
 import { wrappedLines, fitLines } from './terminal-text'
@@ -25,11 +25,10 @@ import type { BannerRow } from './banner-layout'
 import { lookupPaneRows, reorderVisibleSteps, visibleQuestions } from './pane-order'
 import { sameRecord as sameValue } from './durable-record'
 import { answerBlocks, answerBlockKey } from './answer-blocks'
-import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, clearQuestionRows, hideAnsweredQuestions, mayMarkAnswer, markQuestion, bindAnswerResponse, markerForQuestion, captureMarkerAnswer } from './question-commands'
+import { questionAdmission, questionSource, mintQuestion, withdrawQuestion, clearQuestionRows, hideAnsweredQuestions, mayMarkAnswer, markQuestion } from './question-commands'
 import { planStepClear, hideCompletedSteps } from './clear-commands'
 import { planInsertion, insertPlan, replacePlan, markStep, delegationError } from './step-commands'
 import { createTask, updateTask, replaceTodos } from './task-sync-commands'
-import { classifyTranscriptChange, printsOf } from './transcript-baseline'
 import { diagnose } from './diagnose-flow'
 import type { DiagnosePorts } from './diagnose-flow'
 import { workState } from './work-appearance'
@@ -55,7 +54,6 @@ declare module 'claude-code' {
 // Module memory, not $.state: a reload only resets the debounce.
 const REWIND_CHECK_DELAY_MS = 1000
 const REWIND_CHECK_GAP_MS = 3000
-const rewindCheck = { isScheduled: false, lastAt: -Infinity, running: undefined as { hasPrompt: boolean; run: Promise<boolean> } | undefined }
 // The built-in diff panel's rule, less its git condition (the tracker does not need git, and a
 // session often starts outside a repository): it opens by itself only from this width, in the
 // fullscreen layout, and never after the person closed it by hand.
@@ -337,163 +335,6 @@ const jump = async ($: EngineInterface, ids: string[], block: 'start' | 'end', k
   }
 }
 
-// The transcript last read for one session, as one cheap fingerprint per message. It lives only
-// in memory. A later read that starts with it grew; one that it starts with was rewound. A read
-// that is neither (allowing the prompt being sent after a rewound prefix) was compacted, even
-// when the host sent no compaction callback.
-let transcriptBaseline: { session: string; prints: string[] } | undefined
-// session.compact bumps this, so a read that started before the callback never writes after it.
-let baselineGeneration = 0
-
-// session.messages exposes no response UUID. Bind a marker answer to its
-// stable block id and full words; a different answer with that id is absent.
-const answerSourceOf = (q: Question) => {
-  const block = q.answeredBy === undefined ? /:A([1-9]\d*)$/.exec(q.answerKey ?? '') : null
-  return block !== null && q.answerTextHash !== undefined
-    ? `marker:A${block[1]}:${q.answerTextHash}`
-    : q.answeredBy ?? q.answerRequestId
-}
-const judgedQuestion = (q: Question, since: number): boolean =>
-  (q.trackedBy !== undefined && q.at > since) || (answerSourceOf(q) !== undefined && (q.answeredAt ?? 0) > since)
-const judgedResultStep = (s: Step, since: number): boolean => s.resultRequestId !== undefined && (s.resultAt ?? 0) > since
-// Rows the rewind check judges: transcript provenance newer than the last compaction.
-const hasJudgedRows = (l: Ledger): boolean =>
-  l.questions.some(q => judgedQuestion(q, l.compactedAt ?? 0)) || l.steps.some(s => judgedResultStep(s, l.compactedAt ?? 0))
-
-// /rewind raises no event, so detect it from the transcript: a question whose
-// track_question call is gone was asked in a rewound turn, and an answer whose
-// mark_answered call or complete marked text is gone was rewound. Only work since
-// the last compaction is judged, since compaction removes old messages as well.
-// `submitted` is the prompt being sent, which a rewind may already show after its prefix.
-const observeRewind = async ($: EngineInterface, submitted?: string): Promise<boolean> => {
-  const generation = baselineGeneration
-  const l = await read($, ledger)
-  const since = l.compactedAt ?? 0
-  const judgedResult = (s: Step) => judgedResultStep(s, since)
-  const missingResult = (s: Step) => judgedResult(s) && !present.has(s.resultRequestId!)
-  const hasJudged = hasJudgedRows(l)
-  // With no judged row, a baseline would go stale while nothing refreshes it; drop it.
-  if (!hasJudged) transcriptBaseline = undefined
-  const pending = (await read($, durability)).rewindSession
-  // Empty registers and rows without transcript provenance need no session
-  // lookup or transcript read before delivering their generic instruction.
-  if (!hasJudged && pending === undefined) return true
-  let session: string
-  try { session = await $.session.id() }
-  catch (error) {
-    persistence.failure = `rewind session identity unavailable: ${reason(error)}`
-    $.ui.log(`track: ${persistence.failure}`, { to: 'debug' })
-    return false
-  }
-  // TRACK-46 A1/C1 (iv): rows another session owns are never judged against this session's
-  // transcript, where that session's calls are absent. A viewport check selects no session; the
-  // next owned event loads this session's rows, and a later check judges those.
-  if (l.session_id !== undefined && l.session_id !== session) return true
-  if (pending === session && !(await saveLedger($))) return false
-  if (!hasJudged) {
-    return true
-  }
-  const messages = await $.session.messages()
-  if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP) {
-    return true
-  }
-  const present = new Set(messages.flatMap(m => m.toolUses.map(u => u.tool_use_id)))
-  const blocks = messages.flatMap(m => m.role === 'assistant' ? answerBlocks(m.text) : [])
-  for (const key of await Promise.all(blocks.map(async block => `marker:A${block.id}:${await checksumOf(block.text)}`))) present.add(key)
-  if (await $.session.id() !== session || generation !== baselineGeneration) return true
-  const prints = printsOf(messages)
-  const change = classifyTranscriptChange(transcriptBaseline?.session === session ? transcriptBaseline.prints : undefined,
-    prints, messages.at(-1), submitted)
-  // Undecided keeps the baseline for the next prompt's read.
-  if (change === 'undecided') return true
-  transcriptBaseline = { session, prints }
-  if (change === 'compacted') {
-    // Keep every row and judge only later work, as the session.compact handler does.
-    // Without an earlier read this cannot be told from a rewind.
-    await updateLedger($, cur => ({ ...cur, compactedAt: Date.now() }))
-    return true
-  }
-  if (!l.questions.some(q =>
-    (q.trackedBy !== undefined && q.at > since && !present.has(q.trackedBy)) ||
-    (answerSourceOf(q) !== undefined && (q.answeredAt ?? 0) > since && !present.has(answerSourceOf(q)!))
-  ) && !l.steps.some(missingResult)) return true
-  // Capture the pre-rewind rows in memory. The save path verifies this
-  // snapshot against the durable body under its locks before adopting it.
-  await update($, durability, cur => ({ ...cur, rewindBaseline: { session_id: session, ledger: l } }))
-  const observed = new Map(l.questions.map(q => [q.id, q]))
-  const observedSteps = new Map(l.steps.map(step => [step.id, step]))
-  let changed = false
-  await updateLedger($, cur => {
-    const compactedAt = cur.compactedAt ?? 0
-    const questions = cur.questions.flatMap(q => {
-      const old = observed.get(q.id)
-      // Only the calls judged by this read may be removed. A later tracking call,
-      // answer, or compaction wins over the older transcript observation.
-      if (old === undefined) return [q]
-      if (q.trackedBy === old.trackedBy && q.at === old.at && q.trackedBy !== undefined && q.at > compactedAt && !present.has(q.trackedBy)) return []
-      const source = answerSourceOf(q)
-      if (source === undefined || source !== answerSourceOf(old) || q.answeredAt !== old.answeredAt || (q.answeredAt ?? 0) <= compactedAt || present.has(source)) return [q]
-      const { answerRequestId: _a, answeredBy: _by, answeredAt: _t, answerTurnId: _turn, answerOrder: _order, note: _n, answerKey: _k, answerInstance: _i, answerInstanceSession: _in, answerText: _x, answerTextHash: _hash, ...rest } = q
-
-      return [{ ...rest, status: 'open' as const }]
-    })
-    const steps = cur.steps.map(step => {
-      const old = observedSteps.get(step.id)
-      if (old === undefined || step.resultRequestId !== old.resultRequestId || step.resultAt !== old.resultAt || step.resultTextHash !== old.resultTextHash ||
-          step.resultRequestId === undefined || (step.resultAt ?? 0) <= compactedAt || present.has(step.resultRequestId)) return step
-      return withoutStepResult(step)
-    })
-    changed = !sameValue(questions, cur.questions) || !sameValue(steps, cur.steps)
-    return changed ? { ...cur, questions, steps } : cur
-  })
-  if (changed) {
-    await update($, durability, cur => ({ ...cur, rewindSession: session }))
-    await publishGate($)
-    return saveLedger($)
-  }
-  return true
-}
-
-// A main-loop turn end records the transcript only when the session has no baseline yet, so the
-// next prompt's read can compare even when it is the first read since the rows were saved. It never
-// judges a read: only a prompt's read classifies a change, against the baseline it last refreshed.
-const recordTranscriptBaseline = async ($: EngineInterface): Promise<void> => {
-  const generation = baselineGeneration
-  if (!hasJudgedRows(await read($, ledger))) {
-    transcriptBaseline = undefined
-    return
-  }
-  try {
-    const session = await $.session.id()
-    if (transcriptBaseline?.session === session) return
-    const messages = await $.session.messages()
-    if (!Array.isArray(messages) || messages.length >= MESSAGES_CAP || await $.session.id() !== session ||
-      generation !== baselineGeneration) return
-    // A prompt may have established the baseline during either awaited read.
-    if (transcriptBaseline?.session === session) return
-    transcriptBaseline = { session, prints: printsOf(messages) }
-  } catch (error) {
-    // No baseline: the next read behaves as it did before baselines existed.
-    $.ui.log(`track: transcript baseline not recorded: ${reason(error)}`, { to: 'debug' })
-    noteEvent($, 'transcript.baseline_unrecorded')
-  }
-}
-
-const dropRewound = async ($: EngineInterface, submitted?: string): Promise<boolean> => {
-  const running = rewindCheck.running
-  if (running !== undefined) {
-    if (submitted === undefined || running.hasPrompt) return running.run
-    // A viewport read lacks the prompt text needed to judge a rewind plus prompt.
-    if (!(await running.run)) return false
-    return dropRewound($, submitted)
-  }
-  const run = observeRewind($, submitted)
-  const flight = { hasPrompt: submitted !== undefined, run }
-  rewindCheck.running = flight
-  try { return await run }
-  finally { if (rewindCheck.running === flight) rewindCheck.running = undefined }
-}
-
 // ✕ on a question: it leaves the ledger and both counts, and the next prompt tells the
 // model not to answer it. The Stop gate stops holding the turn for it, as it is gone.
 // TRACK-46 A1/C1: the ✕ names the session whose row it was drawn for. Question numbers repeat
@@ -542,12 +383,13 @@ const scheduleAutoOpen = async ($: EngineInterface, viewport: { columns?: number
   })
 }
 const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as PluginState['track']['durability'])
-import { PANE, TITLE, PANE_COLUMNS, PANE_ROWS, LOADED_IDENTITY, TRACK_QUESTION, MARK_ANSWERED, MARK_STEP, TRACK_STEPS, RESTORE_TRACKER, CHECKPOINT, LOOKUP_ROWS, REORDER_STEPS, SESSION_ID, MAX_PLAN_STEPS, STEP_RESULT, STEPS, ANSWER, RULE, CLASSIFIER_KEY, CLASSIFIER_MAX_CHARS, CLASSIFIER, AGENT_TASK, EMPTY_LEDGER, IDLE, CLEAR_ARM_MS, rowKey, textOf, reason, persistence, writer, acknowledgedLedger, eventRing, noteEvent, gateCache, freshTurn, configDir, sha256Hex, ownership, OwnerChanged, isOwnerCurrent, assertOwner, updateLedger, updateOwnedLedger } from './track-state'
+import { PANE, TITLE, PANE_COLUMNS, PANE_ROWS, LOADED_IDENTITY, TRACK_QUESTION, MARK_ANSWERED, MARK_STEP, TRACK_STEPS, RESTORE_TRACKER, CHECKPOINT, LOOKUP_ROWS, REORDER_STEPS, SESSION_ID, MAX_PLAN_STEPS, STEP_RESULT, STEPS, ANSWER, RULE, AGENT_TASK, EMPTY_LEDGER, IDLE, CLEAR_ARM_MS, rowKey, textOf, reason, persistence, writer, acknowledgedLedger, eventRing, noteEvent, gateCache, freshTurn, configDir, sha256Hex, ownership, OwnerChanged, isOwnerCurrent, assertOwner, updateLedger, updateOwnedLedger } from './track-state'
 import type { OwnerToken } from './track-state'
 import { closeLock } from './writer-lock'
 import { publishGate, readBodySnapshot, saveLedger, saveClassifierSetting, savePanePreference, historyEnabled, pendingCauseOf, savePendingCause, saveFailureText, historySnapshot, migrateStore } from './ledger-store'
-import { renderInstances, renderSaved, rememberRender, MESSAGES_CAP, captureMintOwner, memoryToken, pressOwned, ownerChangedResult, isFailedCheckpointResult, restoreOwnerChangedResult, keepAnswerInstance, switchOwner, ensureOwner, observedDisk, identityLine } from './session-owner'
+import { renderInstances, renderSaved, rememberRender, captureMintOwner, memoryToken, pressOwned, ownerChangedResult, isFailedCheckpointResult, restoreOwnerChangedResult, keepAnswerInstance, switchOwner, ensureOwner, observedDisk, identityLine } from './session-owner'
 import { stepReceiptIds, recordWork, ACTIVE_STEP_NUDGE, dueActiveStepNudge, FRESHNESS_KINDS, freshnessNudge, nudgeFed, missingResultText, nudgeMissingResults, remindFinishedTurn, readStopInventory, inventoryDrops, finishTasks, stepStop, claimUncoveredInputs } from './turn-guidance'
+import { rewindCheck, recordTranscriptBaseline, dropRewound, observeResponse, captureResponse, recordPrompt, classifying, labelScheduled, coverInput, classifierOn, classifyInput, forgetTranscriptBaseline } from './prompt-flow'
 
 
 
@@ -596,87 +438,6 @@ const clearQuestions = ($: EngineInterface): Promise<void> => pressOwned($, asyn
   $.ui.toast('track: questions cleared; open ones are withdrawn on your next prompt.')
 })
 
-// Clear all for steps (Ohad, 2026-10-28). With an unfinished step the first press only arms; a
-// second press within CLEAR_ARM_MS clears, and the unfinished steps it removed are told to the
-// model once on its next prompt, as withdrawn questions are. All completed: one press clears.
-// TRACK-46 A1/C1: a pane press is the session's own action, so it first selects the current
-// session, as tool calls do; it never changes the previous owner's rows. Its token fences every
-// ledger write, gate and save, so a press still running when another session is selected stops
-// instead of writing into that session. An identity outage acts on memory, as before, fenced to
-// the memory owner and the ownership epoch it read (Codex review of 2a0ecb2).
-// TRACK-46 A1/C1 (iii): the reply observation after its admission, fenced by its token.
-const observeResponse = async ($: EngineInterface, requestId: string, text: string, token: OwnerToken): Promise<void> => {
-  let observed: (NonNullable<Turn['lastText']> & { requestId: string; order: number }) | undefined
-  await update($, turn, cur => {
-    assertOwner(token)
-    const order = (cur.eventOrder ?? 0) + 1
-    observed = { row: rowKey(requestId), requestId, turnId: cur.currentId, order, text: truncate(text, ANSWER_CHARS) }
-    return { ...cur, eventOrder: order, lastText: observed }
-  })
-  // Reserve event order before hashing. Keep full-word identity in bounded
-  // metadata; comparing only the saved prefix could attach a different answer.
-  const answer = { ...observed!, textHash: await checksumOf(text) }
-  await update($, turn, cur => {
-    assertOwner(token)
-    return cur.lastText?.requestId === answer.requestId && cur.lastText.order === answer.order
-      ? { ...cur, lastText: answer }
-      : cur
-  })
-  // Keep this message's observation. A later turn-atom write must never
-  // replace its text while leaving this message's UUID on the answer.
-  let changed = false
-  await updateLedger($, cur => {
-    assertOwner(token, cur)
-    if (answer.text === undefined) {
-      changed = false
-      return cur
-    }
-    const proposal = bindAnswerResponse(cur, { text, answerText: answer.text, textHash: answer.textHash, row: answer.row, requestId, turnId: answer.turnId, order: answer.order })
-    changed = proposal.changed
-    return proposal.ledger
-  })
-  if (changed) {
-    await publishGate($, token)
-    await saveLedger($, token)
-  }
-}
-
-// TRACK-46 A1/C1 (iii): the marker capture after its stored reply, fenced by the capture's token.
-const captureResponse = async ($: EngineInterface, text: string, requestId: string, observed: { turnId: string; order: number }, token: OwnerToken): Promise<void> => {
-  const current = await read($, turn)
-  if (current.currentId !== observed.turnId) return
-  assertOwner(token)
-  const shown = visibleSteps((await read($, ledger)).steps)
-  const arrows = waitingArrowIds(text, new Set(shown.map(step => step.id)), shown)
-  await update($, turn, cur => {
-    assertOwner(token)
-    if (cur.currentId !== observed.turnId || cur.lastText?.order !== observed.order) return cur
-    const fresh = cur.freshness?.turnId === observed.turnId ? cur.freshness : freshTurn(observed.turnId)
-    return { ...cur, freshness: { ...fresh, response: { turn_id: observed.turnId, request_id: requestId, arrow_ids: arrows } } }
-  })
-  await publishGate($, token)
-  const blocks = answerBlocks(text)
-  if (blocks.length === 0) return
-  const completed = await Promise.all(blocks.map(async block => ({ ...block, hash: await checksumOf(block.text) })))
-  let changed = false
-  await updateLedger($, cur => {
-    assertOwner(token, cur)
-    changed = false
-    const questions = cur.questions.map(q => {
-      const nativeKey = q.answerRequestId !== undefined ? answerBlockKey(rowKey(q.answerRequestId), q.id) : undefined
-      const block = markerForQuestion(q, completed, observed.turnId, observed.order, nativeKey)
-      if (block === undefined) return q
-      changed = true
-      return captureMarkerAnswer(q, { block, now: Date.now(), requestId, answerKey: answerBlockKey(rowKey(requestId), block.id), turnId: observed.turnId, order: observed.order })
-    })
-    return changed ? { ...cur, questions } : cur
-  })
-  if (changed) {
-    await publishGate($, token)
-    await saveLedger($, token)
-  }
-}
-
 const clearSteps = ($: EngineInterface): Promise<void> => pressOwned($, async token => {
   const now = await $.clock.now()
   // Read with its version, so the arm below goes live only if nothing wrote clearArm since this read.
@@ -712,132 +473,6 @@ const openPane = async ($: EngineInterface): Promise<boolean> => {
   }
 
   return opened.isPlaced
-}
-
-// Every message the person typed is recorded before the model reads it: its provisional row key
-// and a short head. Only the composer's rows count. A subagent's row carries agentId, and a
-// hand-back or a notification comes in under its sender's origin; its row is never linked, so
-// as the last prompt it left the next question with no [ Q ].
-const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: { kind: string }; uuid: string }, text: string): Promise<void> => {
-  if (e.agentId !== undefined || e.origin.kind !== 'composer') {
-    return
-  }
-  const head = headOf(text)
-  if (head === '' || head.startsWith('/')) {
-    return
-  }
-  const admissionEpoch = ownership.epoch
-  const owned = await ensureOwner($)
-  if (!owned.ok && !owned.isIdentity) {
-    $.ui.log(`track: prompt row not recorded: ${owned.reason}`, { to: 'debug' })
-    return
-  }
-  const token = owned.ok ? owned.token : undefined
-  const assertProvisionalOwner = (): void => {
-    if (!owned.ok && !isOwnerCurrent({ owner: undefined, epoch: admissionEpoch })) throw new OwnerChanged()
-  }
-  const session = await captureMintOwner($)
-  const prompt: Prompt = { rowKey: rowKey(e.uuid), head, turnId: null, at: Date.now() }
-  try {
-    await updateOwnedLedger($, token, l => {
-      assertProvisionalOwner()
-      return { ...l, session_id: l.session_id ?? session, prompts: [...l.prompts, prompt].slice(-MAX_PROMPTS) }
-    })
-    // The newest input with these words and no row yet takes this row: its identity for a
-    // source_request_id.
-    await update($, pending, p => {
-      assertOwner(token)
-      assertProvisionalOwner()
-      const target = [...p.inputs].reverse().find(i => i.rowKey === undefined && norm(i.head) === norm(head))
-      return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target.id ? { ...i, rowKey: prompt.rowKey } : i)) }
-    })
-  } catch (error) {
-    if (!(error instanceof OwnerChanged)) throw error
-    $.ui.log('track: prompt tracking stopped: session owner changed during the call.', { to: 'debug' })
-  }
-}
-
-// Haiku labels in flight, by input id, so Stop can wait briefly for one. Module memory: a reload
-// stops the managed timer, and the input falls back to the wording check.
-const classifying = new Map<number, Promise<void>>()
-// Labels scheduled but not yet started (TRACK-46 C2 review): with classifying, every id whose
-// label is still coming. Module memory too: a reload cancels the timer and empties both.
-const labelScheduled = new Set<number>()
-
-// An accepted Track row covers one uncovered input: the one its source names. source_request_id
-// wins when both are given, as it does for the row's own link: it must be that input's own row.
-// source_text matches its first line, the oldest first. With no source, a question covers the
-// current turn's input only when its summary is that input's first line and no other waiting
-// input shares it: one candidate alone is no evidence. Steps need a source. One question row
-// covers one input: reusing an open row that already covers one covers no second.
-// Steps, new or reused after saving, never cover a prompt Haiku called a question.
-const coverInput = async ($: EngineInterface, kind: 'question' | 'steps', source: { source_text?: unknown; source_request_id?: unknown; summary?: string; questionId?: number } = {}, token?: OwnerToken): Promise<void> => {
-  const currentId = (await read($, turn)).currentId
-  if (currentId === null) return
-  const row = typeof source.source_request_id === 'string' ? rowKey(source.source_request_id) : undefined
-  const text = row === undefined && typeof source.source_text === 'string' ? headOf(source.source_text) : undefined
-  if (text === undefined && row === undefined && kind === 'steps') return
-  await update($, pending, p => {
-    assertOwner(token)
-    if (source.questionId !== undefined && p.inputs.some(i => i.questionId === source.questionId)) return p
-    const fits = (i: PendingInput) => i.covered === undefined && (kind === 'question' || i.label !== 'question')
-    let target: PendingInput | undefined
-    if (row !== undefined) target = p.inputs.find(i => fits(i) && i.rowKey === row)
-    else if (text !== undefined) target = p.inputs.find(i => fits(i) && norm(i.head) === norm(text))
-    else if (source.summary !== undefined) {
-      const named = ofTurn(p.inputs, currentId).filter(i => fits(i) && needsQuestion(i) && norm(i.head) === norm(source.summary!))
-      target = named.length === 1 ? named[0] : undefined
-    }
-    return target === undefined ? p : { ...p, inputs: p.inputs.map(i => (i.id === target!.id ? { ...i, covered: kind, ...(source.questionId !== undefined && { questionId: source.questionId }) } : i)) }
-  })
-}
-
-
-const classifierOn = async ($: EngineInterface): Promise<boolean> => {
-  try {
-    return ((await $.store.get(CLASSIFIER_KEY)) as { isOn?: unknown } | undefined)?.isOn === true
-  } catch (error) {
-    $.ui.log(`track: the classifier setting is unreadable, so it is off: ${reason(error)}`, { to: 'debug' })
-    return false
-  }
-}
-
-// One Haiku label for one input, written only while that input is still pending and unlabelled:
-// an input an earlier turn left, or one a reload replaced, takes no late label.
-const classifyInput = async ($: EngineInterface, id: number, text: string, epoch: number): Promise<void> => {
-  let label: NonNullable<PendingInput['label']> = 'unknown'
-  if (text.length <= CLASSIFIER_MAX_CHARS) {
-    try {
-      const r = await $.model.complete({ ...CLASSIFIER, prompt: text })
-      const said = r.isAnswered ? r.text.trim() : ''
-      if (said === 'question' || said === 'not_question') label = said
-      else $.ui.log(`track: the classifier gave no label (${r.isAnswered ? 'malformed reply' : r.reason})`, { to: 'debug' })
-    } catch (error) {
-      $.ui.log(`track: the classifier failed: ${reason(error)}`, { to: 'debug' })
-    }
-  }
-  if (epoch !== ownership.epoch) {
-    $.ui.log('track: a classifier label from a previous session was dropped', { to: 'debug' })
-    return
-  }
-  // A question label undoes coverage by new steps: steps never cover a question.
-  await update($, pending, p => (p.inputs.some(i => i.id === id && i.label === undefined)
-    ? { ...p, inputs: p.inputs.map(i => {
-      if (i.id !== id) return i
-      if (label === 'question' && i.covered === 'steps') {
-        const { covered: _covered, ...rest } = i
-        return { ...rest, label }
-      }
-      return { ...i, label }
-    }) }
-    : p))
-  if (epoch === ownership.epoch) {
-    try { await publishGate($, { owner: await $.session.id(), epoch }) }
-    catch (error) {
-      $.ui.log(`track: Stop snapshot unavailable: ${reason(error)}`, { to: 'debug' })
-      noteEvent($, 'stop.snapshot_unavailable')
-    }
-  }
 }
 
 // Whether the drift status shows: while it does, each main turn's end checks
@@ -1577,8 +1212,7 @@ export const register: Register = on => {
     if (e.agentId === undefined && !('skip' in compacted)) {
       await updateLedger($, l => ({ ...l, compactedAt: Date.now() }))
       // The transcript before compaction is no baseline for the one after it.
-      transcriptBaseline = undefined
-      baselineGeneration++
+      forgetTranscriptBaseline()
     }
 
     return compacted
