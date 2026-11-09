@@ -2311,6 +2311,9 @@ const recordPrompt = async ($: EngineInterface, e: { agentId?: string; origin: {
 // Haiku labels in flight, by input id, so Stop can wait briefly for one. Module memory: a reload
 // stops the managed timer, and the input falls back to the wording check.
 const classifying = new Map<number, Promise<void>>()
+// Labels scheduled but not yet started (TRACK-46 C2 review): with classifying, every id whose
+// label is still coming. Module memory too: a reload cancels the timer and empties both.
+const labelScheduled = new Set<number>()
 
 // An accepted Track row covers one uncovered input: the one its source names. source_request_id
 // wins when both are given, as it does for the row's own link: it must be that input's own row.
@@ -3089,7 +3092,7 @@ export const register: Register = on => {
           assertAdmitted()
           added = undefined
           full = false
-          const admission = admitInput(p, { head, excerpt, textHash, turnId, wording, prompts, labelling: new Set(classifying.keys()), needsRow: needsQuestion })
+          const admission = admitInput(p, { head, excerpt, textHash, turnId, wording, prompts, labelling: new Set([...classifying.keys(), ...labelScheduled]), needsRow: needsQuestion })
           added = admission.added
           full = admission.full
           // Permanent helper claims are named per epoch, so a restarted runtime's input 1 is new.
@@ -3110,7 +3113,9 @@ export const register: Register = on => {
         const id = added
         const text = String(e.text)
         const epoch = ownership.epoch
+        labelScheduled.add(id)
         $.clock.after(0, () => {
+          labelScheduled.delete(id)
           const run = classifyInput($, id, text, epoch).finally(() => classifying.delete(id))
           classifying.set(id, run)
           return run
