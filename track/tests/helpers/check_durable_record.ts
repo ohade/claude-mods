@@ -19,8 +19,11 @@ assert.doesNotMatch(source, /claude-code|EngineInterface|Runtime|\$\.|atom\(|set
 // this import; register.tsx keeps only its own sameValue use. Neither native file re-declares them.
 const store = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
 assert.ok(store.includes("import { sessionHead, bodyMatchesHead, sameRecord as sameValue } from './durable-record'"))
-assert.ok(native.includes("import { sameRecord as sameValue } from './durable-record'"))
-for (const file of [native, store]) assert.doesNotMatch(file, /^(?:export )?(?:const|(?:async )?function) (?:sessionHead|bodyMatchesHead|sameValue)\b/m)
+// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
+// track-tools.ts, a native adapter file; it is read here next to register.tsx.
+const tools = readFileSync(new URL('../../hooks/track-tools.ts', import.meta.url), 'utf8')
+assert.ok(tools.includes("import { sameRecord as sameValue } from './durable-record'"))
+for (const file of [native, store, tools]) assert.doesNotMatch(file, /^(?:export )?(?:const|(?:async )?function) (?:sessionHead|bodyMatchesHead|sameValue)\b/m)
 assert.ok(records.includes("import { sameRecord } from './durable-record'"))
 assert.ok(records.includes("export { sameRecord } from './durable-record'"))
 assert.doesNotMatch(records, /^export const sameRecord\b/m)
