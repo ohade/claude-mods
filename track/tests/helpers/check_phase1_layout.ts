@@ -9,7 +9,9 @@ const modules = {
   'pane-layout': ['clampTo', 'windowOf', 'lastStart', 'flowRows', 'buttonWidth', 'clockText', 'questionLabels'],
   'banner-layout': ['composeBanner', 'bannerFits', 'stepCount', 'bannerWords', 'bannerLine', 'collapseBrief', 'collapseSegment', 'collapseLine'],
 }
-const composition = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
+// moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
+const composition = ['register.tsx', 'ui-render.tsx'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
 for (const name of Object.keys(modules)) {
   assert.ok(existsSync(new URL(`../../hooks/${name}.ts`, import.meta.url)), `missing presentation boundary: ${name}.ts`)
 }
