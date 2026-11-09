@@ -1,11 +1,11 @@
 {
   "v": 1,
-  "version": "2.1.319",
-  "provenance": "Engine-written SDK from the native Claude Code 2.1.319 load of the TRACK-30 candidate on 2026-11-07. Reviewed against the retained 2.1.318 declarations: backdrop operations move to theme.set/clear, which these mods do not use; command display-only text and turn-completion attribution are optional additions. Tool declarations add skill edits and image results and rename the widget context selector; these mods have no consumers. The MCP declaration digest records the isolated test profile's tool roster, not an API compatibility claim. The complete Track fixture suite passed 1352 tests across 164 files on this engine. Digests only; generated API and machine-specific tool schemas remain local.",
+  "version": "2.1.321",
+  "provenance": "Engine-written SDK from the native Claude Code 2.1.321 load of the Track pane candidate (5f8b3fd) on 2026-11-09, a fresh isolated-profile session started with --plugin-dir on the worktree Track. Reviewed against the pinned 2.1.319 declarations: every code change is additive or a widening. New: ui.cancelNotify and keyed or delayed notifications, HTTP binary and compressed bodies (request body widens from string to string or base64), streaming and send index fields, optional theme backdrop plus theme colors, breakPromptCache options, a client notification channel and keepsBeneath. Track uses none of these, and its typecheck passes on them. Tool declarations add background-callback timing, an ended-loop wakeup flag and image thumbnails; Track has no consumers. The MCP declaration has no version and is rewritten only at a mod save, so it records the tool roster connected at the last save, not an API compatibility claim. The complete Track fixture suite passed 1425 tests across 183 files on this engine. Digests only; generated API and machine-specific tool schemas remain local.",
   "files": {
     "track/.claude-plugin/types/tsconfig.json": "75aed92a02defcb18af89f4d6f834c976945c28b7e09b0090776eb73c90953f2",
-    "track/.claude-plugin/types/claude-code/index.d.ts": "82a459b27010b760c44c7382179ee5cd8bdd08cebbe2ef61457134a795199f63",
-    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "386b874a35fb28d3a63907d46ead7a990fb8cef1d2e6cb89e48861508f2386dc",
-    "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "a44b5e4ebcf67a37478cf13f3d361f4c165c27ae1072d4d44d231e0b0d99ef6a"
+    "track/.claude-plugin/types/claude-code/index.d.ts": "0e4cf50752bc0827488b5faefef3c6940976bcc18af6397d6c86fa1dd82a25d5",
+    "track/.claude-plugin/types/claude-code-tools/index.d.ts": "224ae35ac73b880a2d45d17d3ca822568d572e5f6df5ea73b9f0f07d1dd13e80",
+    "track/.claude-plugin/types/claude-code-mcp/index.d.ts": "c74f2a4c7a1627b5772ac436464f1819849c07407a257c08aaa2de9135275b91"
   }
 }
