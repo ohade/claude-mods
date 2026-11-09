@@ -5,7 +5,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
-const source = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
+// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): save, resume and the shared grant moved to
+// ledger-store.ts as function declarations; every pinned span below is unchanged.
+const source = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
 const between = (text: string, first: string, last: string): string => {
   const start = text.indexOf(first)
   assert.ok(start >= 0, `start anchor exists: ${first}`)
@@ -13,7 +15,11 @@ const between = (text: string, first: string, last: string): string => {
   assert.ok(end > start, `end anchor exists: ${last}`)
   return text.slice(start, end)
 }
-const body = (name: string): string => between(source, `const ${name} = `, '\n}\n')
+const body = (name: string): string => {
+  const head = `export async function ${name}(`
+  assert.equal(source.indexOf(head, source.indexOf(head) + 1), -1, `${name} is declared once`)
+  return between(source, head, '\n}\n')
+}
 const digest = (text: string): string => createHash('sha256').update(text.trim().split('\n').map(line => line.trimStart()).join('\n')).digest('hex')
 const save = body('saveLedger')
 const resume = body('resumeOwned')
