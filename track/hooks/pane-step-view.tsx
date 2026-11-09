@@ -9,6 +9,8 @@ export type StepRow = {
   step: Step
   // The row's position in the whole list, not in the shown window.
   index: number
+  // The number cell, padded to the list's label width: "S1  │".
+  label: string
   // The paused step's note when it is a lifecycle note (a cancel or a refusal), else undefined.
   lifecycle: string | undefined
   phase: number
@@ -21,6 +23,8 @@ export type StepRow = {
   resultShown: string | undefined
   width: number
   subjectWidth: number
+  // The fold control, present only when the subject needs more than one line.
+  toggle: { open: boolean; onPress: () => unknown } | undefined
   // Present only for a step with a clock.
   clockLabel: string | undefined
   follow: JSX.Element | false
@@ -29,10 +33,11 @@ export type StepRow = {
 }
 
 export const stepView = ({ Box, Button, Text }: PaneElements, row: StepRow): JSX.Element => {
-  const { step: s, index, lifecycle, phase, work, compact, rowIndent, result, headShown, resultShown, width, subjectWidth, clockLabel, follow, onToggleResult, onJumpResult } = row
+  const { step: s, index, label, lifecycle, phase, work, compact, rowIndent, result, headShown, resultShown, width, subjectWidth, toggle, clockLabel, follow, onToggleResult, onJumpResult } = row
   const look = stepLook(s, lifecycle, work, phase)
 
   const dot = <Box key={`s-status-${s.id}`} width={2} flexShrink={0}><Text color={look.glyphColor}>{look.glyph}</Text></Box>
+  const number = <Box key={`s-label-${s.id}`} width={label.length} flexShrink={0}><Text color="merged" bold>{label}</Text></Box>
   const resultKey = result?.resultRequestId === undefined ? undefined : `result:${result.resultRequestId}`
   const resultControl = s.status === 'completed' && <Box key={`s-result-slot-${s.id}`} width={6} flexShrink={0}>
     {result?.resultText === undefined ? <Text dimColor>[ R ]</Text> : <Button key={`r-${s.id}`} variant="primary" label="R" onPress={() => resultKey === undefined
@@ -56,13 +61,15 @@ export const stepView = ({ Box, Button, Text }: PaneElements, row: StepRow): JSX
     </Box>
   )
 
+  const fold = toggle !== undefined && <Box key={`s-fold-${s.id}`} width={1} flexShrink={0}><Button key={`x-s-${s.id}`} plain dimColor label={toggle.open ? '−' : '+'} onPress={toggle.onPress} /></Box>
+
   const reason = lifecycle !== undefined && <Text key={`s-reason-${s.id}`} dimColor>{lifecycle}</Text>
   return (
     <Box key={`row-s-${s.id}`} flexDirection={compact ? 'column' : 'row'} flexShrink={0} columnGap={1} marginLeft={rowIndent}>
-      {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : [dot, text]}
+      {compact ? <Box flexDirection="row" columnGap={1}>{dot}{text}</Box> : [dot, number, text, fold]}
       {reason}
       {follow}
-      {compact ? <Box flexDirection="row" columnGap={1}>{resultControl}{clock}</Box> : clock}
+      {compact ? <Box flexDirection="row" columnGap={1}>{number}{resultControl}{fold}{clock}</Box> : clock}
     </Box>
   )
 }

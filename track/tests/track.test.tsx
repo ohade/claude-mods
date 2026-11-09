@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
-import { atomStore, pane, pluginStore, SESSION, writerLocks } from './kit'
+import { atomStore, pane, pluginStore, SESSION, writerLocks, cell, labelled, textAfter } from './kit'
 
 // The kit cannot raise session.append and has no rewind event to raise (the 2.1.292 API
 // has none). These tests start from a stored ledger answered by a state.get stand-in, and
@@ -174,7 +174,7 @@ test('a short inline pane shows the newest question and counts the ones above it
   const ui = await $.ui.mount(short)
 
   const labels = await listed(ui)
-  expect(labels.some(label => label.includes('Q4. '))).toBe(true)
+  expect(labels.some(label => label === cell('Q4'))).toBe(true)
   expect(labels.some(label => /↑\d/.test(label))).toBe(true)
 })
 
@@ -453,7 +453,7 @@ test('an answered question is green and its answer button is prominent', async (
   const ui = await $.ui.mount(pane('dock'))
 
   const texts = await ui.findAll({ type: 'Text' })
-  const question = texts.find(t => String(t.text ?? '').includes('Q1'))
+  const question = texts.find(t => String(t.text ?? '').startsWith('what is the capital'))
   expect((question?.props as { color?: string } | undefined)?.color).toBe('success')
   const answer = (await ui.findAll({ type: 'Button' })).find(b => b.key === 'a-1')
   expect(answer?.props).toMatchObject({ variant: 'primary', label: 'A' })
@@ -574,7 +574,7 @@ test('step rows are annotated like question rows', async ($, on) => {
   // The dot is its own column, so a wrapped line
   // aligns with the text, not under the dot.
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts.filter(t => /^S\d\. /.test(t))).toEqual(['S1. Write', 'S2. Print', 'S3. Count'])
+  expect(texts.flatMap((t, i) => /^S\d+ +│$/.test(t) ? [`${t} ${textAfter(texts, i)}`] : [])).toEqual(['S1  │ Write', 'S2  │ Print', 'S3  │ Count'])
   // Without current runtime activity, an in-progress row holds a neutral glyph.
   // It does not imply that the person must act.
   expect(texts.filter(t => /^[○◐●◆]$/.test(t)).slice(-3)).toEqual(['●', '◐', '○'])
@@ -593,15 +593,16 @@ test('question and step rows are indented the same under their headers', async (
 
 // Show the whole question; a long one wraps, and its next lines align with
 // the text, not under the dot.
-test('a long question is shown whole, its dot in a column of its own', async ($, on) => {
+test('a long question unfolds to its whole text, its dot in a column of its own', async ($, on) => {
   const head = 'Why did the build fetch the cache when only the lint step was asked for in the brief?'
   const long = { ...BOTH, questions: [{ ...ANSWERED.questions[0], id: 4, head }] }
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: long, version: 1 } }))
 
   const ui = await $.ui.mount(pane('dock'))
+  await ui.press({ key: 'x-q-4' })
 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  expect(texts).toContain(`Q1. ${head}`)
+  expect(labelled(texts, 'Q1', head)).toBe(true)
   expect(texts).toContain('●')
 })
 
@@ -1193,10 +1194,11 @@ const stepRow = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], 
   mock.clock(on)
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
-  const at = texts.findIndex(t => String(t.text ?? '') === 'S2. Print')
+  const at = texts.findIndex(t => String(t.text ?? '') === 'Print')
+  expect(texts[at - 1]?.text).toBe(cell('S2'))
   const color = (t: { props: unknown } | undefined) => (t?.props as { color?: string } | undefined)?.color
 
-  return { glyph: String(texts[at - 1]?.text ?? ''), glyphColor: color(texts[at - 1]), textColor: color(texts[at]) }
+  return { glyph: String(texts[at - 2]?.text ?? ''), glyphColor: color(texts[at - 2]), textColor: color(texts[at]) }
 }
 
 test('while the main session works, the step in progress turns a spinner in grey shades', async ($, on) => {
@@ -1442,12 +1444,13 @@ test('the pane shows a paused step with ⏸ and a waiting step with the blue ◆
   on('state.get', { plugin: 'track', key: 'ledger' }, () => ({ value: { value: parked, version: 1 } }))
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
-  const glyphBefore = (label: string) => {
-    const at = texts.findIndex(t => String(t.text ?? '') === label)
-    return { text: String(texts[at - 1]?.text ?? ''), color: (texts[at - 1]?.props as { color?: string } | undefined)?.color }
+  const glyphBefore = (label: string, subject: string) => {
+    const at = texts.findIndex(t => String(t.text ?? '') === subject)
+    expect(texts[at - 1]?.text).toBe(cell(label))
+    return { text: String(texts[at - 2]?.text ?? ''), color: (texts[at - 2]?.props as { color?: string } | undefined)?.color }
   }
-  expect(glyphBefore('S1. Guard fix').text).toBe('⏸')
-  expect(glyphBefore('S2. Decide the handoff mod')).toEqual({ text: '◆', color: '#1a73e8' })
+  expect(glyphBefore('S1', 'Guard fix').text).toBe('⏸')
+  expect(glyphBefore('S2', 'Decide the handoff mod')).toEqual({ text: '◆', color: '#1a73e8' })
 })
 
 // Regression (a probe on a live pane): ticks past the end of the steps grew the stored

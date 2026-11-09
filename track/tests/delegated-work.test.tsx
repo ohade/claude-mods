@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-08 two external-agent shell launches showed Working and
 // a grey spinner. Explicit delegated work must be brown without an AMQ parser.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, blobPool, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, blobPool, pane, pluginStore, cell } from './kit'
 
 const MAIN = { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: ['external-1', 'external-2'] }
 const STEP = { id: 'plan:1', source: 'plan', subject: 'Consult peers', status: 'in_progress' }
@@ -59,9 +59,10 @@ test('main work remains grey while unrelated shell tasks run', async ($, on) => 
   const ui = await $.ui.mount(pane('dock'))
   const texts = await ui.findAll({ type: 'Text' })
   expect(texts.at(-1)?.text).toContain('Working')
-  const at = texts.findIndex(text => text.text === 'S1. Consult peers')
-  expect(texts[at - 1]?.text).toBe('◐')
-  expect(texts[at - 1]?.props.color).toBe('#5f6670')
+  const at = texts.findIndex(text => text.text === 'Consult peers')
+  expect(texts[at - 1]?.text).toBe(cell('S1'))
+  expect(texts[at - 2]?.text).toBe('◐')
+  expect(texts[at - 2]?.props.color).toBe('#5f6670')
   expect(texts.filter(text => text.text === '⧗')).toHaveLength(1)
 })
 

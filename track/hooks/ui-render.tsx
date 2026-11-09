@@ -7,7 +7,7 @@ import { hasClock, runningClocks, isLifecycleNote, STEP_STATUSES } from './ledge
 import { RESULT_CHARS, truncate } from './ledger-text'
 import { wrappedLines, fitLines } from './terminal-text'
 import { clampTo, clockText, questionLabels, buttonWidth } from './pane-layout'
-import { paneRowMetrics } from './pane-row-metrics'
+import { labelCell, paneRowMetrics } from './pane-row-metrics'
 import { paneViewport } from './pane-viewport-model'
 import { paneBanner } from './pane-banner-model'
 import { paneRootView, paneItem } from './pane-root-view'
@@ -34,6 +34,8 @@ const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hi
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)
 const reveal = atom({ plugin: 'track', key: 'reveal' } as const, {} as Record<string, 'q' | 'a' | 'r' | undefined>)
+// Rows unfolded to their whole text, keyed q:<id> and s:<id>; every row starts folded to one line.
+const expandedRows = atom({ plugin: 'track', key: 'expanded' } as const, {} as Record<string, true | undefined>)
 const pulse = atom({ plugin: 'track', key: 'pulse' } as const, 0)
 const tick = atom({ plugin: 'track', key: 'tick' } as const, 0)
 const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: null, steps: null } as ScrollAt)
@@ -395,6 +397,8 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
   // The tick is read so each one redraws the pane; the time itself is the clock's.
   await read($, tick)
   const opened = await read($, reveal)
+  const expanded = await read($, expandedRows)
+  const toggleExpanded = (key: string) => update($, expandedRows, cur => ({ ...cur, [key]: cur[key] === true ? undefined : true as const }))
   const clockRuns = runningClocks(l).length > 0
   if (ticking.timer === undefined && clockRuns) {
     startTick($)
@@ -519,9 +523,9 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
   // room left, measured in wrapped lines.
   const metrics = paneRowMetrics({
     width, bodyRows, compact, rowIndent, clearWidths, hints, hasQuestions: l.questions.length > 0, hasSteps: l.steps.length > 0,
-    allLabel, doneLabel, questions, steps, opened, resultReveals, qEmpty, sEmpty, questionLabel, clockOf,
+    allLabel, doneLabel, questions, steps, opened, resultReveals, expanded, qEmpty, sEmpty, questionLabel, clockOf,
   })
-  const { roomy, titleRows, qWidth, qControlsRows, stepControlsRows, stepWidth, stepSubjectWidth } = metrics
+  const { qLabelWidth, sLabelWidth, roomy, titleRows, qControlsRows, stepControlsRows, stepWidth, stepSubjectWidth, qToggle, qTextWidth, qOpen, stepToggle, stepOpen } = metrics
   const fitted = paneViewport({ metrics, width, bodyRows, qRing, sRing, at, openRows, questionCount: questions.length, stepCount: steps.length })
   const bannerRows: BannerRow[] = fitted.bannerRows
   const { qHead, sHead, qRows, sRows, qLast, sLast, qStart, qEnd, sStart, sEnd, qHidden, sHidden } = fitted
@@ -583,14 +587,14 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
             ? { dimColor: true, onPress: () => undefined }
             : { variant: answered ? 'primary' : undefined, hotkey: ready ? hotkey : undefined, onPress: () => toggleReveal(q.id, 'a', index) }
         const headBudget = Math.max(1, qRows - qControlsRows)
-        const headShown = fitLines(`${questionLabel(q.id)}. ${q.head}`, qWidth, headBudget)
+        const headShown = fitLines(q.head, qTextWidth(q), qOpen(q) ? headBudget : 1)
         const revealRaw = opened[String(q.id)] === 'q' && savedQuestion ? q.head : opened[String(q.id)] === 'a' && savedAnswer && !nativeAnswer ? q.answerText : undefined
         // A short region still draws one cut line. An empty press is not an answer.
-        const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - wrappedLines(headShown, qWidth))
-        const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qWidth, revealBudget) : undefined
+        const revealBudget = revealRaw === undefined ? 0 : Math.max(1, qRows - qControlsRows - wrappedLines(headShown, qTextWidth(q)))
+        const revealShown = revealRaw !== undefined ? fitLines(revealRaw, qTextWidth(q), revealBudget) : undefined
         return questionView({ Box, Button, Text }, {
           id: q.id, glyph: statusGlyph(q), color, dim: q.status === 'deferred',
-          compact, rowIndent, width: qWidth, headShown,
+          compact, rowIndent, width: qTextWidth(q), toggle: qToggle(q) ? { open: qOpen(q), onPress: () => toggleExpanded(`q:${q.id}`) } : undefined, label: labelCell(questionLabel(q.id), qLabelWidth), headShown,
           // revealRaw above supplies text only for the question and answer sides.
           reveal: revealShown === undefined ? undefined : { side: opened[String(q.id)] as 'q' | 'a', text: revealShown },
           question: questionControl, answer: answerControl,
@@ -602,14 +606,15 @@ export async function paneRender($: Parameters<PaneRenderHook>[0], e: Parameters
         const index = sStart + shownAt
         const lifecycle = s.status === 'paused' && s.note !== undefined && isLifecycleNote(s.note) ? s.note : undefined
         const resultRaw = resultReveals.get(s.id)
-        const headShown = fitLines(`S${index + 1}. ${s.subject}`, stepSubjectWidth(s), Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1)))
+        const headShown = fitLines(s.subject, stepSubjectWidth(s), stepOpen(s) ? Math.max(1, sRows - stepControlsRows(s) - (resultRaw === undefined ? 0 : 1)) : 1)
         const resultShown = resultRaw === undefined ? undefined : fitLines(resultRaw, stepWidth(s), Math.max(1, sRows - stepControlsRows(s) - wrappedLines(headShown, stepSubjectWidth(s))))
         // The follow-up note stays here: the pure view's source check reserves the word for state writes.
         const follow = s.followUp === true && <Text key={`s-follow-${s.id}`}>update status</Text>
         return stepView({ Box, Button, Text }, {
-          step: s, index, lifecycle, phase, work, compact, rowIndent,
+          step: s, index, label: labelCell(`S${index + 1}`, sLabelWidth), lifecycle, phase, work, compact, rowIndent,
           result: stepResults.get(s.id), headShown, resultShown,
           width: stepWidth(s), subjectWidth: stepSubjectWidth(s),
+          toggle: stepToggle(s) ? { open: stepOpen(s), onPress: () => toggleExpanded(`s:${s.id}`) } : undefined,
           clockLabel: hasClock(s) ? clockOf(s) : undefined,
           follow,
           onToggleResult: toggleResult,

@@ -1,7 +1,7 @@
 // CC-170 cases 1, 4 and 5. A user cancel or a permission denial is not a model-chosen pause.
 import { expect, mock, test } from 'claude-code/testing'
 import type { Ledger, Step } from '../types'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pane, pluginStore, cell } from './kit'
 import type { Engine, On } from './kit'
 
 const CANCELLED = "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed."
@@ -30,7 +30,7 @@ test('a tool the user cancelled marks its in-progress step cancelled by you', as
   on('tool.call', { tool: 'Agent' }, () => ({ result: CANCELLED, isError: true }))
   await call($, { tool: 'Agent', tool_use_id: 'toolu_ag', description: 'review', prompt: 'go' })
   expect(ledger.value.steps[0]).toMatchObject({ status: 'paused', note: 'cancelled by you' })
-  expect(await textsOf($)).toEqual(expect.arrayContaining(['S1. Launch the agent', 'cancelled by you', '⊘']))
+  expect(await textsOf($)).toEqual(expect.arrayContaining([cell('S1'), 'Launch the agent', 'cancelled by you', '⊘']))
 })
 
 test('a model pause keeps its note when a later cancel arrives after the step is already paused', async ($, on) => {
@@ -87,7 +87,7 @@ test('a finished background agent flags its still-open step and nudges once, wit
   expect(ledger.value.steps[0]?.delegated).toBe(true)
   const nudges = (submitted?.context ?? []).filter(line => line.includes('background work finished'))
   expect(nudges).toEqual(['track: background work finished while plan:1 is still delegated in_progress; update it with mcp__track__mark_step.'])
-  expect(await textsOf($)).toEqual(expect.arrayContaining(['S1. Consult peers', 'update status']))
+  expect(await textsOf($)).toEqual(expect.arrayContaining([cell('S1'), 'Consult peers', 'update status']))
 })
 
 test('a finished task does not flag an older paused delegated step', async ($, on) => {

@@ -37,7 +37,8 @@ for (const width of [25, 60]) {
       } else {
         const text = await ui.find({ key: 's-text-plan:1' })
         const row = await ui.find({ key: 'row-s-plan:1' })
-        expect(Number(text?.props.width) + expected.length + 2 + Number(row?.props.marginLeft) + 2).toBe(width)
+        const label = await ui.find({ key: 's-label-plan:1' })
+        expect(Number(text?.props.width) + expected.length + 2 + Number(row?.props.marginLeft) + 2 + Number(label?.props.width) + 1).toBe(width)
       }
     })
   }

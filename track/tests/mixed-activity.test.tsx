@@ -1,7 +1,7 @@
 // FIXTURE: CC #149, reported 2026-10-08. A user wait must not hide concurrent work
 // or stop its pulse. Delegated step ownership never supplies an agent count.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, atomStore, pane } from './kit'
+import { EMPTY, atomStore, pane, cell } from './kit'
 
 const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[], tasks: [] as string[] }
 const WAIT = { id: 'plan:1', source: 'plan', subject: 'Need user decision', status: 'waiting' }
@@ -54,9 +54,10 @@ test('a user wait does not replace a working main step with a waiting diamond', 
   expect(rows).toContain('Working')
   expect(rows).toContain('S1')
   expect(rows).toContain('S2')
-  const at = texts.findIndex(t => t.text === 'S2. Running work')
-  expect(texts[at - 1]?.text).toBe('◐')
-  expect(texts[at - 1]?.props.color).toBe('#5f6670')
+  const at = texts.findIndex(t => t.text === 'Running work')
+  expect(texts[at - 1]?.text).toBe(cell('S2'))
+  expect(texts[at - 2]?.text).toBe('◐')
+  expect(texts[at - 2]?.props.color).toBe('#5f6670')
   expect(texts.filter(t => t.text === '◆')).toHaveLength(2)
   await clock.advance(1300)
   expect(phase.writes.length).toBeGreaterThanOrEqual(2)

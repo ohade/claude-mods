@@ -1,6 +1,6 @@
 // FIXTURE: a question dialog blocks main work, while explicitly delegated work continues.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, atomStore, pane } from './kit'
+import { EMPTY, atomStore, pane, cell } from './kit'
 
 test('delegated work pulses while an open dialog blocks an in-progress main row', async ($, on) => {
   const clock = mock.clock(on)
@@ -17,8 +17,9 @@ test('delegated work pulses while an open dialog blocks an in-progress main row'
   await clock.advance(1300)
   expect(phase.writes.length).toBeGreaterThanOrEqual(2)
   const texts = await ui.findAll({ type: 'Text' })
-  const at = texts.findIndex(t => t.text === 'S1. Wait for dialogue')
-  expect(texts[at - 1]?.text).toBe('◐')
+  const at = texts.findIndex(t => t.text === 'Wait for dialogue')
+  expect(texts[at - 1]?.text).toBe(cell('S1'))
+  expect(texts[at - 2]?.text).toBe('◐')
   expect(texts.filter(t => t.text === '⧗')).toHaveLength(2)
   expect(texts.filter(t => t.text === '◆')).toHaveLength(1)
 })

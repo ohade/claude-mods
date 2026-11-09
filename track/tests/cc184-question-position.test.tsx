@@ -1,7 +1,7 @@
 // FIXTURE: after clearing answered questions the pane still showed Q25 instead
 // of Q1. Display positions must not replace permanent model/store identities.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
+import { EMPTY, SESSION, atomStore, pane, pluginStore, labelled } from './kit'
 import type { On } from './kit'
 import type { Ledger, Question } from '../types'
 
@@ -45,7 +45,7 @@ for (const width of [17, 80]) {
     expect(marked.result).toBe('Q25 marked answered.')
     expect(fixture.ledger.value.questions[2]).toMatchObject({ id: 25, status: 'answered', sourceId: `${SESSION}:Q25` })
     await ui.redraw()
-    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toContain('Q1. Keep')
+    expect(labelled((await ui.findAll({ type: 'Text' })).map(t => t.text), 'Q1', 'Keep')).toBe(true)
     expect(await ui.find({ key: 'row-q-25' })).toBeDefined()
     expect(await ui.find({ key: 'row-q-1' })).toBeUndefined()
   })
@@ -56,8 +56,8 @@ test('positions follow visible array order without reusing permanent ids or chan
   const before = await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)
   const ui = await $.ui.mount(pane('dock', 80, 40))
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text)
-  expect(texts).toContain('Q1. Keep')
-  expect(texts).toContain('Q2. Old 4')
+  expect(labelled(texts, 'Q1', 'Keep')).toBe(true)
+  expect(labelled(texts, 'Q2', 'Old 4')).toBe(true)
   const after = await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)
   expect(JSON.parse(String(after.result))).toEqual(JSON.parse(String(before.result)))
   expect(fixture.ledger.value.questions.map(q => q.id)).toEqual([99, 25, 4])

@@ -7,7 +7,7 @@ import type { ProcessRunResult } from 'claude-code'
 import type { Baseline, Checkpoint, Ledger, Step } from '../types'
 import { checksumOf, describeCheckpoint } from '../hooks/checkpoint'
 import { identifyLedger } from '../hooks/reconcile'
-import { EMPTY, TX_REQUEST, atomStore, blobPool, logs, pane, pluginStore, trackCommand } from './kit'
+import { EMPTY, TX_REQUEST, atomStore, blobPool, logs, pane, pluginStore, trackCommand, cell } from './kit'
 import type { Engine, LockAck, On, WriterLockOptions } from './kit'
 
 const CONFIG = '/fixture/config'
@@ -450,7 +450,7 @@ test('TRACK-39 V3 P1b independently seeded public resume reads the v3 root', asy
   expect(stepLabels(f.ledger.value), 'P1b: resumed ledger rows').toEqual(['A', 'B'])
   const ui = await $.ui.mount(pane('dock'))
   const text = (await ui.findAll({ type: 'Text' })).map(element => String(element.text ?? '')).join('\n')
-  expect(text.includes('S1. A') && text.includes('S2. B'), 'P1b: pane renders both concrete resumed row labels').toBe(true)
+  expect(text.includes(`${cell('S1')}\nA`) && text.includes(`${cell('S2')}\nB`), 'P1b: pane renders both concrete resumed row labels').toBe(true)
   const result = await checkpoint($, f)
   expect(checkpointReceipt(result), 'P1b: full checkpoint preserves seeded semantic revision').toEqual(seeded.root?.checkpoint)
   const stored = await modelRead(f)

@@ -1,7 +1,7 @@
 // Ohad's banner decisions at install review, 2026-10-09: idle with pending steps says how many
 // are left, and the banner collapses by whole steps shown, not by lines.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, atomStore, pane } from './kit'
+import { EMPTY, atomStore, pane, cell } from './kit'
 
 const IDLE = { isWorking: false, agentCalls: [] as string[], askCalls: [] as string[], background: [] as string[], tasks: [] as string[] }
 
@@ -31,7 +31,7 @@ const textOf = async (ui: Ui, key: string) => String((await bannerRows(ui)).find
 // The steps whose first line is drawn: each step's text starts with its number.
 const shownSteps = async (ui: Ui, count: number) => {
   const texts = (await ui.findAll({ type: 'Text' })).map(t => String(t.text ?? ''))
-  return Array.from({ length: count }, (_, i) => `S${i + 1}. `).filter(head => texts.some(t => t.includes(head))).length
+  return Array.from({ length: count }, (_, i) => cell(`S${i + 1}`)).filter(label => texts.some(t => t === label)).length
 }
 
 test('idle with pending steps says how many are left instead of safe to close', async ($, on) => {

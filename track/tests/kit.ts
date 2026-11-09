@@ -292,6 +292,20 @@ export const pluginStore = (on: On, initial: Record<string, unknown> = {}, capBy
 }
 
 // The debug lines and toasts the mod writes.
+// The pane's number cell as drawn in a wide pane: the label padded for two digits, then the rule.
+export const cell = (label: string, width = 3): string => `${label.padEnd(width)} │`
+
+// The dim placeholders a row may draw between its number and its text.
+const PLACEHOLDERS = new Set(['[ Q ]', '[ A ]', '[ R ]'])
+
+// The row text drawn after a number cell at index at, past any control placeholders.
+export const textAfter = (texts: readonly string[], at: number): string | undefined => texts.slice(at + 1).find(t => !PLACEHOLDERS.has(t))
+
+// True when the pane draws the number cell for label with text: before it in a wide pane (past
+// control placeholders), on the controls line right after it in a narrow one.
+export const labelled = (texts: readonly string[], label: string, text: string): boolean =>
+  texts.some((t, i) => (t === cell(label) && textAfter(texts, i) === text) || (t === text && texts[i + 1] === cell(label)))
+
 export const logs = (on: On) => {
   const lines: string[] = []
   on('ui.log', (_, e) => {

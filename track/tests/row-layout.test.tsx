@@ -33,7 +33,7 @@ test('four short steps use four horizontal rows, with a fixed status column', as
     const status = children.find(child => child.props?.key === `s-status-plan:${i}`)
     expect(status?.props?.width).toBe(2)
     expect(status?.props?.flexShrink).toBe(0)
-    expect(row?.text).toContain(`S${i}. Work item ${i}`)
+    expect(row?.text).toMatch(new RegExp(`S${i} +│.*Work item ${i}$`))
   }
 })
 

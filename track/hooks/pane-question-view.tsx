@@ -10,6 +10,10 @@ export type QuestionRow = {
   compact: boolean
   rowIndent: number
   width: number
+  // The number cell, padded to the list's label width: "Q1  │".
+  label: string
+  // The fold control, present only when the question needs more than one line.
+  toggle: { open: boolean; onPress: () => unknown } | undefined
   headShown: string
   reveal: { side: 'q' | 'a' | undefined; text: string } | undefined
   question: Control | undefined
@@ -18,8 +22,9 @@ export type QuestionRow = {
 }
 
 export const questionView = ({ Box, Button, Text }: PaneElements, row: QuestionRow): JSX.Element => {
-  const { id, glyph, color, dim, compact, rowIndent, width, headShown, reveal, question, answer, onWithdraw } = row
+  const { id, glyph, color, dim, compact, rowIndent, width, toggle, label, headShown, reveal, question, answer, onWithdraw } = row
   const dot = <Text color={color} dimColor={dim}>{glyph}</Text>
+  const number = <Box key={`q-label-${id}`} width={label.length} flexShrink={0}><Text color="merged" bold>{label}</Text></Box>
   const markers = (
     <Box key={`q-markers-${id}`} width={13} flexShrink={0} flexDirection="row" columnGap={1}>
       <Box key={`q-question-slot-${id}`} width={6} flexShrink={0}>
@@ -36,6 +41,7 @@ export const questionView = ({ Box, Button, Text }: PaneElements, row: QuestionR
       {reveal !== undefined && <Box key={`reveal-${reveal.side}-${id}`}><Text>{reveal.text}</Text></Box>}
     </Box>
   )
+  const fold = toggle !== undefined && <Box key={`q-fold-${id}`} width={1} flexShrink={0}><Button key={`x-q-${id}`} plain dimColor label={toggle.open ? '−' : '+'} onPress={toggle.onPress} /></Box>
   const remove = <Button key={`del-${id}`} plain dimColor label="✕" onPress={onWithdraw} />
 
   // The text gets the pane's width when its fixed control column would crowd it out.
@@ -45,8 +51,8 @@ export const questionView = ({ Box, Button, Text }: PaneElements, row: QuestionR
       {/* Native Fragment is a column Box, so arrays keep row children flat. */}
       {compact ? [
         <Box flexDirection="row" columnGap={1}>{dot}{text}</Box>,
-        <Box flexDirection="row" columnGap={1}>{markers}{remove}</Box>,
-      ] : [dot, markers, text, remove]}
+        <Box flexDirection="row" columnGap={1}>{number}{markers}{fold}{remove}</Box>,
+      ] : [dot, number, markers, text, fold, remove]}
     </Box>
   )
 }
