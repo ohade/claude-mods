@@ -75,7 +75,9 @@ const callName = (node: ts.Node) => ts.isCallExpression(node) && ts.isIdentifier
 // TRACK-46 slice 7 (2026-11-09, Ohad's standing approval): clearQuestions and clearSteps moved to
 // pane-actions.tsx as function declarations whose body returns the same pressOwned call; the inline
 // presses stay in register.tsx. Each file is parsed on its own; a name must occur in exactly one.
-const NATIVE = ['register.tsx', 'pane-actions.tsx'].map(file => parse(readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')))
+// TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
+// moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
+const NATIVE = ['register.tsx', 'pane-actions.tsx', 'ui-render.tsx'].map(file => parse(readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')))
 const ownerOf = (name: string): ts.SourceFile => {
   const files = NATIVE.filter(file => all(file).some(node => (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node)) && node.name?.getText(file) === name))
   assert.equal(files.length, 1, `${name} is declared in exactly one native file`)
