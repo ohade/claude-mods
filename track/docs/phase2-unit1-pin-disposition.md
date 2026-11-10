@@ -88,6 +88,7 @@ Kept:
 - architecture.ts | L23 | C | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=32
 - architecture.ts | L45-58 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=33
 - architecture.ts | L63-87 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=34
+- architecture.ts (not a check_*; listed because the plan names it) | L23-42 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=31
 - check_classifier_grant.ts | L8-15 | C | deleted:R3 (declared-once assert only; the start>=0/close guards stay as extraction for kept rows) | pins=2 | row=74
 - check_classifier_grant.ts | L18-19 + L20-28 | B | kept:K1 needs fault-proof | pins=1 | row=75
 - check_classifier_grant.ts | L30 | D | kept:K1 needs fault-proof (none found) | pins=1 | row=76
