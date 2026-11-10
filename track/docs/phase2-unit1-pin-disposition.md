@@ -1,0 +1,315 @@
+# TRACK-46 Phase 2, unit 1: pin disposition
+
+Record of every structure pin in `tests/helpers/check_*.ts` and what unit 1 did with it.
+One line per inventory row: helper, line range at commit f3c943f, class, disposition, pin count.
+
+## Rule codes
+
+Deleted:
+- R1: hash of a file at a historical commit. History cannot change, so it guarded nothing.
+- R2: sha256 of a whole live source file. It failed on any edit, comments included.
+- R3: layout check: line cap, file name, owner, declaration form or call count.
+- R4: already enforced by the compiler or the architecture check.
+- R5: behaviour proven by a behaviour test that kills a recorded fault (part A, 29 faults).
+
+Kept:
+- K1: guards real behaviour, but no test is proven to catch a fault there yet. Needs fault-proof before removal.
+- K2: guards code that no test can reach. Carried to unit 5 (dead code).
+- K3: a rule that behaviour cannot test (for example the SDK-import rule). Stays.
+- K4: a behaviour section, not a pin.
+- K5: unclear, or shared with a kept check. Kept on doubt.
+
+## Corrections after the first pass (lead review, 2026-11-10)
+
+- `check_clear_commands.ts` L128-150 is listed below as `deleted:R5`. Two of its lines were restored: the
+  assertion that each bulk-clear press publishes or saves, and that every `publishGate` and `saveLedger`
+  call carries the owner token. A deliberate fault (a press calls `publishGate($)` without the token)
+  passes the whole behaviour suite, so that assertion is a K1 pin. The write-fence lines of the same row
+  stay deleted: part A's faults prove them.
+- Four extra faults were run against the full suite before accepting the deletions:
+  press saves without the owner token (caught for one press of five), press gates without the owner token
+  (not caught), `markStep` deciding from a stale read (caught by two retry tests), `replaceTodos` deciding
+  from a stale read (caught by one retry test).
+- 25 sha256 literals remain in the helper checks (214 before). All fall under K1 or K4; the list is at the end.
+
+## Rows
+
+- check_pane_frame.ts | L9-10 | C | deleted:R3 | pins=1 | row=35
+- check_pane_frame.ts | L17-19 | A | deleted:R1 | pins=1 | row=36
+- check_pane_frame.ts | L22-44 | A | deleted:R1 | pins=5 | row=37
+- check_pane_frame.ts | L49-99 | A | deleted:R1 | pins=45 | row=38
+- check_pane_frame.ts | L47 | B | kept:K1 needs fault-proof (AST arrow hashes L47; covered by named tests, not a whole-file hash) | pins=2 | row=39
+- check_pane_frame.ts | L114-134 | B | deleted:R2 whole-file hashes of live files | pins=13 | row=40
+- check_pane_frame.ts | L136 | C | deleted:R3 | pins=1 | row=41
+- check_pane_frame.ts | L137-139 | D | kept:K3 proposed keep | pins=1 | row=42
+- check_pane_frame.ts | L140 | - | kept:K4 behaviour section / no pin | pins=1 | row=43
+- check_pane_models.ts | L9-10 | C | deleted:R3 | pins=2 | row=44
+- check_pane_models.ts | L12 | C | deleted:R3 | pins=2 | row=45
+- check_pane_models.ts | L13 | D | kept:K3 proposed keep | pins=2 | row=46
+- check_pane_models.ts | L17-67 | A | deleted:R1 | pins=45 | row=47
+- check_pane_models.ts | L83-104 | B | deleted:R2 whole-file hashes of live files | pins=13 | row=48
+- check_pane_models.ts | L106 | - | kept:K4 behaviour section / no pin | pins=0 | row=49
+- check_pane_viewport.ts | L9-10 | C | deleted:R3 | pins=2 | row=50
+- check_pane_viewport.ts | L12 | C | deleted:R3 | pins=2 | row=51
+- check_pane_viewport.ts | L13 | D | kept:K3 proposed keep | pins=2 | row=52
+- check_pane_viewport.ts | L17-61 | A | deleted:R1 | pins=39 | row=53
+- check_pane_viewport.ts | L78-102 | A | deleted:R1 | pins=6 | row=54
+- check_pane_viewport.ts | L103-106 | B | deleted:R2 whole-file hashes of live files | pins=14 | row=55
+- check_pane_viewport.ts | L109-112 | - | kept:K4 behaviour section / no pin | pins=0 | row=56
+- check_audit_layout.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=0
+- check_cleanup_conflict.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=1
+- check_cleanup_rollout.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=2
+- check_cleanup_saved_age.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=3
+- check_eviction_borrowed_guards.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=4
+- check_eviction_failed_release.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=5
+- check_eviction_import_clock.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=6
+- check_eviction_rejected_guards.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=7
+- check_expiry_recovery.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=8
+- check_ledger_policy.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=9
+- check_owned_cleanup.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=10
+- check_pending_fairness.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=11
+- check_reconcile.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=12
+- check_restore_identity.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=13
+- check_retention_attempt.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=14
+- check_retention_clock.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=15
+- check_retention_large.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=16
+- check_retention_noop.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=17
+- check_retention_reserve.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=18
+- check_retention.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=19
+- check_size_index.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=20
+- check_switch_expiry.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=21
+- check_task_history_reconciliation.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=22
+- check_track44_ambiguous_colon_title.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=23
+- check_track44_candidate_budget.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=24
+- check_track44_request_colons.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=25
+- check_track44_waiting_title.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=26
+- check_track30_owner_contract.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=27
+- check_blob_store.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=57
+- architecture.ts | L23 | C | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=32
+- architecture.ts | L45-58 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=33
+- architecture.ts | L63-87 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=34
+- check_classifier_grant.ts | L8-15 | C | deleted:R3 (declared-once assert only; the start>=0/close guards stay as extraction for kept rows) | pins=2 | row=74
+- check_classifier_grant.ts | L18-19 + L20-28 | B | kept:K1 needs fault-proof | pins=1 | row=75
+- check_classifier_grant.ts | L30 | D | kept:K1 needs fault-proof (none found) | pins=1 | row=76
+- check_classifier_grant.ts | L31 | D | kept:K2 unreachable, carried to unit 5 | pins=1 | row=77
+- check_classifier_grant.ts | L32 | D | kept:K1 needs fault-proof | pins=1 | row=78
+- check_classifier_grant.ts | L33 | D | kept:K1 needs fault-proof | pins=1 | row=79
+- check_clear_arm_writes.ts | L10 | C | kept:K5 unclear (NATIVE list is the input of kept scans L35-45 and L58-59; deleting it breaks them) | pins=1 | row=58
+- check_clear_arm_writes.ts | L35-45 | D | kept:K3 proposed keep | pins=2 | row=59
+- check_clear_arm_writes.ts | L36-37 | C | deleted:R3 (L37 owner assert and L38 declaration count) | pins=2 | row=60
+- check_clear_arm_writes.ts | L47-48 | D | kept:K1 needs fault-proof | pins=1 | row=61
+- check_clear_arm_writes.ts | L50-52 | C | deleted:R3 (L50-52 call counts) | pins=2 | row=62
+- check_clear_arm_writes.ts | L54-55 | C | deleted:R3 | pins=1 | row=63
+- check_clear_arm_writes.ts | L56-57 | C | deleted:R3 (L57 owner assert only; L56 body() stays for kept L58-59) | pins=1 | row=64
+- check_clear_arm_writes.ts | L58-59 | D | kept:K3 proposed keep | pins=1 | row=65
+- check_clear_commands.ts | L62-67 | - | kept:K4 behaviour section / no pin | pins=0 | row=66
+- check_clear_commands.ts | L69 | C | deleted:R3 | pins=1 | row=67
+- check_clear_commands.ts | L70 | D | kept:K3 proposed keep | pins=1 | row=68
+- check_clear_commands.ts | L80 | C | deleted:R3 (the exactly-one-declaration assert in ownerOf only; NATIVE/ownerOf stay for kept rows) | pins=2 | row=69
+- check_clear_commands.ts | L85-102 | D | kept:K1 needs fault-proof | pins=4 | row=70
+- check_clear_commands.ts | L104-106 | A | deleted:R1 (sha256 assert only; the git show and its status assert stay because kept L163 uses baseline.stdout) | pins=1 | row=71
+- check_clear_commands.ts | L163 | B | kept:K1 needs fault-proof | pins=4 | row=72
+- check_clear_commands.ts | L128-150 | D | deleted:R5 (pressOwned/token/assertOwner asserts; extraction kept with two type casts so kept L163 still compiles) | pins=3 | row=73
+- check_cwd_spawn.ts | L12 | C | deleted:R3 | pins=1 | row=88
+- check_cwd_spawn.ts | L35-39 + L99-101, L111 | C | kept:K3 proposed keep | pins=4 | row=89
+- check_diagnose_boundary.ts | L10 | C | deleted:R3 | pins=2 | row=90
+- check_diagnose_boundary.ts | L11 | C | deleted:R3 | pins=2 | row=91
+- check_diagnose_boundary.ts | L12 | D | kept:K3 proposed keep | pins=2 | row=92
+- check_diagnose_boundary.ts | L15 | C | deleted:R3 | pins=3 | row=93
+- check_diagnose_boundary.ts | L16-19 | C | deleted:R3 | pins=6 | row=94
+- check_diagnose_boundary.ts | L20 | C | deleted:R3 | pins=1 | row=95
+- check_diagnose_boundary.ts | L21-114 | - | kept:K4 behaviour section / no pin | pins=0 | row=96
+- check_durable_record.ts | L9 | C | deleted:R3 | pins=1 | row=97
+- check_durable_record.ts | L15 | C | deleted:R3 | pins=1 | row=98
+- check_durable_record.ts | L16 | D | kept:K3 proposed keep | pins=1 | row=99
+- check_durable_record.ts | L17 | D | kept:K1 needs fault-proof | pins=1 | row=100
+- check_durable_record.ts | L21, L25, L27-33 | C | deleted:R3 | pins=12 | row=101
+- check_durable_record.ts | L34 | B | kept:K1 needs fault-proof | pins=1 | row=102
+- check_durable_record.ts | L35 | B | deleted:R4 | pins=1 | row=103
+- check_durable_record.ts | L43-44 | B | kept:K1 needs fault-proof | pins=2 | row=104
+- check_durable_record.ts | L45 | B | kept:K1 needs fault-proof | pins=1 | row=105
+- check_durable_record.ts | L49-50 | C | deleted:R3 | pins=2 | row=106
+- check_durable_record.ts | L51 | - | kept:K4 behaviour section / no pin | pins=0 | row=107
+- check_history_receipt_boundary.ts | L5 | C | deleted:R3 | pins=1 | row=28
+- check_history_view.ts | L8 | C | deleted:R3 | pins=1 | row=80
+- check_history_view.ts | L14-15 | C | deleted:R3 | pins=3 | row=81
+- check_history_view.ts | L16 | C | deleted:R3 | pins=1 | row=82
+- check_history_view.ts | L17 | D | kept:K3 proposed keep | pins=1 | row=83
+- check_history_view.ts | L18 | C | deleted:R3 | pins=1 | row=84
+- check_history_view.ts | L24 | B | kept:K1 needs fault-proof | pins=1 | row=85
+- check_history_view.ts | L25 | B | kept:K1 needs fault-proof | pins=1 | row=86
+- check_history_view.ts | L27 | - | kept:K4 behaviour section / no pin | pins=0 | row=87
+- check_legacy_save_workflow.ts | L10 | C | deleted:R3 | pins=1 | row=109
+- check_legacy_save_workflow.ts | L8, L14-15 | C | deleted:R3 (declared-once assert L15 only; saves/save extraction stays for kept L17-25) | pins=1 | row=110
+- check_legacy_save_workflow.ts | L17-25 | D | kept:K1 needs fault-proof | pins=2 | row=111
+- check_legacy_save_workflow.ts | L26 | C | deleted:R3 | pins=1 | row=112
+- check_legacy_save_workflow.ts | L27-29 | C | deleted:R3 | pins=6 | row=113
+- check_legacy_save_workflow.ts | L30 | B | deleted:R5 | pins=1 | row=114
+- check_legacy_save_workflow.ts | L31-41 | D | kept:K3 proposed keep | pins=3 | row=115
+- check_legacy_save_workflow.ts | L42-49 | D | kept:K1 needs fault-proof | pins=1 | row=116
+- check_legacy_save_flow_ports.ts | no pin | - | kept:K4 behaviour section / no pin | pins=0 | row=108
+- check_pane_question_boundary.ts | L6 | C | deleted:R3 | pins=1 | row=117
+- check_pane_question_boundary.ts | L13 | C | deleted:R3 | pins=1 | row=118
+- check_pane_question_boundary.ts | L14-16 | C | deleted:R3 | pins=3 | row=119
+- check_pane_question_boundary.ts | L17 | D | kept:K3 proposed keep | pins=1 | row=120
+- check_pane_question_boundary.ts | L18-19 | C | deleted:R3 | pins=2 | row=121
+- check_pane_question_boundary.ts | L20-22 | B | kept:K1 needs fault-proof | pins=3 | row=122
+- check_pane_question_boundary.ts | L23-24 | B | kept:K1 needs fault-proof | pins=2 | row=123
+- check_pane_question_boundary.ts | L25 | B | kept:K1 needs fault-proof | pins=1 | row=124
+- check_pane_question_boundary.ts | L28 | B | kept:K1 needs fault-proof | pins=1 | row=125
+- check_pane_question_boundary.ts | L29-34 | C | deleted:R3 | pins=12 | row=126
+- check_pane_question_boundary.ts | L35-36 | B | kept:K1 needs fault-proof | pins=2 | row=127
+- check_pane_question_boundary.ts | L37 | D | kept:K1 needs fault-proof | pins=1 | row=128
+- check_pane_question_boundary.ts | L38-40 | C | deleted:R3 | pins=3 | row=129
+- check_pane_step_boundary.ts | L6-8 | C | deleted:R3 | pins=3 | row=130
+- check_pane_step_boundary.ts | L21 | C | deleted:R3 | pins=3 | row=131
+- check_pane_step_boundary.ts | L22 | D | kept:K3 proposed keep | pins=3 | row=132
+- check_pane_step_boundary.ts | L24 | B | kept:K1 needs fault-proof | pins=1 | row=133
+- check_pane_step_boundary.ts | L25-27 | D | kept:K3 proposed keep | pins=2 | row=134
+- check_pane_step_boundary.ts | L28-31 | C | deleted:R3 | pins=7 | row=135
+- check_pane_step_boundary.ts | L32-33 | C | deleted:R3 | pins=4 | row=136
+- check_pane_step_boundary.ts | L34-36 | C | deleted:R3 | pins=3 | row=137
+- check_pane_step_boundary.ts | L37 | B | kept:K1 needs fault-proof | pins=1 | row=138
+- check_pane_step_boundary.ts | L38 | B | kept:K1 needs fault-proof | pins=1 | row=139
+- check_pane_step_boundary.ts | L39 | D | kept:K3 proposed keep | pins=1 | row=140
+- check_pane_step_boundary.ts | L42-76 | - | kept:K4 behaviour section / no pin | pins=0 | row=141
+- check_phase1_codecs.ts | L14-19 | C | deleted:R3 | pins=3 | row=151
+- check_phase1_codecs.ts | L13, L21-23 | C | deleted:R3 | pins=42 | row=152
+- check_phase1_codecs.ts | L25 | C | deleted:R3 | pins=3 | row=153
+- check_phase1_codecs.ts | L26-31 | D | kept:K3 proposed keep | pins=3 | row=154
+- check_phase1_codecs.ts | L33 | C | deleted:R3 | pins=1 | row=155
+- check_phase1_codecs.ts | L34 | C | deleted:R3 | pins=2 | row=156
+- check_phase1_codecs.ts | L39-107 | - | kept:K4 behaviour section / no pin | pins=0 | row=157
+- check_phase1_layout.ts | L15-17 | C | deleted:R3 | pins=3 | row=158
+- check_phase1_layout.ts | L14, L20-23 | C | deleted:R3 | pins=40 | row=159
+- check_phase1_layout.ts | L24 | C | deleted:R3 | pins=3 | row=160
+- check_phase1_layout.ts | L25 | C | deleted:R3 | pins=3 | row=161
+- check_phase1_layout.ts | L26-34 | D | kept:K3 proposed keep | pins=3 | row=162
+- check_phase1_layout.ts | L36-40 | C | deleted:R3 | pins=6 | row=163
+- check_phase1_layout.ts | L41 | C | deleted:R3 | pins=1 | row=164
+- check_phase1_layout.ts | L47-77 | - | kept:K4 behaviour section / no pin | pins=0 | row=165
+- check_phase1_turn.ts | L7 | C | deleted:R3 | pins=1 | row=166
+- check_phase1_turn.ts | L11 | C | deleted:R3 | pins=1 | row=167
+- check_phase1_turn.ts | L23 | C | deleted:R3 | pins=1 | row=168
+- check_phase1_turn.ts | L24 | C | deleted:R3 | pins=1 | row=169
+- check_phase1_turn.ts | L25-27 | D | kept:K3 proposed keep | pins=1 | row=170
+- check_phase1_turn.ts | L28-33 | C | deleted:R3 | pins=12 | row=171
+- check_phase1_turn.ts | L34-69 | - | kept:K4 behaviour section / no pin | pins=0 | row=172
+- check_prompt_intake.ts | L9 | C | deleted:R3 | pins=2 | row=173
+- check_prompt_intake.ts | L11 | C | deleted:R3 | pins=2 | row=174
+- check_prompt_intake.ts | L12 | D | kept:K3 proposed keep | pins=2 | row=175
+- check_prompt_intake.ts | L23-24 | D | kept:K1 needs fault-proof | pins=1 | row=176
+- check_prompt_intake.ts | L27 | D | kept:K1 needs fault-proof | pins=1 | row=177
+- check_prompt_intake.ts | L28-29 | B | kept:K1 needs fault-proof | pins=2 | row=178
+- check_prompt_intake.ts | L30-32 | B | kept:K1 needs fault-proof | pins=3 | row=179
+- check_prompt_intake.ts | L14-15 | - | kept:K4 behaviour section / no pin | pins=0 | row=180
+- check_question_commands.ts | L8 | C | deleted:R3 | pins=1 | row=181
+- check_question_commands.ts | L12 | D | kept:K3 proposed keep | pins=1 | row=182
+- check_question_commands.ts | L21-22 | C | deleted:R3 (CONSUMERS and the per-consumer import assert; NATIVE stays as input of kept scan) | pins=2 | row=183
+- check_question_commands.ts | L33-35 | C | kept:K5 unclear (L34 calls.length>0 is the non-vacuity guard of kept row L36-40; deleting it would weaken that kept assertion) | pins=11 | row=184
+- check_question_commands.ts | L36-40 | D | kept:K1 needs fault-proof | pins=9 | row=185
+- check_question_commands.ts | L10 | - | kept:K4 behaviour section / no pin | pins=0 | row=186
+- check_question_identity_boundary.ts | L6 | C | deleted:R3 | pins=1 | row=29
+- check_question_identity_boundary.ts | L10-12 | C | deleted:R3 | pins=3 | row=30
+- check_restore_boundary.ts | L7 | C | deleted:R3 | pins=3 | row=187
+- check_restore_boundary.ts | L10, L13 | C | deleted:R3 (L13 per-module composition import only; composition stays for kept L17-18) | pins=3 | row=188
+- check_restore_boundary.ts | L14 | D | kept:K3 proposed keep | pins=3 | row=189
+- check_restore_boundary.ts | L15 | C | deleted:R3 | pins=3 | row=190
+- check_restore_boundary.ts | L17 | B | kept:K1 needs fault-proof | pins=1 | row=191
+- check_restore_boundary.ts | L18 | B | kept:K1 needs fault-proof | pins=1 | row=192
+- check_restore_boundary.ts | L20-137 | - | kept:K4 behaviour section / no pin | pins=0 | row=193
+- check_retention_boundary.ts | L28 | C | deleted:R3 | pins=6 | row=194
+- check_retention_boundary.ts | L43 | C | deleted:R3 | pins=6 | row=195
+- check_retention_boundary.ts | L31-35 + L44 | D | kept:K3 proposed keep | pins=6 | row=196
+- check_retention_boundary.ts | L45-48 | C | deleted:R3 | pins=47 | row=197
+- check_retention_boundary.ts | L38-39 | C | deleted:R3 (L39 assert only; equalityForward const stays for kept body filter L52) | pins=1 | row=198
+- check_retention_boundary.ts | L50-53 | B | kept:K1 needs fault-proof | pins=6 | row=199
+- check_retention_boundary.ts | L56-62 | C | deleted:R3 | pins=4 | row=200
+- check_retention_boundary.ts | L65-72 | C | deleted:R3 | pins=9 | row=201
+- check_save_journal.ts | L1-180 | - | kept:K4 behaviour section / no pin | pins=0 | row=202
+- check_save_journal.ts | L185-186 | A | deleted:R1 (S0 fixture hash) | pins=1 | row=203
+- check_save_journal.ts | L208-212 | B | kept:K1 needs fault-proof | pins=4 | row=204
+- check_save_journal.ts | L224-229 | D | deleted:R5 (S3 six error strings) | pins=6 | row=205
+- check_save_journal.ts | L231-233 | D | kept:K3 proposed keep | pins=3 | row=206
+- check_save_journal.ts | L249-254 | B | kept:K2 unreachable, carried to unit 5 (N1) | pins=1 | row=207
+- check_save_journal.ts | L256-265 | B | kept:K1 needs fault-proof | pins=1 | row=208
+- check_save_journal.ts | L267-271 | B | kept:K2 unreachable, carried to unit 5 (N3) | pins=1 | row=209
+- check_save_journal.ts | L273-277 | B | kept:K1 needs fault-proof | pins=1 | row=210
+- check_save_journal.ts | L279-286 | B | kept:K1 needs fault-proof | pins=6 | row=211
+- check_save_journal.ts | L289-299 | C | deleted:R3 (track-state/saveRecoveries declaration and import checks) | pins=6 | row=212
+- check_save_journal.ts | L301-306 | B | kept:K1 needs fault-proof | pins=3 | row=213
+- check_save_journal.ts | L307-310 | C | deleted:R3 | pins=10 | row=214
+- check_step_commands.ts | L8-10 | C | deleted:R3 | pins=2 | row=215
+- check_step_commands.ts | L14-17 | D | kept:K3 proposed keep | pins=2 | row=216
+- check_step_commands.ts | L18-29 | C | deleted:R3 (native/mirror reads and the nodes scan; tools read, tree, all stay for kept L54-59) | pins=1 | row=217
+- check_step_commands.ts | L35-41 | D | deleted:R5 | pins=7 | row=218
+- check_step_commands.ts | L42-50 | D | deleted:R5 | pins=3 | row=219
+- check_step_commands.ts | L51-52 | A | kept:K5 unclear (the git show has no hash or assert of its own and feeds kept L54-59; nothing to delete) | pins=1 | row=220
+- check_step_commands.ts | L54-59 | B | kept:K1 needs fault-proof | pins=1 | row=221
+- check_step_commands.ts | L13 | - | kept:K4 behaviour section / no pin | pins=0 | row=222
+- check_step_inventory.ts | L10-12 | C | deleted:R3 | pins=3 | row=223
+- check_step_inventory.ts | L13 | C | deleted:R3 | pins=1 | row=224
+- check_step_inventory.ts | L14 | D | kept:K3 proposed keep | pins=1 | row=225
+- check_step_inventory.ts | L15 | D | kept:K1 needs fault-proof | pins=1 | row=226
+- check_step_inventory.ts | L22-23 | C | deleted:R3 | pins=2 | row=227
+- check_step_inventory.ts | L36-39 | B | kept:K1 needs fault-proof | pins=4 | row=228
+- check_step_inventory.ts | L40 | B | kept:K1 needs fault-proof | pins=1 | row=229
+- check_step_inventory.ts | L41 | B | kept:K1 needs fault-proof | pins=1 | row=230
+- check_step_inventory.ts | L42 | B | deleted:R5 | pins=1 | row=231
+- check_step_inventory.ts | L44 | - | kept:K4 behaviour section / no pin | pins=0 | row=232
+- check_stop_guidance.ts | L9 | C | deleted:R3 | pins=1 | row=233
+- check_stop_guidance.ts | L12 | C | deleted:R3 | pins=1 | row=234
+- check_stop_guidance.ts | L13 | D | kept:K3 proposed keep | pins=1 | row=235
+- check_stop_guidance.ts | L14 | D | kept:K1 needs fault-proof | pins=1 | row=236
+- check_stop_guidance.ts | L15 | B | deleted:R5 | pins=1 | row=237
+- check_stop_guidance.ts | L21-22 | C | deleted:R3 | pins=1 | row=238
+- check_stop_guidance.ts | L23-24 | C | deleted:R3 | pins=2 | row=239
+- check_stop_guidance.ts | L25-27 | B | kept:K1 needs fault-proof | pins=3 | row=240
+- check_stop_guidance.ts | L28-38 | B | kept:K1 needs fault-proof | pins=2 | row=241
+- check_stop_guidance.ts | L39-65 | - | kept:K4 behaviour section / no pin | pins=0 | row=242
+- check_task_ownership_boundary.ts | L8-9 | C | deleted:R3 | pins=2 | row=243
+- check_task_ownership_boundary.ts | L14, L17-25 | C | deleted:R3 | pins=14 | row=244
+- check_task_ownership_boundary.ts | L26 | C | deleted:R3 | pins=2 | row=245
+- check_task_ownership_boundary.ts | L27-29 | D | kept:K3 proposed keep | pins=2 | row=246
+- check_task_ownership_boundary.ts | L33 | C | deleted:R3 | pins=2 | row=247
+- check_task_ownership_boundary.ts | L38-109 | - | kept:K4 behaviour section / no pin | pins=0 | row=248
+- check_tool_contracts.ts | L6 | C | deleted:R3 | pins=1 | row=249
+- check_tool_contracts.ts | L11 | C | deleted:R3 | pins=1 | row=250
+- check_tool_contracts.ts | L12 | B | kept:K1 needs fault-proof | pins=1 | row=251
+- check_tool_contracts.ts | L13 | D | kept:K3 proposed keep | pins=1 | row=252
+- check_tool_contracts.ts | L14-15 | B | kept:K1 needs fault-proof | pins=2 | row=253
+- check_tool_contracts.ts | L16-19 | D | kept:K1 needs fault-proof | pins=2 | row=254
+- check_tool_contracts.ts | L20 | D | kept:K1 needs fault-proof | pins=1 | row=255
+- check_track30_finished_delegation.ts | L1-39 | - | kept:K4 behaviour section / no pin | pins=0 | row=256
+- check_track30_finished_delegation.ts | L42-43 | C | deleted:R3 | pins=1 | row=257
+- check_track30_finished_delegation.ts | L44-48 | D | kept:K3 proposed keep | pins=1 | row=258
+- check_persistence_grants.ts | L18-22 | C | deleted:R3 (declared-once assert L20 only; between/body extraction stays) | pins=3 | row=142
+- check_persistence_grants.ts | L26-27 | D | kept:K1 needs fault-proof | pins=2 | row=143
+- check_persistence_grants.ts | L30-31, L39-40, L41-42, L43-47 | B | split: deleted:R5 (1 of 4 pins: L39-40 span hash) + kept:K1 (3 of 4 pins: L30-31, L41-42, L43-47) | pins=4 | row=144
+- check_persistence_grants.ts | L32-38 | B | deleted:R2 (whole-file sha256 of legacy-save-plan.ts and legacy-save-flow.ts) | pins=2 | row=145
+- check_persistence_grants.ts | L48-51 | D | split: deleted:R5 (1 of 4 pins: L48 admission-handled-once) + kept:K1 (3 of 4: L49, L50, L51) | pins=4 | row=146
+- check_persistence_grants.ts | L52-57 | D | deleted:R5 (L52-57) | pins=8 | row=147
+- check_persistence_grants.ts | L59 | D | kept:K2 unreachable, carried to unit 5 | pins=1 | row=148
+- check_persistence_grants.ts | L60-61 | D | kept:K1 needs fault-proof | pins=2 | row=149
+- check_persistence_grants.ts | L62 | D | kept:K2 unreachable, carried to unit 5 | pins=1 | row=150
+
+## Counts (pins are the inventory's own count per row; rows 144 and 146 are split lines, 1 pin of 4 deleted each)
+- rows 259
+- deleted rows {'R3': 93, 'R1': 8, 'R2': 4, 'R5': 10, 'R4': 1} pins {'R3': 382, 'R1': 143, 'R2': 42, 'R5': 32, 'R4': 1} total rows 116 pins 600
+- kept rows {'K1': 54, 'K3': 33, 'K4': 50, 'K2': 5, 'K5': 3} pins {'K1': 107, 'K3': 61, 'K4': 0, 'K2': 5, 'K5': 13} total rows 145 pins 186
+- partial-delete rows [74, 64, 69, 71, 73, 110, 183, 188, 198, 217, 142]
+- Rows 0-based by data row; 259 rows = every inventory row. Helpers removed with git rm: none (every helper kept at least one assertion).
+- Partial-row deletions (only the named assert went; the extraction/source read stayed for a kept pin): rows 64 (clear_arm_writes L57), 69 (clear_commands ownerOf assert), 71 (clear_commands hash only), 73 (clear_commands R5, extraction kept with 2 casts), 74 (classifier_grant declared-once), 110 (legacy_save_workflow L15), 142 (persistence_grants declared-once), 183 (question_commands CONSUMERS), 188 (restore_boundary L13), 198 (retention_boundary L39), 217 (step_commands native/mirror).
+- K5 rows: clear_arm_writes L10 (NATIVE list feeds kept scans), question_commands L34 (non-vacuity guard of kept L36-40), step_commands L51-52 (git show feeds kept L54-59).
+
+## Remaining 64-hex literals in check_*.ts (25; brief expected at most 24)
+- check_blob_store.ts L8-9 (2): expected checksum constants helloSum and accentSum used in behaviour assertions (K4).
+- check_legacy_save_flow_ports.ts L61 (1): expected checkpoint checksum of a fixture ledger, behaviour check (K4).
+- check_durable_record.ts L20-21 (2): sessionHead/bodyMatchesHead arrow-body hashes, K1 needs fault-proof (covered by checkDurableRecord, named).
+- check_history_view.ts L15 (1): readHistoryView arrow-body hash, K1.
+- check_pane_frame.ts L14 (2): AST arrow-digest literals of the live ui-render.tsx row maps, K1 (covered by named row-layout tests, not a whole-file hash).
+- check_persistence_grants.ts L30, L39, L44 (3): span hashes of ledger-store.ts (save legacy block, admission+v3 routing, resume failure block), K1.
+- check_retention_boundary.ts L9-14 (6): per-module body hashes against 2ec5385 retention.ts slices, K1.
+- check_step_inventory.ts L24-29 (6): arrow-body hashes of step/context owners, K1.
+- check_stop_guidance.ts L29-30 (2): minimalInputReason/uncoveredBlock body hashes, K1.
+Brief row says at most 24; the rules (K1: keep B/D pins whose covering column names a test) leave 25. Reaching 24 would need deleting a K1 pin; not done.
