@@ -23,7 +23,7 @@ change and fewer lines. File count is not a goal.
 
 | # | Unit | Goal | Size | Proof | Status |
 |---|---|---|---|---|---|
-| 1 | Retire structure pins | Helper checks stop pinning file bytes, file names, line caps and git history. Behaviour stays covered. | 4–6 h | Inventory table: every removed pin names the behaviour test that covers it and a mutant that test kills, or is marked "structure only" with Ohad's OK. Full suite and remaining helpers green. | in progress |
+| 1 | Retire structure pins | Helper checks stop pinning file bytes, file names, line caps and git history. Behaviour stays covered. | 4–6 h | Inventory table: every removed pin names the behaviour test that covers it and a mutant that test kills, or is marked "structure only" with Ohad's OK. Full suite and remaining helpers green. | done; Codex ACCEPT 2026-11-10. 600 pins removed, 107 kept until fault-proven. Record: `phase2-unit1-pin-disposition.md` |
 | 2 | Runner flakiness (TRACK-41) | A green run can be trusted under load. | sized after a probe | Repeated runs under load with no "did not load" line. | pending |
 | 3 | Single Stop decider (plan U5, D1 option A) | The command hook decides every Stop block. Module Stop-decision code is removed. | 4–8 h | Failing test first for the moved open-question check. Hook time and snapshot size measured. One live Stop block. | pending |
 | 4 | `ledger-store.ts` by job, then one save helper (U4) | Gate publish, blob save, compaction and retention, history, and export/import each get a module. Four save copies become one. | 6–10 h | Behaviour tests unchanged. Live save and restore. The save-helper part waits on TRACK-40 and TRACK-36. | pending |
