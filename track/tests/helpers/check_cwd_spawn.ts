@@ -9,7 +9,6 @@ import { randomUUID } from 'node:crypto'
 import { runInNewContext } from 'node:vm'
 
 const root = resolve(import.meta.dir, '../..')
-const source = readFileSync(`${root}/hooks/register.tsx`, 'utf8')
 // TRACK-46 slices 1-2 (2026-11-09, Ohad's standing approval): reason and configDir moved to
 // track-state.ts, the writer lock to writer-lock.ts. Each production function is compiled from the
 // one file that declares it.
@@ -32,7 +31,7 @@ const variables: Record<string, string | undefined> = { HOME: process.env.HOME, 
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== 'TRACK_LOCK_DIR' && name !== 'TRACK_LOCK_PROTOCOL'))
 const spawned: Array<{ argv: readonly string[]; cwd?: string; env?: Record<string, string> }> = []
 const transpiler = new Bun.Transpiler({ loader: 'tsx' })
-const compile = (start: string, end: string, name: string, dependencies: Record<string, unknown> = {}, from = source) => {
+const compile = (start: string, end: string, name: string, dependencies: Record<string, unknown> = {}, from: string) => {
   const first = from.indexOf(start)
   const last = from.indexOf(end, first)
   assert(first >= 0 && last > first, `production function ${name} was not found`)
