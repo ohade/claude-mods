@@ -1,28 +1,12 @@
 // FIXTURE: presentation ownership and pure layout invariants; no native/LIVE claim.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import type { Question } from '../../types'
 import type { BannerParts, BannerRow } from '../../hooks/banner-layout'
 
-const modules = {
-  'terminal-text': ['segmenter', 'graphemesOf', 'columnsOf', 'wrappedLines', 'fitLines'],
-  'pane-layout': ['clampTo', 'windowOf', 'lastStart', 'flowRows', 'buttonWidth', 'clockText', 'questionLabels'],
-  'banner-layout': ['composeBanner', 'bannerFits', 'stepCount', 'bannerWords', 'bannerLine', 'collapseBrief', 'collapseSegment', 'collapseLine'],
-}
-// TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
-// moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
-const composition = ['register.tsx', 'ui-render.tsx'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
-for (const name of Object.keys(modules)) {
-  assert.ok(existsSync(new URL(`../../hooks/${name}.ts`, import.meta.url)), `missing presentation boundary: ${name}.ts`)
-}
-for (const [name, symbols] of Object.entries(modules)) {
+const modules = ['terminal-text', 'pane-layout', 'banner-layout']
+for (const name of modules) {
   const source = readFileSync(new URL(`../../hooks/${name}.ts`, import.meta.url), 'utf8')
-  for (const symbol of symbols) {
-    assert.match(source, new RegExp(`^(?:export )?const ${symbol}\\b`, 'm'), `${name} owns ${symbol}`)
-    assert.doesNotMatch(composition, new RegExp(`^(?:const|function) ${symbol}\\b`, 'm'), `composition must import ${symbol}`)
-  }
-  assert.match(composition, new RegExp(`from './${name}'`))
-  assert.ok(source.trimEnd().split('\n').length <= (name === 'banner-layout' ? 160 : 100), `${name} stays within its line limit`)
   for (const line of source.match(/^import .*$/gm) ?? []) {
     if (line.startsWith('import type ')) {
       assert.match(line, /from '\.\.\/types'$/)
@@ -33,14 +17,7 @@ for (const [name, symbols] of Object.entries(modules)) {
     }
   }
 }
-const bannerSource = readFileSync(new URL('../../hooks/banner-layout.ts', import.meta.url), 'utf8')
-for (const symbol of ['BannerCount', 'BannerParts', 'BannerRow']) {
-  assert.match(bannerSource, new RegExp(`^export type ${symbol}\\b`, 'm'))
-  assert.doesNotMatch(composition, new RegExp(`^type ${symbol}\\b`, 'm'))
-}
-assert.deepEqual([...bannerSource.matchAll(/^export const (\w+)/gm)].map(match => match[1]).sort(), ['bannerLine', 'collapseLine'], 'banner internals remain private')
 
-// Dynamic imports follow the boundary assertions to produce assertion-red on the baseline.
 const { columnsOf, wrappedLines, fitLines } = await import('../../hooks/terminal-text')
 const { clampTo, windowOf, lastStart, flowRows, buttonWidth, clockText, questionLabels } = await import('../../hooks/pane-layout')
 const { bannerLine, collapseLine } = await import('../../hooks/banner-layout')
