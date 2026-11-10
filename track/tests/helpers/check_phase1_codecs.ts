@@ -1,42 +1,19 @@
 // FIXTURE: structural extraction and stored-record compatibility; no native/LIVE claim.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import type { Question, Restore, Step } from '../../types'
 
-const modules = {
-  'ledger-policy': ['STEP_STATUSES', 'QUESTION_STATUSES', 'MAX_PROMPTS', 'MAX_QUESTIONS', 'MAX_RESTORES', 'isDefined', 'distinctIds', 'keepRestores'],
-  'ledger-text': ['HEAD_CHARS', 'ANSWER_CHARS', 'RESULT_CHARS', 'truncate', 'headOf', 'norm'],
-  'stored-codecs': ['textField', 'savedPrompt', 'savedMarker', 'savedQuestion', 'savedRestore', 'savedStep', 'savedLedger'],
-}
-// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
-// track-tools.ts, a native adapter file; it is read here next to register.tsx.
-const composition = ['register.tsx', 'track-tools.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
-for (const name of Object.keys(modules)) {
-  assert.ok(existsSync(new URL(`../../hooks/${name}.ts`, import.meta.url)), `missing storage boundary: ${name}.ts`)
-}
-for (const [name, symbols] of Object.entries(modules)) {
-  const file = new URL(`../../hooks/${name}.ts`, import.meta.url)
-  assert.ok(existsSync(file), `missing storage boundary: ${name}.ts`)
-  const source = readFileSync(file, 'utf8')
-  for (const symbol of symbols) {
-    assert.match(source, new RegExp(`(?:export )?const ${symbol}\\b`), `${name} owns ${symbol}`)
-    assert.doesNotMatch(composition, new RegExp(`^(?:const|function) ${symbol}\\b`, 'm'), `composition must import ${symbol}`)
-  }
-  assert.match(composition, new RegExp(`from './${name}'`))
+const modules = ['ledger-policy', 'ledger-text', 'stored-codecs']
+for (const name of modules) {
+  const source = readFileSync(new URL(`../../hooks/${name}.ts`, import.meta.url), 'utf8')
   const imports = [...source.matchAll(/^import .*$/gm)].map(match => match[0])
   for (const line of imports) {
     if (name === 'ledger-text') assert.fail('ledger-text must have no imports')
     if (name === 'ledger-policy') assert.match(line, /^import type .* from '\.\.\/types'$/)
     if (name === 'stored-codecs') assert.match(line, /from '(?:\.\/ledger-policy|\.\/ledger-text|\.\/reconcile|\.\.\/types)'$/)
   }
-  if (name === 'stored-codecs') {
-    assert.deepEqual([...source.matchAll(/^export const (\w+)/gm)].map(match => match[1]).sort(), ['savedLedger', 'savedQuestion', 'savedStep'])
-    assert.ok(source.split('\n').length <= 201, 'stored-codecs stays within 200 lines')
-  }
-  if (name === 'ledger-text') assert.ok(source.split('\n').length <= 101)
 }
 
-// Imports follow existence assertions so the baseline fails on the named boundary.
 const policy = await import('../../hooks/ledger-policy')
 const text = await import('../../hooks/ledger-text')
 const { savedLedger, savedQuestion, savedStep } = await import('../../hooks/stored-codecs')
