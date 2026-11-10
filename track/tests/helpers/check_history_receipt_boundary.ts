@@ -1,8 +1,6 @@
 // FIXTURE: checks ordinary-value receipt classification without native process execution.
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
 
-assert.ok(existsSync(new URL('../../hooks/history-receipts.ts', import.meta.url)), 'missing history receipt boundary: history-receipts.ts')
 const { classifyHistoryReceipt, isPlainObject } = await import('../../hooks/history-receipts')
 
 const hash = 'a'.repeat(64)
