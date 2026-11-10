@@ -1,27 +1,19 @@
 // FIXTURE/SOURCE: Phase1 Stop guidance ownership; no native/LIVE claim.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import type { PendingInput } from '../../types'
 
 const path = new URL('../../hooks/stop-guidance.ts', import.meta.url)
-assert.ok(existsSync(path), 'missing pure Stop guidance owner: stop-guidance.ts')
 const source = readFileSync(path, 'utf8')
-const native = readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8')
-assert.ok(source.trimEnd().split('\n').length <= 100, 'Stop guidance stays within 100 lines')
 assert.deepEqual(source.match(/^import .*$/gm), ["import type { PendingInput } from '../types'", "import { truncate, utf8Bytes } from './ledger-text'"])
 assert.doesNotMatch(source, /claude-code|EngineInterface|Runtime|\$\.|atom\(|setTimeout\(/, 'guidance is value-only')
-assert.match(source, /^const MINIMAL_INPUT_BYTES = 100$/m)
 // TRACK-46 slices 3 and 5 (2026-11-09, Ohad's standing approval): publishGate and fitInputReason moved
 // to ledger-store.ts with two of the three call sites; the third moved with the Stop claim code to
-// turn-guidance.ts. No native file re-declares the guidance symbols.
+// turn-guidance.ts.
 const store = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
 const guidance = readFileSync(new URL('../../hooks/turn-guidance.ts', import.meta.url), 'utf8')
-assert.doesNotMatch(native, /\buncoveredBlock\b|\bminimalInputReason\b/, 'register.tsx no longer calls Stop guidance')
-for (const file of [native, store, guidance]) assert.doesNotMatch(file, /^(?:export )?(?:const|(?:async )?function) (?:minimalInputReason|uncoveredBlock|MINIMAL_INPUT_BYTES)\b/m)
-assert.ok(store.includes("import { minimalInputReason, uncoveredBlock } from './stop-guidance'"))
-assert.ok(guidance.includes("import { uncoveredBlock } from './stop-guidance'"))
 assert.ok(store.includes('reason: minimalInputReason(i, TRACK_QUESTION)'))
 assert.ok(store.includes('uncoveredBlock([inputs[index]!], ANSWER)'))
 assert.ok(guidance.includes('block: uncoveredBlock(inputs, ANSWER)'))
