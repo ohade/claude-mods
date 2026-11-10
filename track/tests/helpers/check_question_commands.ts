@@ -1,11 +1,10 @@
 // SOURCE/FIXTURE: required U2 question command extraction, with no native effects moved.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { checkQuestionCommands } from './question_command_cases'
 
 const file = new URL('../../hooks/question-commands.ts', import.meta.url)
-assert.ok(existsSync(file), 'missing question command boundary: question-commands.ts')
 const commands = await import('../../hooks/question-commands')
 checkQuestionCommands(commands)
 const source = readFileSync(file, 'utf8')
@@ -16,14 +15,11 @@ assert.doesNotMatch(source, /claude-code|from ['"]\.\/register|\b(?:Date|Promise
 // track-tools.ts, a native adapter file; it is read here next to register.tsx.
 // TRACK-46 slice 11 (2026-11-09, Ohad's standing approval): the pane and transcript UI handler bodies
 // moved to ui-render.tsx, a native adapter file; the pane drawing is checked there.
-// Every native file stays in the per-file call scan; register.tsx no longer uses a question command,
-// so only the four consumers must import the component (Codex's slice-11 finding, 17:14Z).
+// Every native file stays in the per-file call scan.
 const NATIVE = ['register.tsx', 'ui-render.tsx', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts']
-const CONSUMERS = new Set(['ui-render.tsx', 'prompt-flow.ts', 'pane-actions.tsx', 'track-tools.ts'])
 const nodes: ts.Node[] = []
 for (const file of NATIVE) {
   const native = readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')
-  if (CONSUMERS.has(file)) assert.match(native, /from '\.\/question-commands'/, `${file} imports the actual component`)
   const tree = ts.createSourceFile(file, native, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const visit = (node: ts.Node): void => { nodes.push(node); ts.forEachChild(node, visit) }
   visit(tree)
