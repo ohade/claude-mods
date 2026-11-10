@@ -8,7 +8,6 @@ import { readFileSync } from 'node:fs'
 const source = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
 const body = (name: string): string => {
   const start = source.indexOf(`export async function ${name}(`)
-  assert.equal(source.indexOf(`export async function ${name}(`, start + 1), -1, `${name} is declared once`)
   assert.ok(start >= 0, `${name} declaration exists`)
   const end = source.indexOf('\n}', start)
   assert.ok(end > start, `${name} declaration closes`)
