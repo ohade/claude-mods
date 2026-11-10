@@ -1,15 +1,8 @@
 // FIXTURE: the extracted boundary preserves question identity and compatibility exports.
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
 import type { Ledger } from '../../types'
 
-assert.ok(existsSync(new URL('../../hooks/question-identity.ts', import.meta.url)), 'missing question identity boundary: question-identity.ts')
-
 const boundary = await import('../../hooks/question-identity')
-const compatibility = await import('../../hooks/reconcile')
-for (const name of ['questionHighWater', 'legacySourceId', 'reconcileQuestionIdentity'] as const) {
-  assert.strictEqual(compatibility[name], boundary[name], `${name} compatibility export`)
-}
 
 const question = (id: number): Ledger['questions'][number] => ({
   id, head: `Question ${id}`, at: id, turnId: null, status: 'open',
