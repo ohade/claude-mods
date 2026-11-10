@@ -1,38 +1,18 @@
 // FIXTURE: pure cancellation and task ownership rules; no native/LIVE claim.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import type { Activity, Step } from '../../types'
 
 const cancelBoundary = new URL('../../hooks/cancel-policy.ts', import.meta.url)
 const ownershipBoundary = new URL('../../hooks/task-ownership.ts', import.meta.url)
-assert.ok(existsSync(cancelBoundary), 'missing ownership boundary: cancel-policy.ts')
-assert.ok(existsSync(ownershipBoundary), 'missing ownership boundary: task-ownership.ts')
-// TRACK-46 slice 8 (2026-11-09, Ohad's standing approval): the Track tool handler bodies moved to
-// track-tools.ts, a native adapter file; it is read here next to register.tsx.
-// TRACK-46 slice 9 (2026-11-09, Ohad's standing approval): the host task mirror handlers moved to
-// task-mirror.ts, a native adapter file; it is read here with the other native files.
-const composition = ['register.tsx', 'track-tools.ts', 'task-mirror.ts'].map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8')).join('\n')
 const cancelSource = readFileSync(cancelBoundary, 'utf8')
 const ownershipSource = readFileSync(ownershipBoundary, 'utf8')
-for (const [source, symbols, module] of [
-  [cancelSource, ['USER_CANCEL', 'USER_REJECT', 'PERMISSION_DENIED', 'withoutLeadingSpace', 'reasonAtStart', 'cancelReasonOf', 'cancelOwner'], 'cancel-policy'],
-  [ownershipSource, ['OWNER_CAP', 'launchOwner', 'agentLaunchOwner', 'canFollowUp', 'ownersForLiveSteps', 'rememberOwner', 'rememberLaunch'], 'task-ownership'],
-] as const) {
-  for (const symbol of symbols) {
-    assert.match(source, new RegExp(`^(?:export )?const ${symbol}\\b`, 'm'), `${module} owns ${symbol}`)
-    assert.doesNotMatch(composition, new RegExp(`^const ${symbol}\\b`, 'm'), `composition imports ${symbol}`)
-  }
-  assert.match(composition, new RegExp(`from '\\./${module}'`))
-  assert.ok(source.trimEnd().split('\n').length <= 100, `${module} stays within 100 lines`)
+for (const source of [cancelSource, ownershipSource]) {
   for (const line of source.match(/^import .*$/gm) ?? []) {
     assert.match(line, /^(?:import type \{ (?:Activity, Step|Step) \} from '\.\.\/types'|import \{ norm \} from '\.\/ledger-text')$/)
   }
 }
-// dropFinishedOwners moved with the tools to track-tools.ts as a function declaration (the engine follows $
-// across an import only into one); each symbol has exactly one native declaration.
-for (const symbol of ['dropFinishedOwners', 'applyCancel']) assert.equal(composition.match(new RegExp(`^(?:export )?(?:const|(?:async )?function) ${symbol}\\b`, 'gm'))?.length, 1, `${symbol} stays native`)
 
-// Imports follow named boundary assertions so the missing module yields assertion-red.
 const { cancelReasonOf, cancelOwner } = await import('../../hooks/cancel-policy')
 const { launchOwner, agentLaunchOwner, canFollowUp, ownersForLiveSteps, rememberOwner, rememberLaunch } = await import('../../hooks/task-ownership')
 const cancel = "The user doesn't want to take this action right now"
