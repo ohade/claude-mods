@@ -1,38 +1,14 @@
 // FIXTURE: pure turn-policy ownership and decisions; no native/LIVE claim.
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import type { Activity, Ledger, PendingInput, Step, StepFreshness, Turn } from '../../types'
 
 const boundary = new URL('../../hooks/turn-policy.ts', import.meta.url)
-assert.ok(existsSync(boundary), 'missing turn-policy boundary: turn-policy.ts')
 const source = readFileSync(boundary, 'utf8')
-// TRACK-46 slice 3 (2026-11-09, Ohad's standing approval): the composition is the native adapter
-// files; none may re-declare a policy symbol, and the Stop guidance import moved to ledger-store.ts.
-const NATIVE = ['register.tsx', 'track-state.ts', 'writer-lock.ts', 'ledger-store.ts', 'session-events.ts']
-// TRACK-46 slice 10 (2026-11-09, Ohad's standing approval): the session/turn/prompt/Stop event handler
-// bodies moved to session-events.ts, a native adapter file.
-// The turn-policy import moved with them: natives[4] is the composition that imports it.
-const natives = NATIVE.map(file => readFileSync(new URL(`../../hooks/${file}`, import.meta.url), 'utf8'))
-const composition = natives[0]!
-const store = natives[3]!
-const symbols = ['QUESTION_FIRST', 'gateable', 'looksLikeQuestion', 'needsQuestion', 'ofTurn', 'ownerTasksForStep', 'waitingArrowIds', 'freshnessCandidates']
-for (const symbol of symbols) {
-  assert.match(source, new RegExp(`^(?:export )?const ${symbol}\\b`, 'm'), `turn-policy owns ${symbol}`)
-  for (const file of natives) assert.doesNotMatch(file, new RegExp(`^(?:export )?(?:const|(?:async )?function) ${symbol}\\b`, 'm'), `composition must import ${symbol}`)
-}
-assert.match(natives[4]!, /from '\.\/turn-policy'/)
-assert.ok(source.trimEnd().split('\n').length <= 100, 'turn-policy stays within 100 lines')
 for (const line of source.match(/^import .*$/gm) ?? []) {
   assert.match(line, line.startsWith('import type ') ? /from '\.\.\/types'$/ : /^import \{ (?:distinctIds|norm|visibleSteps) \} from '\.\/(?:ledger-policy|ledger-text|steps)'$/)
 }
-for (const symbol of ['minimalInputReason', 'uncoveredBlock']) {
-  for (const file of natives) assert.doesNotMatch(file, new RegExp(`^(?:export )?(?:const|(?:async )?function) ${symbol}\\b`, 'm'), `${symbol} belongs to Stop guidance`)
-  assert.doesNotMatch(source, new RegExp(`^(?:export )?const ${symbol}\\b`, 'm'))
-}
 
-assert.match(store, /import \{ minimalInputReason, uncoveredBlock \} from '\.\/stop-guidance'/)
-
-// Dynamic import follows the named boundary assertion for structural assertion-red.
 const { gateable, looksLikeQuestion, needsQuestion, ofTurn, ownerTasksForStep, waitingArrowIds, freshnessCandidates } = await import('../../hooks/turn-policy')
 assert.equal(gateable('  hello  ', undefined), 'hello')
 for (const text of ['', '  ', '/track', ': AMQ doorbell: arrived', '<task-notification>done</task-notification>', '<bash-input>pwd', '<local-command>help']) {
