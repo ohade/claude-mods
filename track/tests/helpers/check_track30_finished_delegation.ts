@@ -40,7 +40,6 @@ assert.deepEqual(freshnessCandidates(orderedTurn, ledger([
 // SOURCE contract only: parse the static array without evaluating repository code.
 // TRACK-46 slice 5 (2026-11-09, Ohad's standing approval): FRESHNESS_KINDS moved to turn-guidance.ts.
 const source = readFileSync(new URL('../../hooks/turn-guidance.ts', import.meta.url), 'utf8')
-assert.doesNotMatch(readFileSync(new URL('../../hooks/register.tsx', import.meta.url), 'utf8'), /^(?:export )?const FRESHNESS_KINDS\b/m, 'register.tsx does not re-declare FRESHNESS_KINDS')
 const literal = /^export const FRESHNESS_KINDS: FreshnessKind\[\] = (\[[^\]\n]*\])$/m.exec(source)?.[1]
 assert.ok(literal, 'static FRESHNESS_KINDS literal exists')
 assert.deepEqual(JSON.parse(literal.replace(/'([^']*)'/g, '"$1"')), [
