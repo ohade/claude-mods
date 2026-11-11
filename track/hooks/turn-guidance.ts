@@ -165,6 +165,34 @@ export async function remindFinishedTurn($: EngineInterface, assertAdmitted: () 
   })
 }
 
+export const INPUT_CLAIM_KIND = 'uncovered_input'
+// stop-gate.py claim_name: sha256 of the compact JSON [session, turn, kind].
+export const claimName = (session: string, turnId: string, kind: string): Promise<string> => sha256Hex(JSON.stringify([session, turnId, kind]))
+
+// The helper's claim turn for a pending input; stop-gate.py builds the same string.
+export const inputClaimTurn = (id: number, epoch: string | undefined): string => epoch === undefined ? `input:${id}` : `input:${epoch}:${id}`
+
+// TRACK-46 unit 3: stop-gate.py's permanent input claim records a hold that classic.Stop may not have
+// seen. Only this session's claim names are stat'ed; the directory is never listed and no contents are
+// read. A link, a directory or any failure means "not held".
+export async function claimedInputIds($: EngineInterface, session: string, inputs: readonly PendingInput[], epoch: string | undefined): Promise<Set<number>> {
+  const claimed = new Set<number>()
+  if (inputs.length === 0) return claimed
+  let config: string | undefined
+  try { config = await configDir($) } catch { return claimed }
+  if (!config?.startsWith('/')) return claimed
+  for (const input of inputs) {
+    try {
+      const name = await claimName(session, inputClaimTurn(input.id, input.legacy === true ? undefined : epoch), INPUT_CLAIM_KIND)
+      const stat = await $.fs.stat(`${config}/state/track/stop-holds/inputs/${name}`)
+      if (stat.kind === 'file' && stat.isLink !== true) claimed.add(input.id)
+    } catch {
+      // Missing or unreadable: not held here; the claim stays the command hook's to spend.
+    }
+  }
+  return claimed
+}
+
 export const STOP_INVENTORY_OWNER = 'track-stop-inventory-v1'
 export type StopInventory = { turnId: string; launchSeq: number; taskIds: Set<string> }
 

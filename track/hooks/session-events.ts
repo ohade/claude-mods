@@ -14,7 +14,7 @@ import type { OwnerToken } from './track-state'
 import { closeLock } from './writer-lock'
 import { publishGate, saveLedger, saveFailureText } from './ledger-store'
 import { renderInstances, renderSaved, memoryToken, switchOwner, ensureOwner } from './session-owner'
-import { freshnessNudge, nudgeFed, missingResultText, nudgeMissingResults, remindFinishedTurn, readStopInventory, inventoryDrops, finishTasks, stepStop, claimUncoveredInputs } from './turn-guidance'
+import { freshnessNudge, nudgeFed, missingResultText, nudgeMissingResults, remindFinishedTurn, readStopInventory, inventoryDrops, finishTasks, stepStop, claimUncoveredInputs, claimedInputIds } from './turn-guidance'
 import { recordTranscriptBaseline, dropRewound, observeResponse, captureResponse, recordPrompt, classifying, labelScheduled, classifierOn, classifyInput, forgetTranscriptBaseline } from './prompt-flow'
 import { STEPS_LINE, MIDTURN_FRAME, light } from './pane-actions'
 import { dropFinishedOwners } from './track-tools'
@@ -380,6 +380,20 @@ export async function promptSubmitEvent($: Parameters<PromptSubmitEventHook>[0],
         assertAdmitted()
         return current.resultReminder?.turnId === resultReminder.turnId ? { ...current, resultReminder: undefined } : current
       })
+    }
+    // TRACK-46 unit 3: the command hook's claim file marks an input held even when classic.Stop
+    // never ran or returned early. This prompt's own input is not asked about.
+    if (typeof token?.owner === 'string') {
+      const p = await read($, pending)
+      const unheld = p.inputs.filter(i => i.covered === undefined && i.held !== true && needsQuestion(i) && i.id !== added).sort((a, b) => a.id - b.id).slice(0, MAX_INPUTS)
+      const claimed = await claimedInputIds($, token.owner, unheld, p.epoch)
+      if (claimed.size > 0) {
+        await update($, pending, cur => {
+          assertAdmitted()
+          const marks = (i: PendingInput) => claimed.has(i.id) && i.covered === undefined && i.held !== true
+          return cur.inputs.some(marks) ? { ...cur, inputs: cur.inputs.map(i => marks(i) ? { ...i, held: true as const } : i) } : cur
+        })
+      }
     }
     // A prompt Stop already asked about once and no row covers yet is named again here.
     const unresolved = (await read($, pending)).inputs.filter(i => i.held === true && i.covered === undefined && needsQuestion(i))

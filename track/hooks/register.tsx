@@ -36,10 +36,10 @@ const scrollAt = atom({ plugin: 'track', key: 'scroll' } as const, { questions: 
 // ends the arm, so the pane redraws without a key press. Pane state only, never saved.
 const clearArm = atom({ plugin: 'track', key: 'clearArm' } as const, null as number | null)
 const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUnsaved: false, reason: '' } as PluginState['track']['durability'])
-import { PANE, LOADED_IDENTITY, TRACK_QUESTION, MARK_ANSWERED, MARK_STEP, TRACK_STEPS, RESTORE_TRACKER, CHECKPOINT, LOOKUP_ROWS, REORDER_STEPS, EMPTY_LEDGER, IDLE, reason, eventRing, gateCache, configDir, sha256Hex, ownership } from './track-state'
+import { PANE, LOADED_IDENTITY, TRACK_QUESTION, MARK_ANSWERED, MARK_STEP, TRACK_STEPS, RESTORE_TRACKER, CHECKPOINT, LOOKUP_ROWS, REORDER_STEPS, EMPTY_LEDGER, IDLE, reason, eventRing, gateCache, configDir, ownership } from './track-state'
 import type { OwnerToken } from './track-state'
 import { observedDisk } from './session-owner'
-import { FRESHNESS_KINDS } from './turn-guidance'
+import { FRESHNESS_KINDS, INPUT_CLAIM_KIND, claimName, inputClaimTurn } from './turn-guidance'
 import type { PrismantisSegment } from './pane-actions'
 import { checkpointCall, lookupRowsCall, reorderStepsCall, trackQuestionCall, markAnsweredCall, trackStepsCall, restoreTrackerCall, markStepCall } from './track-tools'
 import { ownedToolCall, taskCreateCall, taskUpdateCall, todoWriteCall, exitPlanModeCall, agentCall, askUserQuestionCall, bashCall } from './task-mirror'
@@ -47,12 +47,6 @@ import { sessionStartEvent, promptAppendEvent, deliveryAppendEvent, responseAppe
 import { userMessageRender, trackCommand, paneClose, promptHintRender, abovePromptRender, toolGroupRender, toolUseRender, assistantMessageRender, toolResultRender, paneScroll, paneRender } from './ui-render'
 
 const DIAGNOSE = 'mcp__track__diagnose'
-const INPUT_CLAIM_KIND = 'uncovered_input'
-// stop-gate.py claim_name: sha256 of the compact JSON [session, turn, kind].
-const claimName = (session: string, turnId: string, kind: string): Promise<string> => sha256Hex(JSON.stringify([session, turnId, kind]))
-
-// The helper's claim turn for a pending input; stop-gate.py builds the same string.
-const inputClaimTurn = (id: number, epoch: string | undefined): string => epoch === undefined ? `input:${id}` : `input:${epoch}:${id}`
 // D9: stat only the claim names this session and turn can own; contents are never read and the
 // directory is never listed, so no other session is enumerated.
 const claimStats = async ($: EngineInterface, session: string, turnId: string | null, heldInputs: number[], epoch?: string, legacy: readonly number[] = []): Promise<Array<{ name: string; kind: string; present: boolean }>> => {
