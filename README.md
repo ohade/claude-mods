@@ -319,7 +319,9 @@ types. The development packages are not loaded by the plugin.
 What it saves: acknowledged tracking mutations, captured answers, explicit UI actions, completed
 turns, and session end save the current ledger. Normal saves publish its exact JSON text in a
 write-once file named by its SHA-256 checksum under `<config>/state/track/blobs/`, where `<config>`
-is `CLAUDE_CONFIG_DIR` or the normal Claude config directory. Track verifies the file's checksum,
+is `CLAUDE_CONFIG_DIR` or the normal Claude config directory. A second account can run from its own
+config folder whose `state` is a link to the first config's `state` folder; `<config>` is then the
+config that owns the real folder, so both accounts share one store and one lock. Track verifies the file's checksum,
 UTF-8 byte count and read-back before storing a v2 pointer through `$.store` under its existing
 writer lock. Even an empty or small ledger uses a pointer when publication succeeds. The public
 checkpoint and restored ledger remain v1. Existing inline bodies remain readable. Save failures
@@ -421,7 +423,9 @@ Do not retire a legacy store until its original values and the added metadata ha
 Protocol 2 prepares crash-safe blob cleanup; that cleanup is not active. Track now calls
 `hooks/writer-lock.py` with protocol 2 for every lease, write and guard. Each spawn sets
 `TRACK_LOCK_PROTOCOL=2` and `CLAUDE_CONFIG_DIR` to the config directory Track resolved:
-`CLAUDE_CONFIG_DIR`, or `$HOME/.claude` when that is unset or empty. When that path is
+`CLAUDE_CONFIG_DIR`, or `$HOME/.claude` when that is unset or empty. If `state` in that directory
+is a link to a folder named `state`, Track resolves the directory that holds the real folder
+instead, because the helper refuses a link below its config. When that path is
 unresolved or relative, Track refuses the lock before it starts the helper. Saved history and
 blob files do not change; the in-memory Unsaved state still can. A config folder that does not
 exist yet is not a refusal: the helper creates it.
