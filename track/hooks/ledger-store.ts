@@ -42,7 +42,6 @@ const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUns
 // `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
 // any step, so the helper reports unknown ownership instead of a stale step.
 export type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; open_count?: number; inputs: Array<{ id: number; reason: string; legacy?: true }>; inputs_complete: boolean; input_epoch?: string; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
-export type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 export const GATE_SNAPSHOT_BYTES = 16 * 1024
 
 

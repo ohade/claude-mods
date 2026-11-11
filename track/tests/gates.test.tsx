@@ -130,38 +130,41 @@ test('tracking a question makes the Questions region follow the newest again', a
 // The Stop gate
 
 // The test's own classic.Stop hook is the bottom of the chain: it plays the settings hooks.
+// TRACK-46 unit 3 step C: that command hook, stop-gate.py, is the only Stop decider. The module
+// publishes the open list it decides on (TRACK_GATE_SNAPSHOT); test_stop_gate.py covers the block.
 const stopWith = (on: On, questions: QuestionRow[], below: { block?: string } = {}) => {
   store(on, 'ledger', ledgerOf(questions))
   const turn = store(on, 'turn', { currentId: 'turn-1' as string | null, gatedTurnId: null as string | null })
+  const env = new Map<string, string>()
+  on('session.id', () => ({ value: SESSION }))
+  on('env.get', (_, e) => ({ value: env.get(e.name) }))
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
   on('classic.Stop', () => below)
 
-  return turn
+  return { turn, open: () => (JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') as { open?: Array<{ id: number; head: string }> }).open }
 }
 
 const stop = ($: Parameters<TestBody>[0], fields: Record<string, unknown> = {}) =>
   $.classic.Stop({ stop_hook_active: false, ...fields } as never) as Promise<{ block?: string }>
 
-// The ids a block names, in order of first mention.
-const idsIn = (block: string | undefined): number[] => [...new Set([...(block ?? '').matchAll(/\bQ(\d+)\b/g)].map(m => Number(m[1])))]
 
-test('a question tracked this turn and still open blocks the stop, naming it and mark_answered', async ($, on) => {
-  stopWith(on, [open(4)])
+test('a question tracked this turn and still open is published for the command hook; the module does not block', async ($, on) => {
+  const gate = stopWith(on, [open(4)])
 
   const r = await stop($)
 
-  expect(r.block).toBeDefined()
-  expect(r.block).toMatch(/\bQ4\b/)
-  expect(r.block).toContain('mcp__track__mark_answered')
+  expect(r.block).toBeUndefined()
+  expect(gate.open()).toEqual([{ id: 4, head: 'question 4' }])
 })
 
-test('the gate holds a turn once: a second Stop in the same turn passes', async ($, on) => {
-  const turn = stopWith(on, [open(4)])
+test('a second Stop in the same turn passes and the open question stays published', async ($, on) => {
+  const gate = stopWith(on, [open(4)])
 
   const first = await stop($)
   const second = await stop($)
 
-  expect(first.block).toBeDefined()
-  expect(turn.value.gatedTurnId).toBe('turn-1')
+  expect(first.block).toBeUndefined()
+  expect(gate.open()).toEqual([{ id: 4, head: 'question 4' }])
   expect(second.block).toBeUndefined()
 })
 
@@ -178,7 +181,7 @@ test('an answered or deferred question from this turn does not block', async ($,
 })
 
 test('a block from the hooks below is returned as it is', async ($, on) => {
-  const turn = stopWith(on, [open(4)], { block: 'a settings hook blocked' })
+  const { turn } = stopWith(on, [open(4)], { block: 'a settings hook blocked' })
 
   expect((await stop($)).block).toBe('a settings hook blocked')
   expect(turn.writes).toHaveLength(0)
@@ -196,14 +199,12 @@ test('a subagent Stop does not block', async ($, on) => {
   expect((await stop($, { agent_id: 'agent-1' })).block).toBeUndefined()
 })
 
-test('with several open questions this turn, the block names the first and lists the others', async ($, on) => {
-  // Q1 is open but from an earlier turn, so the block must not list it.
-  stopWith(on, [open(1, 'turn-0'), open(2), open(3), open(5)])
+test('with several open questions this turn, the snapshot lists this turn\'s in order', async ($, on) => {
+  // Q1 is open but from an earlier turn, so the snapshot must not list it.
+  const gate = stopWith(on, [open(1, 'turn-0'), open(2), open(3), open(5)])
 
-  const ids = idsIn((await stop($)).block)
-
-  expect(ids[0]).toBe(2)
-  expect([...ids].sort((a, b) => a - b)).toEqual([2, 3, 5])
+  expect((await stop($)).block).toBeUndefined()
+  expect(gate.open()?.map(row => row.id)).toEqual([2, 3, 5])
 })
 
 // FIXTURE: pins the module/hook open-question wire contract. test_stop_gate.py asserts that the
@@ -211,11 +212,12 @@ test('with several open questions this turn, the block names the first and lists
 const openQuestionReason = 'track: Q2 "question 2" from this turn is still open (2 more open: Q3, Q5). Write the formatted answer once between standalone <!-- A2:start --> and <!-- A2:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text. If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.'
 
 test('the open-question block built from ANSWER equals the command hook literal', async ($, on) => {
-  stopWith(on, [open(2), open(3), open(5)])
+  const gate = stopWith(on, [open(2), open(3), open(5)])
   const built = `track: Q2 "question 2" from this turn is still open (2 more open: Q3, Q5). ${ANSWER.replaceAll('{id}', '2')}. If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.`
 
   expect(built).toBe(openQuestionReason)
-  expect((await stop($)).block).toBe(openQuestionReason)
+  expect((await stop($)).block).toBeUndefined()
+  expect(gate.open()).toEqual([2, 3, 5].map(id => ({ id, head: `question ${id}` })))
 })
 
 // A Stop raised by a Stop hook skips the open-question gate, and its step check publishes the
@@ -259,7 +261,8 @@ test('a gated turn publishes no open list and no open_count', async ($, on) => {
 })
 
 // FIXTURE: pins the plugin/helper wire contract. The independent Python suite
-// runs the real helper and checks the same exact messages and exclusive holds.
+// runs the real helper and checks the same exact messages and exclusive holds
+// (test_stop_gate.py::test_v2_messages_match_plugin_and_each_kind_blocks_once).
 const freshnessMessages: Array<[FreshnessKind, string]> = [
   ['premature_completion', 'track: task:7 is completed while its owned task worker-7 is still running. Reopen or pause the step, or wait for that task, then finish.'],
   ['stale_in_progress', 'track: task:7 is still in_progress, but no work owns it. Call mark_step with completed, paused, or waiting and the true result, then finish.'],
@@ -268,7 +271,7 @@ const freshnessMessages: Array<[FreshnessKind, string]> = [
 ]
 
 for (const [kind, reason] of freshnessMessages) {
-  test(`v2 Stop delegates ${kind} to the shared helper and consumes its hold once`, async ($, on) => {
+  test(`v2 Stop publishes the ${kind} candidate for the command hook and starts no helper`, async ($, on) => {
     const edits = kind === 'untracked_edit'
     const status: Step['status'] = kind === 'premature_completion' ? 'completed' : kind === 'missing_waiting_request' ? 'waiting' : 'in_progress'
     const steps: Step[] = edits ? [] : [{ id: 'task:7', source: 'task', subject: 'Finish the change', status, activeTurnId: 'turn-1' }]
@@ -288,20 +291,16 @@ for (const [kind, reason] of freshnessMessages) {
     on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
     on('classic.Stop', () => ({}))
     // Observed 2026-10-23: own-save publication also calls process.run; model only Stop claims, leaving blob publication unavailable.
-    on('process.run', { argv: /^\/.*\/hooks\/stop-gate\.py$/ }, (_, e) => {
+    on('process.run', { argv: /^\/.*\/hooks\/stop-gate\.py$/ }, () => {
       calls += 1
-      expect(e.argv).toEqual(['python3', expect.stringMatching(/^\/.*\/hooks\/stop-gate\.py$/), '--claim'])
-      expect(e.init?.env?.CLAUDE_CONFIG_DIR).toBe('/fixture/config')
-      expect(JSON.parse(e.init?.stdin ?? '{}')).toMatchObject({ session_id: SESSION, background_tasks: [{ id: 'worker-7', type: 'agent' }] })
-      const snapshot = JSON.parse(e.init?.env?.TRACK_GATE_SNAPSHOT ?? '{}')
-      expect(snapshot).toMatchObject({ v: 2, session_id: SESSION, turn_id: 'turn-1', open: [], held: [],
-        response: { turn_id: 'turn-1', request_id: 'fixture-main' }, candidates: [{ kind }] })
       return { value: { exitCode: 0, stdout: JSON.stringify({ decision: 'block', reason }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     })
 
     const payload = { session_id: SESSION, background_tasks: [{ id: 'worker-7', type: 'agent' }] }
-    expect((await stop($, payload)).block).toBe(reason)
     expect((await stop($, payload)).block).toBeUndefined()
-    expect(calls).toBe(1)
+    expect(JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}')).toMatchObject({ v: 2, session_id: SESSION, turn_id: 'turn-1', open: [], held: [],
+      response: { turn_id: 'turn-1', request_id: 'fixture-main' }, candidates: [{ kind }] })
+    expect((await stop($, payload)).block).toBeUndefined()
+    expect(calls).toBe(0)
   })
 }

@@ -1,7 +1,7 @@
 // FIXTURE: TRACK-27 finding 5, Ohad's decision 2026-10-18 ("recheck after a block"). Every Stop
 // after a block carries stop_hook_active; the freshness kinds still check, each once per turn.
 // The process.run stub holds one claim per kind; tests/helpers/test_track27_recheck.py proves
-// the real helper.
+// the real helper. Since TRACK-46 unit 3 step C the stub only proves the module starts no helper.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
@@ -46,25 +46,29 @@ const prepare = async ($: Engine, on: On, steps: Step[]) => {
     return { value: { exitCode: 0, stdout: JSON.stringify(block ? { decision: 'block', reason } : {}), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.turn.start({ text: 'Continue the agreed work', turnId: 't1' } as never)
-  return { claimed }
+  return { claimed, snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') as { candidates?: Array<{ kind: string; id?: string }> } }
 }
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider; the module returns
+// no block and runs no helper. These cases pin the snapshot facts the hook decides on.
 
 test('a Stop after a block still checks the other freshness kinds, each once per turn', async ($, on) => {
   const fixture = await prepare($, on, [step(), step({ id: 'plan:2', subject: 'Await approval' })])
   await mark($, 'in_progress')
   await mark($, 'waiting', 'plan:2')
   await response($)
-  expect((await stop($)).block).toBe(STALE)
-  expect((await stop($, { stop_hook_active: true })).block).toBe(WAITING)
+  expect((await stop($)).block).toBeUndefined()
   expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
-  expect([...fixture.claimed]).toEqual(['stale_in_progress', 'missing_waiting_request'])
+  expect(fixture.snapshot().candidates?.map(row => [row.kind, row.id])).toEqual([['stale_in_progress', 'plan:1'], ['missing_waiting_request', 'plan:2']])
+  expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
+  expect([...fixture.claimed]).toEqual([])
 })
 
 test('a first Stop that another hook continued still gets its freshness check', async ($, on) => {
-  await prepare($, on, [step()])
+  const fixture = await prepare($, on, [step()])
   await mark($, 'in_progress')
   await response($)
-  expect((await stop($, { stop_hook_active: true })).block).toBe(STALE)
+  expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
+  expect(fixture.snapshot().candidates?.map(row => [row.kind, row.id])).toEqual([['stale_in_progress', 'plan:1']])
   expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
 })
 

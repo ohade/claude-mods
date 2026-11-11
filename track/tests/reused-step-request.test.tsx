@@ -25,10 +25,12 @@ const prepare = (on: On, row = ACTIVE, inputs = [input()]) => {
   logs(on)
   on('session.id', () => ({ value: SESSION }))
   on('env.get', { name: /^(?!(?:CLAUDE_CONFIG_DIR|HOME)$)/ }, () => ({ value: undefined }))
-  on('env.set', () => ({ value: {} }))
+  // TRACK-46 unit 3 step C: stop-gate.py decides Stop from the published input rows; the module returns no block.
+  const gate = { text: '{}' }
+  on('env.set', (_, e) => { if (e.name === 'TRACK_GATE_SNAPSHOT') gate.text = String(e.value); return { value: {} } })
   on('classic.Stop', () => ({}))
   const pool = blobPool(on)
-  return { ledger, pending, store, pool }
+  return { ledger, pending, store, pool, reasons: () => ((JSON.parse(gate.text) as { inputs?: Array<{ reason: string }> }).inputs ?? []).map(row => row.reason) }
 }
 const mark = ($: Engine, extra: Record<string, unknown> = {}) => $.tool.call({
   tool: MARK, tool_use_id: 'mark-call', id: 'plan:1', status: 'in_progress', source_text: REQUEST, ...extra,
@@ -97,16 +99,18 @@ test('TRACK-8 a classifier-labelled question still needs its own question row af
   const f = prepare(on, ACTIVE, [{ ...input(), label: 'question' }])
   await mark($)
   expect(f.pending.value.inputs[0]?.covered).toBeUndefined()
-  const held = await $.classic.Stop({ session_id: SESSION, stop_hook_active: false } as never)
-  expect(held.block).toContain('classifier labelled')
-  expect(held.block).toContain('mcp__track__track_question')
+  expect((await $.classic.Stop({ session_id: SESSION, stop_hook_active: false } as never)).block).toBeUndefined()
+  const [held = ''] = f.reasons()
+  expect(held).toContain('classifier labelled')
+  expect(held).toContain('mcp__track__track_question')
 })
 
 test('TRACK-8 Stop repair preserves the running plan when its existing step acknowledges the request', async ($, on) => {
   const f = prepare(on)
-  const held = await $.classic.Stop({ session_id: SESSION, stop_hook_active: false } as never)
-  expect(held.block).toContain('mcp__track__mark_step, keeping its current status and the same source_text')
-  expect(held.block).toContain('use after when steps already exist')
+  expect((await $.classic.Stop({ session_id: SESSION, stop_hook_active: false } as never)).block).toBeUndefined()
+  const [held = ''] = f.reasons()
+  expect(held).toContain('mcp__track__mark_step, keeping its current status and the same source_text')
+  expect(held).toContain('use after when steps already exist')
   await mark($)
   expect(f.pending.value.inputs[0]?.covered).toBe('steps')
   expect(f.ledger.value.steps[0]).toMatchObject(ACTIVE)

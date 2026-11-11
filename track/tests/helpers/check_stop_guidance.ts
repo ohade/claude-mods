@@ -11,12 +11,10 @@ assert.deepEqual(source.match(/^import .*$/gm), ["import type { PendingInput } f
 assert.doesNotMatch(source, /claude-code|EngineInterface|Runtime|\$\.|atom\(|setTimeout\(/, 'guidance is value-only')
 // TRACK-46 slices 3 and 5 (2026-11-09, Ohad's standing approval): publishGate and fitInputReason moved
 // to ledger-store.ts with two of the three call sites; the third moved with the Stop claim code to
-// turn-guidance.ts.
+// turn-guidance.ts and was deleted with it in unit 3 step C (the command hook is the only Stop decider).
 const store = readFileSync(new URL('../../hooks/ledger-store.ts', import.meta.url), 'utf8')
-const guidance = readFileSync(new URL('../../hooks/turn-guidance.ts', import.meta.url), 'utf8')
 assert.ok(store.includes('reason: minimalInputReason(i, TRACK_QUESTION)'))
 assert.ok(store.includes('uncoveredBlock([inputs[index]!], ANSWER)'))
-assert.ok(guidance.includes('block: uncoveredBlock(inputs, ANSWER)'))
 const tree = ts.createSourceFile('stop-guidance.ts', source, ts.ScriptTarget.Latest, true)
 const bodies: Record<string, string> = {}
 for (const statement of tree.statements) if (ts.isVariableStatement(statement)) {

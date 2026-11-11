@@ -130,20 +130,18 @@ test('R2c a delayed question label republishes in a session-owned ledger', async
   expect(fixture.publications.length).toBeGreaterThan(before)
 })
 
-test('R3 classic Stop claims the input once and returns the exact helper receipt', async ($, on) => {
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. The module
+// publishes the input rows and claims nothing; test_stop_inputs.py covers the hook's claim and block.
+test('R3 classic Stop publishes the input for the command hook and claims nothing', async ($, on) => {
   const fixture = prepare(on, { inputs: [input(1)] })
-  expect((await stop($)).block).toBe(HELPER_REASON)
-  expect(fixture.calls).toHaveLength(1)
-  expect(fixture.calls[0]?.argv).toEqual(['python3', expect.stringMatching(/^\/.*\/hooks\/stop-gate\.py$/), '--claim'])
-  expect(fixture.calls[0]?.timeout).toBe(2000)
-  expect(fixture.calls[0]?.snapshot).toMatchObject({ inputs: [{ id: 1, reason: worded(FIRST) }], inputs_complete: true, candidates: [] })
-  expect(fixture.pending.value.inputs[0]?.held).toBe(true)
-  expect(fixture.turn.value.gatedTurnId).toBe('turn-1')
+  expect((await stop($)).block).toBeUndefined()
+  expect(fixture.calls).toHaveLength(0)
+  expect(fixture.snapshot()).toMatchObject({ inputs: [{ id: 1, reason: worded(FIRST) }], inputs_complete: true, candidates: [] })
   expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
-  expect(fixture.calls).toHaveLength(1)
+  expect(fixture.calls).toHaveLength(0)
 })
 
-test('R4 the published input remains present while freshness claim copies omit its key', async ($, on) => {
+test('R4 the published input remains present beside a freshness candidate after Stop', async ($, on) => {
   const fixture = prepare(on, { inputs: [input(1, { held: true })],
     steps: [{ id: 'plan:1', source: 'plan', subject: 'Review the result', status: 'waiting' }],
     freshness: { turnId: 'turn-1', edits: [], bash: [], steps: ['plan:1'], completed: [], waiting: ['plan:1'],
@@ -154,29 +152,11 @@ test('R4 the published input remains present while freshness claim copies omit i
   // the no-key assertions below reject a naive producer-only implementation.
   expect(fixture.snapshot().inputs).toEqual([{ id: 1, reason: worded(FIRST) }])
   expect(fixture.snapshot().inputs_complete).toBe(true)
-  await stop($, { stop_hook_active: true })
-  expect(fixture.calls.length).toBeGreaterThan(0)
-  for (const claim of fixture.calls) {
-    expect(Object.hasOwn(claim.snapshot, 'inputs')).toBe(false)
-    expect(Object.hasOwn(claim.snapshot, 'inputs_complete')).toBe(false)
-    expect(claim.snapshot.candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1', subject: 'Review the result' }])
-  }
+  expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
+  expect(fixture.calls).toHaveLength(0)
+  expect(fixture.snapshot().inputs).toEqual([{ id: 1, reason: worded(FIRST) }])
+  expect(fixture.snapshot().candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1', subject: 'Review the result' }])
 })
-
-for (const mode of ['spent', 'unknown'] as const) {
-  test(`R5 ${mode} helper receipt ${mode === 'spent' ? 'acknowledges' : 'preserves'} the input hold`, async ($, on) => {
-    const fixture = prepare(on, { inputs: [input(1)] })
-    fixture.helper.mode = mode
-    expect((await stop($)).block).toBeUndefined()
-    expect(fixture.pending.value.inputs[0]?.held === true).toBe(mode === 'spent')
-    if (mode === 'unknown') {
-      expect(fixture.lines.join('\n')).toContain('pending input repair receipt unavailable')
-      fixture.helper.mode = 'block'
-      expect((await stop($, { stop_hook_active: true })).block).toBe(HELPER_REASON)
-      expect(fixture.pending.value.inputs[0]?.held).toBe(true)
-    }
-  })
-}
 
 test('R6b long input reasons shrink before they displace a waiting candidate', async ($, on) => {
   const inputs = Array.from({ length: 25 }, (_, index) => input(index + 1, { held: true, excerpt: `Why ${'😀'.repeat(35)} ${index}?` }))
@@ -192,9 +172,9 @@ test('R6b long input reasons shrink before they displace a waiting candidate', a
   expect(snapshot.inputs![0]!.reason.length).toBeLessThan(worded(inputs[0]!.excerpt).length)
   expect(snapshot.truncated).toBeUndefined()
   expect(bytes(snapshot)).toBeLessThanOrEqual(16 * 1024)
-  await stop($, { stop_hook_active: true })
-  expect(fixture.calls.length).toBeGreaterThan(0)
-  expect(fixture.calls[0]?.snapshot.candidates).toEqual(snapshot.candidates)
+  expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
+  expect(fixture.calls).toHaveLength(0)
+  expect(fixture.snapshot().candidates).toEqual(snapshot.candidates)
 })
 
 test('R6c candidate overflow keeps every input complete while truncating freshness', async ($, on) => {
@@ -242,15 +222,3 @@ test('C1 a lower Stop block is preserved without spending an input claim', async
   expect(fixture.calls).toHaveLength(0)
   expect(fixture.pending.value.inputs[0]?.held).toBeUndefined()
 })
-
-for (const failure of ['exit', 'truncated', 'throw', 'configuration'] as const) {
-  test(`C2 unavailable helper (${failure}) retains the old local block once`, async ($, on) => {
-    const fixture = prepare(on, { inputs: [input(1)], ...(failure === 'configuration' && { root: false as const }) })
-    if (failure !== 'configuration') fixture.helper.mode = failure
-    expect((await stop($)).block).toBe(worded(FIRST))
-    expect(fixture.pending.value.inputs[0]?.held).toBe(true)
-    expect(fixture.turn.value.gatedTurnId).toBe('turn-1')
-    expect(fixture.turn.value.freshness?.nudged).toContain('claim')
-    expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
-  })
-}

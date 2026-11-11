@@ -65,6 +65,17 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()]) => {
   return { ledger, turn, activity, lines, lower, work, claim, contexts,
     snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') }
 }
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, decides freshness from the published
+// snapshot. A case that pinned the module's own block now pins the candidate rows (id, or the kind
+// when a row has none) and the response receipt the hook decides on, and that the module returned
+// no block and ran no helper; test_step_freshness_stop.py covers each block and its hold.
+const published = async ($: Engine, fixture: Awaited<ReturnType<typeof prepare>>, kind: string, extra: object = {}) => {
+  expect((await stop($, extra)).block).toBeUndefined()
+  expect(fixture.claim.calls).toBe(0)
+  const snapshot = fixture.snapshot()
+  expect(snapshot.response?.turn_id).toBe(snapshot.turn_id)
+  return (snapshot.candidates as Array<{ kind: string; id?: string }>).filter(row => row.kind === kind).map(row => row.id ?? row.kind)
+}
 
 test('confirmed clear all refreshes the external Stop snapshot after an established save', async ($, on) => {
   const durable = atomStore<PluginState['track']['durability']>(on, 'durability', { isUnsaved: false, reason: '' })
@@ -87,8 +98,7 @@ test('stale current-turn step blocks once without a live owner', async ($, on) =
   const fixture = await prepare($, on)
   await mark($, 'in_progress')
   await response($)
-  expect((await stop($)).block).toBe(STALE)
-  expect(fixture.claim.calls).toBe(1)
+  expect(await published($, fixture, 'stale_in_progress')).toEqual(['plan:1'])
   expect((await stop($)).block).toBeUndefined()
   await mark($, 'completed')
   expect((await stop($)).block).toBeUndefined()
@@ -107,9 +117,10 @@ test('missing Stop task list or main response nudges and passes', async ($, on) 
   const fixture = await prepare($, on)
   await mark($, 'in_progress')
   expect((await stop($)).block).toBeUndefined()
+  expect(fixture.snapshot().response).toBeUndefined()
   await response($)
   expect((await stop($, { background_tasks: undefined })).block).toBeUndefined()
-  expect(fixture.lines.join('\n')).toMatch(/response|task list|background/i)
+  expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'stale_in_progress', id: 'plan:1' }))
 })
 
 test('owned running task prevents premature completion; unrelated task does not', async ($, on) => {
@@ -122,7 +133,7 @@ test('owned running task prevents premature completion; unrelated task does not'
   expect(fixture.activity.value.owners?.['worker-1']).toBeUndefined()
   await response($)
   expect((await stop($, { background_tasks: [{ id: 'other', type: 'agent' }] })).block).toBeUndefined()
-  expect((await stop($, { background_tasks: [{ id: 'worker-1', type: 'agent' }] })).block).toBe(PREMATURE)
+  expect(await published($, fixture, 'premature_completion', { background_tasks: [{ id: 'worker-1', type: 'agent' }] })).toEqual(['plan:1'])
   expect(fixture.snapshot().v).toBe(2)
   expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'premature_completion', id: 'plan:1', owner_task_ids: ['worker-1'] }))
 })
@@ -134,7 +145,7 @@ for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
     fixture.claim.reason = EDIT
     await invoke($, tool)
     await response($)
-    expect((await stop($)).block).toBe(EDIT)
+    expect(await published($, fixture, 'untracked_edit')).toEqual(['untracked_edit'])
     expect((await stop($)).block).toBeUndefined()
   })
 }
@@ -193,7 +204,7 @@ for (const text of ['A status note.', '👉 plan:2: Please approve.', '```text\n
     fixture.claim.reason = WAITING
     await mark($, 'waiting')
     await response($, text)
-    expect((await stop($)).block).toBe(WAITING)
+    expect(await published($, fixture, 'missing_waiting_request')).toEqual(['plan:1'])
     expect((await stop($)).block).toBeUndefined()
   })
 }
@@ -215,7 +226,7 @@ test('two waiting steps with one arrow still require the other step request', as
   await mark($, 'waiting')
   await mark($, 'waiting', 'plan:2')
   await response($, '👉 plan:2: Please approve this check.')
-  expect((await stop($)).block).toBe(WAITING)
+  expect(await published($, fixture, 'missing_waiting_request')).toEqual(['plan:1'])
 })
 
 test('a prior-turn waiting step requires no repeated ask', async ($, on) => {
@@ -234,7 +245,7 @@ for (const bypass of [{ agent_id: 'worker' }]) {
     await response($)
     expect((await stop($, bypass)).block).toBeUndefined()
     expect(fixture.claim.calls).toBe(0)
-    expect((await stop($)).block).toBe(STALE)
+    expect(await published($, fixture, 'stale_in_progress')).toEqual(['plan:1'])
   })
 }
 
@@ -250,40 +261,18 @@ test('fallback then plugin shares one hold and respects the lower hook block', a
   expect((await stop($)).block).toBeUndefined()
 })
 
-test('plugin then fallback shares one hold', async ($, on) => {
-  const fixture = await prepare($, on)
-  await mark($, 'in_progress')
-  await response($)
-  expect((await stop($)).block).toBe(STALE)
-  expect(fixture.claim.taken).toBe(true)
-  // The test engine has no $.process to run the fallback here. The fallback reads this snapshot and
-  // skips a held kind; the real helper proves it in test_step_freshness_stop.py
-  // (fallback_then_plugin_and_plugin_then_fallback_share_one_claim, snapshot_held_kind_cannot_block_twice).
-  expect(fixture.snapshot().held).toContain('stale_in_progress')
-  expect((await stop($)).block).toBeUndefined()
-})
-
-test('a denied shared claim logs a nudge and passes', async ($, on) => {
-  const fixture = await prepare($, on)
-  fixture.claim.denied = true
-  await mark($, 'in_progress')
-  await response($)
-  expect((await stop($)).block).toBeUndefined()
-  expect(fixture.lines.join('\n')).toMatch(/claim.*(denied|unavailable|failed)/i)
-})
-
 test('a new turn clears old work receipts and held kinds', async ($, on) => {
   const fixture = await prepare($, on, [])
   fixture.claim.kind = 'untracked_edit'
   fixture.claim.reason = EDIT
   await invoke($, 'Edit')
   await response($)
-  expect((await stop($)).block).toBe(EDIT)
+  expect(await published($, fixture, 'untracked_edit')).toEqual(['untracked_edit'])
   await $.turn.start({ text: 'Continue', turnId: 't2' } as never)
   fixture.claim.taken = false
   await response($)
   expect((await stop($)).block).toBeUndefined()
   await invoke($, 'Edit')
   await response($)
-  expect((await stop($)).block).toBe(EDIT)
+  expect(await published($, fixture, 'untracked_edit')).toEqual(['untracked_edit'])
 })

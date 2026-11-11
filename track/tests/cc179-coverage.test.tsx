@@ -1,8 +1,8 @@
 // FIXTURE: CC-179 step 1. Only an accepted Track row covers a question-like prompt.
 // Codex's review (2026-10-10) found that a rejected or unrelated Track call counted as tracked.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, atomStore } from './kit'
-import type { Engine } from './kit'
+import { EMPTY, atomStore, SESSION } from './kit'
+import type { Engine, On } from './kit'
 
 const blockFor = (excerpt: string) =>
   `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.`
@@ -17,6 +17,7 @@ const prepare = (on: Parameters<typeof atomStore>[0], seed: Record<string, unkno
   atomStore(on, 'activity', { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] })
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('classic.Stop', () => ({}))
+  watchGate(on)
   on('command.list', () => ({ value: [{ name: 'compact', description: 'compact', source: 'builtin' as const }] }))
   return { ledger, turn }
 }
@@ -26,6 +27,21 @@ type Ran = { deny?: string; result?: unknown }
 const ask = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
 const call = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never) as Promise<Ran>
 const stop = ($: Engine) => $.classic.Stop({ stop_hook_active: false } as never) as Promise<{ block?: string }>
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. A case that
+// pinned the module's own block now pins the input rows the module publishes for the hook, and
+// that the module itself returns no block; tests/helpers/test_stop_inputs.py covers the hook's block.
+const gates = new WeakMap<On, { text: string }>()
+const watchGate = (on: On) => {
+  const gate = { text: '{}' }
+  gates.set(on, gate)
+  // publishGate stamps the snapshot with the session id; this fixture had none.
+  on('session.id', () => ({ value: SESSION }))
+  on('env.set', { name: /^TRACK_GATE_SNAPSHOT$/ }, (_, e) => { gate.text = String(e.value); return { value: {} } })
+}
+const gateReasons = async ($: Engine, on: On, fields: Record<string, unknown> = {}) => {
+  expect((await $.classic.Stop({ stop_hook_active: false, ...fields } as never)).block).toBeUndefined()
+  return (JSON.parse(gates.get(on)?.text ?? '{}') as { inputs?: Array<{ reason: string }> }).inputs?.map(row => row.reason)
+}
 
 test('a whitespace track_question is denied, writes no row, and Stop still blocks', async ($, on) => {
   const { ledger } = prepare(on)
@@ -33,7 +49,7 @@ test('a whitespace track_question is denied, writes no row, and Stop still block
   const ran = await call($, { tool: 'mcp__track__track_question', summary: '   ', tool_use_id: 'toolu_q' })
   expect(ran.deny).toBe('track: summary is required.')
   expect((ledger.value as { questions: unknown[] }).questions).toHaveLength(0)
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('an unrelated successful mark_step does not cover a question', async ($, on) => {
@@ -41,7 +57,7 @@ test('an unrelated successful mark_step does not cover a question', async ($, on
   await ask($, ASKED)
   const ran = await call($, { tool: 'mcp__track__mark_step', id: 'plan:1', status: 'completed', tool_use_id: 'toolu_s' })
   expect(String(ran.result)).toContain('marked completed')
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('mark_answered for an unknown id does not cover a question', async ($, on) => {
@@ -49,7 +65,7 @@ test('mark_answered for an unknown id does not cover a question', async ($, on) 
   await ask($, ASKED)
   const ran = await call($, { tool: 'mcp__track__mark_answered', id: 99, status: 'answered', answer_text: 'x', tool_use_id: 'toolu_a' })
   expect(String(ran.result)).toContain('No question with id 99')
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('track_steps with no titles does not cover a question', async ($, on) => {
@@ -57,7 +73,7 @@ test('track_steps with no titles does not cover a question', async ($, on) => {
   await ask($, ASKED)
   const ran = await call($, { tool: 'mcp__track__track_steps', steps: ['  '], tool_use_id: 'toolu_t' })
   expect(String(ran.result)).toContain('No steps given')
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('a question tracked for another prompt does not cover this one', async ($, on) => {
@@ -66,7 +82,7 @@ test('a question tracked for another prompt does not cover this one', async ($, 
   await call($, { tool: 'mcp__track__track_question', summary: 'CC-172 status', source_text: 'what about cc-172?', tool_use_id: 'toolu_q' })
   const id = (ledger.value as { questions: Array<{ id: number }> }).questions.at(-1)?.id
   await call($, { tool: 'mcp__track__mark_answered', id, status: 'answered', answer_text: 'Done.', tool_use_id: 'toolu_a' })
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('a subagent track_question is denied and does not cover a question', async ($, on) => {
@@ -74,7 +90,7 @@ test('a subagent track_question is denied and does not cover a question', async 
   await ask($, ASKED)
   const ran = await call($, { tool: 'mcp__track__track_question', summary: ASKED, agentId: 'agent-1', tool_use_id: 'toolu_q' })
   expect(ran.deny).toContain('subagent')
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('reusing an open question for the same words covers the prompt', async ($, on) => {

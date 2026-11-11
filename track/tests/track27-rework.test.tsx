@@ -1,6 +1,8 @@
 // FIXTURE: TRACK-27 refuter verdict 2, findings 1-4, 7 and 8. The real helper's
 // decisions are proven in tests/helpers/test_track27_rework.py; this kit records the
 // plugin's helper call and can make one turn write lose its compare-and-set.
+// TRACK-46 unit 3 step C removed the module's helper call: finding 1 (its config dir) and the first
+// finding 7 case (its held-kind write) went with it; the process.run stub now only proves no call.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, logs, pluginStore } from './kit'
 import type { Engine, On } from './kit'
@@ -60,14 +62,6 @@ const prepare = async ($: Engine, on: On, steps: Step[] = [step()], options: Opt
   return { turn, activity, lines, helper, snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') }
 }
 
-test('finding 1: with CLAUDE_CONFIG_DIR unset the plugin claims under HOME/.claude and blocks', async ($, on) => {
-  const fixture = await prepare($, on, undefined, { env: { CLAUDE_PLUGIN_ROOT: '/fixture/track', HOME: '/fixture/home' } })
-  await mark($, 'in_progress')
-  await response($)
-  expect((await stop($)).block).toBe(STALE)
-  expect(fixture.helper.configs).toEqual(['/fixture/home/.claude'])
-})
-
 test('finding 2: steps inserted after a row do not make a prior-turn waiting row ask again', async ($, on) => {
   const fixture = await prepare($, on, [step(), step({ id: 'plan:2', subject: 'Await approval', status: 'waiting', activeTurnId: 'old' })])
   await invoke($, 'mcp__track__track_steps', { steps: ['Follow-up check'], after: 'plan:1' })
@@ -93,20 +87,6 @@ test('finding 4: the snapshot tells the helper which tasks have a recorded owner
   fixture.activity.value = { ...fixture.activity.value, owners: undefined }
   await response($)
   expect(fixture.snapshot().attributed_task_ids).toEqual([])
-})
-
-test('finding 7: a held-kind write that retries into a new turn returns no block', async ($, on) => {
-  let moved = false
-  await prepare($, on, undefined, { beforeTurnSet: (held, next) => {
-    if (moved || next.freshness?.held.includes('stale_in_progress') !== true) return
-    moved = true // FIXTURE: a new turn starts between this write's read and its compare-and-set.
-    held.value = { ...held.value, currentId: 't2', freshness: undefined }
-    held.version += 1
-  } })
-  await mark($, 'in_progress')
-  await response($)
-  expect((await stop($)).block).toBeUndefined()
-  expect(moved).toBe(true)
 })
 
 test('finding 7: a nudge another Stop recorded during the retry is not shown again', async ($, on) => {

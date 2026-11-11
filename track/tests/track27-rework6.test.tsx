@@ -82,7 +82,7 @@ for (const launcher of ['Bash', 'Agent'] as const) {
       if (removal !== 'keep') expect(fixture.ledger.value.steps.some(row => row.id === TODO)).toBe(false)
       await todos($, [{ content: 'START the dev server!', status: 'completed' }])
       await response($)
-      expect((await stop($, launcher)).block).toBe(PREMATURE)
+      expect((await stop($, launcher)).block).toBeUndefined()
       expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'premature_completion', id: TODO, owner_task_ids: [TASK] }))
     })
   }
@@ -110,6 +110,6 @@ for (const completion of [false, true]) {
     expect(fixture.activity.value.owners?.t0).toBeUndefined()
     expect(fixture.activity.value.ownerOrder).not.toContain('t0')
     expect(fixture.snapshot().attributed_task_ids).not.toContain('t0')
-    if (!completion) expect(fixture.lines.join('\n')).toMatch(/owner identity unavailable/)
+    if (!completion) expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'stale_in_progress', id: 'plan:1' }))
   })
 }

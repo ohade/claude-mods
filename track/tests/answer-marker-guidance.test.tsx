@@ -1,7 +1,7 @@
 // FIXTURE: 2026-10-12 generic reminders still requested a second tool answer.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore, logs } from './kit'
-import type { On } from './kit'
+import type { Engine, On } from './kit'
 
 const prepare = (on: On) => {
   mock.clock(on)
@@ -16,7 +16,21 @@ const prepare = (on: On) => {
   const observed = { context: [] as readonly string[] }
   on('prompt.submit', (_, e) => { observed.context = e.context ?? []; return { text: e.text } })
   on('classic.Stop', () => ({}))
+  watchGate(on)
   return observed
+}
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. A case that
+// pinned the module's own block now pins the input rows the module publishes for the hook, and
+// that the module itself returns no block; tests/helpers/test_stop_inputs.py covers the hook's block.
+const gates = new WeakMap<On, { text: string }>()
+const watchGate = (on: On) => {
+  const gate = { text: '{}' }
+  gates.set(on, gate)
+  on('env.set', { name: /^TRACK_GATE_SNAPSHOT$/ }, (_, e) => { gate.text = String(e.value); return { value: {} } })
+}
+const gateReasons = async ($: Engine, on: On, fields: Record<string, unknown> = {}) => {
+  expect((await $.classic.Stop({ stop_hook_active: false, ...fields } as never)).block).toBeUndefined()
+  return (JSON.parse(gates.get(on)?.text ?? '{}') as { inputs?: Array<{ reason: string }> }).inputs?.map(row => row.reason)
 }
 const expectMarkers = (text: string) => {
   expect(text).toContain('<!-- A')
@@ -38,13 +52,14 @@ test('the later-turn open reminder prefers one formatted marker answer', async (
 test('the Stop repair for a tracked open question prefers one marker answer', async ($, on) => {
   prepare(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Open question', tool_use_id: 'ask-guidance' } as never)
-  const stopped = await $.classic.Stop({ stop_hook_active: false } as never)
-  expectMarkers(stopped.block ?? '')
+  await gateReasons($, on)
+  // The hook builds the marker repair from this row: test_stop_gate.py::test_open_question_reason_equals_module_and_lists_the_others.
+  expect((JSON.parse(gates.get(on)?.text ?? '{}') as { open?: unknown }).open).toEqual([{ id: 1, head: 'Open question' }])
 })
 
 test('the Stop repair for an uncovered question uses the same answer path', async ($, on) => {
   prepare(on)
   await $.prompt.submit({ text: 'Why is this duplicated?', origin: { kind: 'composer' } } as never)
-  const stopped = await $.classic.Stop({ stop_hook_active: false } as never)
-  expectMarkers(stopped.block ?? '')
+  const [reason = ''] = await gateReasons($, on) ?? []
+  expectMarkers(reason)
 })

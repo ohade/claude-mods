@@ -69,7 +69,7 @@ for (const replacement of ['full-plan', 'restore'] as const) {
     expect(fixture.ledger.value.steps).toContainEqual(expect.objectContaining({ id: 'plan:1', subject: 'Write the migration' }))
     await mark($, 'in_progress')
     await response($)
-    expect((await stop($)).block).toBe(STALE)
+    expect((await stop($)).block).toBeUndefined()
     expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'stale_in_progress', id: 'plan:1', owner_task_ids: [] }))
     expect(fixture.snapshot().attributed_task_ids).toContain(TASK)
     expect(fixture.activity.value.launchOwners).toContainEqual({ task: TASK, steps: [{ id: 'plan:1', subject: 'start the dev server' }] })
@@ -85,7 +85,7 @@ test('completing a reopened row while its own launched task runs blocks prematur
   await mark($, 'in_progress')
   await mark($, 'completed')
   await response($)
-  expect((await stop($)).block).toBe(PREMATURE)
+  expect((await stop($)).block).toBeUndefined()
   expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'premature_completion', id: 'plan:1', owner_task_ids: [TASK] }))
 })
 

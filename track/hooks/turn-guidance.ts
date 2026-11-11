@@ -4,13 +4,11 @@ import type { Activity, FreshnessKind, Ledger, PendingInput, Step, Turn } from '
 import { visibleSteps } from './steps'
 import { OPEN_STEPS_LISTED } from './prompt-context'
 import { ownerTasksForStep } from './turn-policy'
-import { uncoveredBlock } from './stop-guidance'
 import { canFollowUp } from './task-ownership'
 import { MAX_STEPS, STEP_STATUSES, distinctIds } from './ledger-policy'
-import { MARK_STEP, TRACK_STEPS, STEP_RESULT, ANSWER, EMPTY_LEDGER, IDLE, reason, noteEvent, freshTurn, configDir, sha256Hex, assertOwner, updateLedger } from './track-state'
+import { MARK_STEP, TRACK_STEPS, STEP_RESULT, EMPTY_LEDGER, IDLE, noteEvent, freshTurn, configDir, sha256Hex, assertOwner, updateLedger } from './track-state'
 import type { OwnerToken } from './track-state'
 import { publishGate, saveLedger } from './ledger-store'
-import type { StopClaimSnapshot } from './ledger-store'
 
 // Atom copies: identical to their register.tsx declarations (tests/helpers/architecture.ts).
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
@@ -107,8 +105,8 @@ export async function freshnessNudge($: EngineInterface, code: string, text: str
   $.ui.toast(text)
   return { turn: nudgedTurn }
 }
-// Failure-intake D6: stop.nudge is fed at the six listed freshnessNudge callers only (identity, bash, claim),
-// never inside freshnessNudge, so the facts:<kind> caller and any later caller feed nothing.
+// Failure-intake D6: stop.nudge is fed at the three listed freshnessNudge callers only (identity twice,
+// bash), never inside freshnessNudge, so any later caller feeds nothing.
 export function nudgeFed($: EngineInterface, code: string, shown: { turn: string | null } | undefined): void {
   if (shown !== undefined) noteEvent($, 'stop.nudge', { code }, shown.turn)
 }
@@ -254,90 +252,16 @@ export async function finishTasks($: EngineInterface, pick: (a: Activity) => str
   return `track: background work finished while ${targets.map(s => `${s.id} is still ${s.delegated === true ? 'delegated ' : ''}${s.status}`).join(', ')}; update it with mcp__track__mark_step.`
 }
 
-export async function prepareStopClaim($: EngineInterface) {
-  const root = $.plugin.root
-  const config = await configDir($)
-  if (!root?.startsWith('/') || !config?.startsWith('/')) return undefined
-  return async (payload: { session_id?: string }, snapshot: StopClaimSnapshot) => {
-    const result = await $.process.run(['python3', `${root}/hooks/stop-gate.py`, '--claim'], {
-      stdin: JSON.stringify({ ...payload, session_id: snapshot.session_id }), timeoutMs: 2000,
-      env: { CLAUDE_CONFIG_DIR: config, TRACK_GATE_SNAPSHOT: JSON.stringify(snapshot) },
-    })
-    if (result.exitCode !== 0 || result.isStdoutTruncated === true || result.isStderrTruncated === true) throw new Error(`helper exit ${result.exitCode}`)
-    return result
-  }
-}
-
-export async function stepStop($: EngineInterface, payload: { session_id?: string; background_tasks?: readonly { id: string; type: string }[] }): Promise<string | undefined> {
+// TRACK-46 unit 3 step C: the command hook stop-gate.py makes every Stop decision. At Stop the
+// module only republishes the snapshot for a continuation Stop and raises the identity and bash
+// reminders; it returns no block and starts no process.
+export async function stepStop($: EngineInterface, payload: { session_id?: string }): Promise<void> {
   const snapshot = await publishGate($)
   if (snapshot === undefined || !snapshot.session_id || !snapshot.turn_id || (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) {
     nudgeFed($, 'identity', await freshnessNudge($, 'identity', 'track: Stop snapshot identity unavailable; reconcile steps before finishing.'))
-    return undefined
+    return
   }
   const t = await read($, turn)
   const fresh = t.freshness?.turnId === snapshot.turn_id ? t.freshness : undefined
   if (fresh !== undefined && fresh.bash.length > 0 && fresh.edits.length === 0 && fresh.steps.length === 0) nudgeFed($, 'bash', await freshnessNudge($, 'bash', BASH_NUDGE, true))
-  if (snapshot.candidates.length === 0) return undefined
-  const claim = await prepareStopClaim($)
-  if (claim === undefined) {
-    nudgeFed($, 'claim', await freshnessNudge($, 'claim', 'track: shared hold claim configuration unavailable; reconcile steps before finishing.'))
-    return undefined
-  }
-  for (const kind of FRESHNESS_KINDS) {
-    const candidates = snapshot.candidates.filter(row => row.kind === kind)
-    if (candidates.length === 0 || snapshot.held.includes(kind)) continue
-    try {
-      // An input hold belongs to the uncovered gate, never a freshness run.
-      const { inputs: _inputs, inputs_complete: _complete, ...freshnessSnapshot } = snapshot
-      const result = await claim(payload, { ...freshnessSnapshot, candidates })
-      if (result.stderr.trim() !== '') {
-        $.ui.log(result.stderr.trim(), { to: 'debug' })
-        noteEvent($, 'stop.claim_stderr', { kind, bytes: new TextEncoder().encode(result.stderr.trim()).length }, snapshot.turn_id)
-        await freshnessNudge($, `facts:${kind}`, result.stderr.trim())
-      }
-      const receipt = JSON.parse(result.stdout) as { decision?: unknown; reason?: unknown }
-      if (receipt?.decision !== 'block' || typeof receipt.reason !== 'string' || receipt.reason.trim() === '') continue
-      let currentTurn = false
-      await update($, turn, current => {
-        currentTurn = false
-        if (current.currentId !== snapshot.turn_id) return current
-        const fresh = current.freshness?.turnId === snapshot.turn_id ? current.freshness : freshTurn(snapshot.turn_id!)
-        currentTurn = true
-        return { ...current, freshness: { ...fresh, held: [...new Set([...fresh.held, kind])] } }
-      })
-      await publishGate($)
-      if (currentTurn) noteEvent($, 'stop.block.module', { kind, held: [kind], candidates: candidates.length }, snapshot.turn_id)
-      return currentTurn ? receipt.reason : undefined
-    } catch (error) {
-      nudgeFed($, 'claim', await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`))
-      return undefined
-    }
-  }
-  return undefined
-}
-
-export async function claimUncoveredInputs($: EngineInterface, payload: { session_id?: string }, inputs: PendingInput[], currentId: string): Promise<{ held: boolean; block?: string }> {
-  try {
-    const snapshot = await publishGate($)
-    const claim = await prepareStopClaim($)
-    if (snapshot === undefined || snapshot.turn_id !== currentId || !snapshot.session_id ||
-        (payload.session_id !== undefined && payload.session_id !== snapshot.session_id)) throw new Error('Stop snapshot identity unavailable')
-    if (claim === undefined) throw new Error('shared hold claim configuration unavailable')
-    const ids = new Set(inputs.map(i => i.id))
-    const result = await claim(payload, { ...snapshot, candidates: [], inputs_complete: true, inputs: snapshot.inputs.filter(i => ids.has(i.id)) })
-    const diagnostic = result.stderr.trim()
-    if (diagnostic !== '') $.ui.log(diagnostic, { to: 'debug' })
-    const receipt = JSON.parse(result.stdout) as { decision?: unknown; reason?: unknown } | null
-    if (receipt?.decision === 'block') {
-      if (typeof receipt.reason !== 'string' || receipt.reason.trim() === '') throw new Error('input claim repair text unavailable')
-      return { held: true, block: receipt.reason }
-    }
-    if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt) || Object.keys(receipt).length !== 0) throw new Error('input claim receipt incompatible')
-    // A quiet empty receipt means the command hook already spent this input's
-    // claim. An unavailable fact preserves it for a later Stop.
-    return { held: diagnostic === '' }
-  } catch (error) {
-    nudgeFed($, 'claim', await freshnessNudge($, 'claim', `track: shared hold claim failed or denied (${reason(error)}); reconcile steps before finishing.`))
-    return { held: true, block: uncoveredBlock(inputs, ANSWER) }
-  }
 }

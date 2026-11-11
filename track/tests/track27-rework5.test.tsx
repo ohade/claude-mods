@@ -101,7 +101,7 @@ for (const launcher of ['Bash', 'Agent'] as const) {
       expect(fixture.ledger.value.steps).toContainEqual(expect.objectContaining({ id: 'plan:1', subject: 'Write the migration' }))
       await mark($, 'in_progress')
       await response($)
-      expect((await stop($, launcher)).block).toBe(stale('plan:1'))
+      expect((await stop($, launcher)).block).toBeUndefined()
       expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'stale_in_progress', id: 'plan:1', owner_task_ids: [] }))
       expect(fixture.snapshot().attributed_task_ids).toContain(TASK)
     })

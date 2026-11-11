@@ -43,8 +43,9 @@ test('S2 a restarted runtime publishes a new input epoch, stable within one runt
   await start($, 'turn-1')
   const first = fixture.snapshot().input_epoch
   expect(typeof first === 'string' && first.length > 0, 'the snapshot names its input epoch').toBe(true)
-  await stop($)
-  expect(fixture.claimed.at(-1)?.input_epoch, 'the claim helper receives the same epoch').toBe(first)
+  expect((await stop($)).block, 'TRACK-46 unit 3 step C: stop-gate.py decides; the module returns no block').toBeUndefined()
+  expect(fixture.claimed, 'the module starts no claim helper').toEqual([])
+  expect(fixture.snapshot().input_epoch, 'the Stop republishes the same epoch for the command hook').toBe(first)
 
   // A new process starts the pending atom fresh: numbering restarts at 1.
   fixture.pending.value = { inputs: [], nextId: 1 }

@@ -71,8 +71,10 @@ const prepare = (on: On, kind: 'input' | 'freshness') => {
     return { value: { exitCode: 0, stdout: JSON.stringify(kind === 'input' ? {} : { decision: 'block', reason: FRESHNESS_REASON }),
       stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { pending, product, claims, command, calls }
+  return { pending, product, claims, command, calls, snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') as Snapshot }
 }
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. The module no
+// longer starts the helper through SDK plugin.root; these cases pin that it starts none.
 const stop = ($: Engine, active: boolean) => $.classic.Stop({ session_id: SESSION, stop_hook_active: active, background_tasks: [] } as never)
 const captureRoot = async ($: Engine, fixture: ReturnType<typeof prepare>) => {
   // The normal checkpoint path reaches writer-lock.py through $.plugin.root.
@@ -80,7 +82,7 @@ const captureRoot = async ($: Engine, fixture: ReturnType<typeof prepare>) => {
   expect(fixture.product.root?.startsWith('/')).toBe(true)
 }
 
-test('row 0 input: a null env root still meets the command claim through SDK plugin.root on Stop 2', async ($, on) => {
+test('row 0 input: with a null env root the command claim blocks once and Stop 2 starts no module claim', async ($, on) => {
   const fixture = prepare(on, 'input')
   await captureRoot($, fixture)
   expect((await stop($, false)).block).toBe(COMMAND_REASON)
@@ -89,17 +91,17 @@ test('row 0 input: a null env root still meets the command claim through SDK plu
   expect(fixture.calls).toHaveLength(0)
   expect((await stop($, true)).block).toBeUndefined()
   expect(fixture.command.stops).toBe(2)
-  expect(fixture.calls).toHaveLength(1)
-  expect(fixture.pending.value.inputs[0]?.held).toBe(true)
+  expect(fixture.calls).toHaveLength(0)
   expect(fixture.command.writes).toBe(1)
   expect([...fixture.claims]).toEqual([1])
 })
 
-test('row 0 freshness: a null env root still invokes the shared helper through SDK plugin.root', async ($, on) => {
+test('row 0 freshness: with a null env root the module publishes the candidate and starts no helper', async ($, on) => {
   const fixture = prepare(on, 'freshness')
   await captureRoot($, fixture)
-  expect((await stop($, true)).block).toBe(FRESHNESS_REASON)
-  expect(fixture.calls).toHaveLength(1)
   expect((await stop($, true)).block).toBeUndefined()
-  expect(fixture.calls).toHaveLength(1)
+  expect(fixture.calls).toHaveLength(0)
+  expect(fixture.snapshot().candidates).toEqual([{ kind: 'missing_waiting_request', id: 'plan:1', subject: 'Review the result' }])
+  expect((await stop($, true)).block).toBeUndefined()
+  expect(fixture.calls).toHaveLength(0)
 })

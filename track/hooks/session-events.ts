@@ -1,6 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginState, Hook, MatchedHook } from 'claude-code'
-import type { Pane, Pending, PendingInput, Question, Step, Turn } from '../types'
+import type { Pane, Pending, PendingInput, Step, Turn } from '../types'
 import { checksumOf } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
 import { MAX_INPUTS, admitInput } from './prompt-intake'
@@ -14,7 +14,7 @@ import type { OwnerToken } from './track-state'
 import { closeLock } from './writer-lock'
 import { publishGate, saveLedger, saveFailureText } from './ledger-store'
 import { renderInstances, renderSaved, memoryToken, switchOwner, ensureOwner } from './session-owner'
-import { freshnessNudge, nudgeFed, missingResultText, nudgeMissingResults, remindFinishedTurn, readStopInventory, inventoryDrops, finishTasks, stepStop, claimUncoveredInputs, claimedInputIds } from './turn-guidance'
+import { freshnessNudge, nudgeFed, missingResultText, nudgeMissingResults, remindFinishedTurn, readStopInventory, inventoryDrops, finishTasks, stepStop, claimedInputIds } from './turn-guidance'
 import { recordTranscriptBaseline, dropRewound, observeResponse, captureResponse, recordPrompt, classifying, labelScheduled, classifierOn, classifyInput, forgetTranscriptBaseline } from './prompt-flow'
 import { STEPS_LINE, MIDTURN_FRAME, light } from './pane-actions'
 import { dropFinishedOwners } from './track-tools'
@@ -41,8 +41,6 @@ export const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // turns; it is held once, then named on each later prompt. At the cap a covered input leaves
 // first, then one Haiku called not_question; with none, the new prompt is not recorded, with a
 // toast. Never an unresolved one.
-// How long Stop waits for a Haiku label already in flight.
-export const STOP_JOIN_MS = 2000
 
 // Whether the drift status shows: while it does, each main turn's end checks
 // again, so a land clears it; with none, a session checks at start alone.
@@ -459,62 +457,17 @@ export async function stopEvent($: Parameters<StopEventHook>[0], e: Parameters<S
   }
   const t = await read($, turn)
   await nudgeMissingResults($, t)
-  // Each uncovered input is held once, even after another Stop hook continued the turn: its
-  // own mark bounds the repair, so no loop. Unbound inputs are this turn's and are bound now.
-  if (t.currentId !== null) {
-    const currentId = t.currentId
-    // Wait briefly for a Haiku label already in flight; past the wait the wording check decides.
-    const inFlight = (await read($, pending)).inputs.filter(i => i.covered === undefined && i.held !== true && i.label === undefined).map(i => classifying.get(i.id)).filter(run => run !== undefined)
-    if (inFlight.length > 0) await Promise.race([Promise.all(inFlight), $.clock.sleep(STOP_JOIN_MS)])
-    let uncovered: PendingInput[] = []
-    await update($, pending, p => {
-      // Any unresolved input not yet asked about: this turn's, or one an interrupted turn left.
-      uncovered = p.inputs.filter(i => i.covered === undefined && i.held !== true && needsQuestion(i))
-      const bound = p.inputs.some(i => i.turnId === null)
-      return bound ? { ...p, inputs: p.inputs.map(i => ({ ...i, turnId: i.turnId ?? currentId })) } : p
-    })
-    if (uncovered.length > 0) {
-      // On hosts with both hooks, the command hook claims first. Both paths
-      // use that same per-input claim, so the module cannot block it twice.
-      const claim = await claimUncoveredInputs($, e, uncovered, currentId)
-      if (claim.held) {
-        const held = new Set(uncovered.map(i => i.id))
-        await update($, pending, p => ({ ...p, inputs: p.inputs.map(i => held.has(i.id) ? { ...i, held: true as const } : i) }))
-      }
-      if (claim.block !== undefined) {
-        await update($, turn, cur => ({ ...cur, gatedTurnId: currentId }))
-        noteEvent($, 'stop.block.module', { kind: 'uncovered_input', inputs: uncovered.length }, currentId)
-        return { ...below, block: claim.block }
-      }
-    }
-  }
   if (t.currentId === null) {
     if (!e.stop_hook_active) nudgeFed($, 'identity', await freshnessNudge($, 'identity', 'track: current turn identity unavailable; reconcile steps before finishing.'))
     return below
   }
-  // Ohad, 2026-10-18: every Stop after a block carries stop_hook_active, and it still checks
-  // the freshness kinds. Each kind's shared hold allows one block per turn, so this cannot
-  // loop. The open-question gate keeps its bypass.
-  if (e.stop_hook_active) {
-    const block = await stepStop($, e)
-    return block === undefined ? below : { ...below, block }
-  }
-  const l = await read($, ledger)
-  const open = l.questions.filter(q => q.status === 'open' && q.turnId === t.currentId)
-  if (open.length === 0 || t.gatedTurnId === t.currentId) {
-    const block = await stepStop($, e)
-    return block === undefined ? below : { ...below, block }
-  }
-  await update($, turn, cur => ({ ...cur, gatedTurnId: t.currentId }))
-  await publishGate($)
-  noteEvent($, 'stop.block.module', { kind: 'open_question', open: open.length }, t.currentId)
-  const first = open[0] as Question
-  const rest = open.length > 1 ? ` (${open.length - 1} more open: ${open.slice(1).map(q => `Q${q.id}`).join(', ')})` : ''
-
-  return {
-    ...below,
-    block: `track: Q${first.id} "${first.head}" from this turn is still open${rest}. ${ANSWER.replaceAll('{id}', String(first.id))}. If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.`,
-  }
+  // TRACK-46 unit 3 step C: stop-gate.py, the command hook below, is the only Stop decider. The
+  // module keeps the bookkeeping: unbound inputs are this turn's and are bound now, then the
+  // snapshot is republished for a continuation Stop and the reminders are raised.
+  const currentId = t.currentId
+  await update($, pending, p => p.inputs.some(i => i.turnId === null) ? { ...p, inputs: p.inputs.map(i => ({ ...i, turnId: i.turnId ?? currentId })) } : p)
+  await stepStop($, e)
+  return below
 }
 
 // 'session.compact': the registration stays in register.tsx.

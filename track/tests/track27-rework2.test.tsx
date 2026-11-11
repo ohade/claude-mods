@@ -58,7 +58,8 @@ test('pass 3 finding 1: a task stays attributed after its launch step completes,
   await mark($, 'in_progress', 'plan:2')
   await response($)
   expect(fixture.snapshot().attributed_task_ids).toContain('shell-9')
-  expect((await stop($, { background_tasks: [{ id: 'shell-9', type: 'shell' }] })).block).toBe(stale('plan:2'))
+  expect((await stop($, { background_tasks: [{ id: 'shell-9', type: 'shell' }] })).block).toBeUndefined()
+  expect(fixture.snapshot().candidates).toContainEqual(expect.objectContaining({ kind: 'stale_in_progress', id: 'plan:2' }))
 })
 
 for (const [id, source] of [['restored:task:7', 'task'], ['todo:', 'todo']] as const) {

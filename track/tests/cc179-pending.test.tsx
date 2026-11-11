@@ -2,14 +2,12 @@
 // covers it. Codex's review (2026-10-10): one excerpt was kept, every later prompt (a
 // notification too) overwrote it, and Track stepped aside after another Stop hook continued.
 import { expect, mock, test } from 'claude-code/testing'
-import { EMPTY, atomStore } from './kit'
-import type { Engine } from './kit'
+import { EMPTY, atomStore, SESSION } from './kit'
+import type { Engine, On } from './kit'
 
 const TAIL = 'Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.'
 const blockFor = (excerpt: string) =>
   `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, ${TAIL}`
-const blockForAll = (excerpts: string[]) =>
-  `track: these prompts look like questions (${excerpts.map(x => `"${x}"`).join('; ')}) but no Track row was written for them. Call mcp__track__track_question for each with source_text = its first line, ${TAIL}`
 
 const FIRST = 'how was 154 fixed?'
 const SECOND = 'and what about cc-172?'
@@ -23,6 +21,7 @@ const prepare = (on: Parameters<typeof atomStore>[0]) => {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => ({}))
+  watchGate(on)
   on('command.list', () => ({ value: [{ name: 'compact', description: 'compact', source: 'builtin' as const }] }))
   return { ledger, turn }
 }
@@ -34,6 +33,21 @@ const ask = ($: Engine, text: string, extra: Record<string, unknown> = {}) =>
 const askMidTurn = ($: Engine, text: string) => ask($, text, { turnId: 'turn-1' })
 const stop = ($: Engine, extra: Record<string, unknown> = {}) =>
   $.classic.Stop({ stop_hook_active: false, ...extra } as never) as Promise<{ block?: string }>
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. A case that
+// pinned the module's own block now pins the input rows the module publishes for the hook, and
+// that the module itself returns no block; tests/helpers/test_stop_inputs.py covers the hook's block.
+const gates = new WeakMap<On, { text: string }>()
+const watchGate = (on: On) => {
+  const gate = { text: '{}' }
+  gates.set(on, gate)
+  // publishGate stamps the snapshot with the session id; this fixture had none.
+  on('session.id', () => ({ value: SESSION }))
+  on('env.set', { name: /^TRACK_GATE_SNAPSHOT$/ }, (_, e) => { gate.text = String(e.value); return { value: {} } })
+}
+const gateReasons = async ($: Engine, on: On, fields: Record<string, unknown> = {}) => {
+  expect((await $.classic.Stop({ stop_hook_active: false, ...fields } as never)).block).toBeUndefined()
+  return (JSON.parse(gates.get(on)?.text ?? '{}') as { inputs?: Array<{ reason: string }> }).inputs?.map(row => row.reason)
+}
 
 const trackAndAnswer = async ($: Engine, ledger: { value: unknown }, sourceText: string) => {
   await $.tool.call({ tool: 'mcp__track__track_question', summary: sourceText, source_text: sourceText, tool_use_id: `toolu_q_${sourceText.length}` } as never)
@@ -46,14 +60,14 @@ test('two question prompts in one turn with one covered still block for the othe
   await ask($, FIRST)
   await askMidTurn($, SECOND)
   await trackAndAnswer($, ledger, SECOND)
-  expect((await stop($)).block).toBe(blockFor(FIRST))
+  expect(await gateReasons($, on)).toEqual([blockFor(FIRST)])
 })
 
 test('two uncovered question prompts are named in one block, then Stop passes', async ($, on) => {
   prepare(on)
   await ask($, FIRST)
   await askMidTurn($, SECOND)
-  expect((await stop($)).block).toBe(blockForAll([FIRST, SECOND]))
+  expect(await gateReasons($, on)).toEqual([FIRST, SECOND].map(blockFor))
   expect((await stop($)).block).toBeUndefined()
 })
 
@@ -61,20 +75,20 @@ test('a task notification neither erases nor adds a pending question', async ($,
   prepare(on)
   await ask($, FIRST)
   await ask($, '<task-notification><task-id>ag1</task-id></task-notification> why?', { origin: { kind: 'task-notification' }, turnId: 'turn-1' })
-  expect((await stop($)).block).toBe(blockFor(FIRST))
+  expect(await gateReasons($, on)).toEqual([blockFor(FIRST)])
 })
 
 test('an AMQ doorbell in the same turn does not erase a pending question', async ($, on) => {
   prepare(on)
   await ask($, FIRST)
   await askMidTurn($, ': AMQ doorbell run amq drain --include-body then act on it')
-  expect((await stop($)).block).toBe(blockFor(FIRST))
+  expect(await gateReasons($, on)).toEqual([blockFor(FIRST)])
 })
 
 test('Track still blocks once for an uncovered prompt after another Stop hook continued the turn', async ($, on) => {
   prepare(on)
   await ask($, FIRST)
-  expect((await stop($, { stop_hook_active: true })).block).toBe(blockFor(FIRST))
+  expect(await gateReasons($, on, { stop_hook_active: true })).toEqual([blockFor(FIRST)])
   expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()
 })
 
@@ -98,7 +112,7 @@ test('both prompts covered in one turn do not block', async ($, on) => {
 test('a prompt typed during turn-1 is not carried into turn-2', async ($, on) => {
   prepare(on)
   await askMidTurn($, FIRST)
-  expect((await stop($)).block).toBe(blockFor(FIRST))
+  expect(await gateReasons($, on)).toEqual([blockFor(FIRST)])
   await $.turn.start({ text: 'next', turnId: 'turn-2' } as never)
   await ask($, 'send it now')
   expect((await stop($)).block).toBeUndefined()

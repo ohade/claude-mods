@@ -3,7 +3,7 @@
 // the check kept firing on work already tracked as steps. Stub replies only.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
-import type { Engine } from './kit'
+import type { Engine, On } from './kit'
 
 const REQUEST = 'ask codex to think of the best way to fix it, see if you agree and present it to me'
 const WORDED = 'how was 154 fixed?'
@@ -27,6 +27,7 @@ const prepare = (on: Parameters<typeof atomStore>[0], isOn: boolean) => {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => ({}))
+  watchGate(on)
   on('command.list', () => ({ value: [{ name: 'compact', description: 'compact', source: 'builtin' as const }] }))
   on('model.complete', async () => ({ value: { isAnswered: true, text: 'question', usage: USAGE } }) as never)
   return { clock, ledger }
@@ -35,13 +36,26 @@ const prepare = (on: Parameters<typeof atomStore>[0], isOn: boolean) => {
 const ask = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
 const call = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never) as Promise<{ deny?: string; result?: unknown }>
 const stop = ($: Engine) => $.classic.Stop({ stop_hook_active: false } as never) as Promise<{ block?: string }>
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. A case that
+// pinned the module's own block now pins the input rows the module publishes for the hook, and
+// that the module itself returns no block; tests/helpers/test_stop_inputs.py covers the hook's block.
+const gates = new WeakMap<On, { text: string }>()
+const watchGate = (on: On) => {
+  const gate = { text: '{}' }
+  gates.set(on, gate)
+  on('env.set', { name: /^TRACK_GATE_SNAPSHOT$/ }, (_, e) => { gate.text = String(e.value); return { value: {} } })
+}
+const gateReasons = async ($: Engine, on: On, fields: Record<string, unknown> = {}) => {
+  expect((await $.classic.Stop({ stop_hook_active: false, ...fields } as never)).block).toBeUndefined()
+  return (JSON.parse(gates.get(on)?.text ?? '{}') as { inputs?: Array<{ reason: string }> }).inputs?.map(row => row.reason)
+}
 
 test('a request Haiku labelled a question is not told to use track_steps, which cannot cover it', async ($, on) => {
   const { clock } = prepare(on, true)
   await ask($, REQUEST)
   await clock.advance(1)
   await call($, { tool: 'mcp__track__track_steps', steps: ['Codex proposes the fix'], source_text: REQUEST, tool_use_id: 'toolu_t' })
-  const block = (await stop($)).block
+  const [block] = await gateReasons($, on) ?? []
   expect(block).toBe(labelledBlock(REQUEST.slice(0, 80)))
   expect(block).not.toContain('mcp__track__track_steps')
 })
@@ -60,7 +74,7 @@ test('following the labelled message clears Stop: a deferred question row names 
 test('a question found only by wording keeps the track_steps advice, and steps still cover it', async ($, on) => {
   prepare(on, false)
   await ask($, WORDED)
-  expect((await stop($)).block).toBe(wordedBlock(WORDED))
+  expect(await gateReasons($, on)).toEqual([wordedBlock(WORDED)])
   await call($, { tool: 'mcp__track__track_steps', steps: ['Look at 154'], source_text: WORDED, tool_use_id: 'toolu_t' })
   expect((await stop($)).block).toBeUndefined()
 })

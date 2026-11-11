@@ -58,7 +58,7 @@ const prepare = async ($: Engine, on: On) => {
     return { value: { exitCode: 0, stdout: JSON.stringify(answer), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await start($, 't1')
-  return { ledger, turn, pending, activity }
+  return { ledger, turn, pending, activity, snapshot: () => JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') as { turn_id?: string; response?: { turn_id?: string }; candidates?: Array<{ kind: string }> } }
 }
 
 test('P1 the main turn keeps its freshness record across a subagent turn', async ($, on) => {
@@ -95,14 +95,16 @@ test('P4 a subagent turn does not bind an unbound prompt or question', async ($,
   expect(fixture.ledger.value.questions.map(q => q.turnId)).toEqual([null])
 })
 
-test('P5 the main turn Stop still blocks an edit without a step after a subagent ran inside it', async ($, on) => {
-  await prepare($, on)
+// TRACK-46 unit 3 step C: stop-gate.py decides from the published candidate; the module returns no block.
+test('P5 the main turn Stop still publishes an edit without a step after a subagent ran inside it', async ($, on) => {
+  const fixture = await prepare($, on)
   await invoke($, 'Edit')
   await start($, 'a1', 'ag1')
   await complete($, 'a1', 'ag1')
   await response($)
 
-  expect((await stop($)).block).toBe(EDIT)
+  expect((await stop($)).block).toBeUndefined()
+  expect(fixture.snapshot()).toMatchObject({ turn_id: 't1', response: { turn_id: 't1' }, candidates: [{ kind: 'untracked_edit' }] })
 })
 
 test('C1 control: a main turn.start still resets freshness, drops a spent input and binds unbound rows', async ($, on) => {

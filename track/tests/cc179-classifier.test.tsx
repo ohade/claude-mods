@@ -2,7 +2,7 @@
 // replies only: these tests prove dispatch and fallbacks, never what the real model answers.
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pluginStore } from './kit'
-import type { Engine } from './kit'
+import type { Engine, On } from './kit'
 
 const blockFor = (excerpt: string) =>
   `track: a prompt looks like a question ("${excerpt}") but no Track row was written for it. Call mcp__track__track_question with source_text = its first line, Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text; for a request instead, reuse a matching open step with mcp__track__mark_step, keeping its current status and the same source_text. For new work, call mcp__track__track_steps with the same source_text; use after when steps already exist so their rows and statuses are kept. Then finish.`
@@ -35,6 +35,7 @@ const prepare = (on: Parameters<typeof atomStore>[0], options: { isOn?: boolean 
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => ({}))
+  watchGate(on)
   on('command.list', () => ({ value: [{ name: 'compact', description: 'compact', source: 'builtin' as const }] }))
   return { clock, ledger, pending }
 }
@@ -52,6 +53,19 @@ const answers = (label: string) => () => ({ isAnswered: true, text: label, usage
 
 const ask = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' } } as never)
 const stop = ($: Engine) => $.classic.Stop({ stop_hook_active: false } as never) as Promise<{ block?: string }>
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. A case that
+// pinned the module's own block now pins the input rows the module publishes for the hook, and
+// that the module itself returns no block; tests/helpers/test_stop_inputs.py covers the hook's block.
+const gates = new WeakMap<On, { text: string }>()
+const watchGate = (on: On) => {
+  const gate = { text: '{}' }
+  gates.set(on, gate)
+  on('env.set', { name: /^TRACK_GATE_SNAPSHOT$/ }, (_, e) => { gate.text = String(e.value); return { value: {} } })
+}
+const gateReasons = async ($: Engine, on: On, fields: Record<string, unknown> = {}) => {
+  expect((await $.classic.Stop({ stop_hook_active: false, ...fields } as never)).block).toBeUndefined()
+  return (JSON.parse(gates.get(on)?.text ?? '{}') as { inputs?: Array<{ reason: string }> }).inputs?.map(row => row.reason)
+}
 const labelOf = (pending: { value: { inputs: Input[] } }, excerpt: string) => pending.value.inputs.find(i => i.excerpt === excerpt)?.label
 
 test('a Hebrew question with no question mark is held once Haiku labels it a question', async ($, on) => {
@@ -59,7 +73,7 @@ test('a Hebrew question with no question mark is held once Haiku labels it a que
   model(on, answers('question'))
   await ask($, HEBREW)
   await clock.advance(1)
-  expect((await stop($)).block).toBe(labelledFor(HEBREW))
+  expect(await gateReasons($, on)).toEqual([labelledFor(HEBREW)])
 })
 
 test('an "explain X" prompt is held once Haiku labels it a question', async ($, on) => {
@@ -67,7 +81,7 @@ test('an "explain X" prompt is held once Haiku labels it a question', async ($, 
   model(on, answers('question'))
   await ask($, EXPLAIN)
   await clock.advance(1)
-  expect((await stop($)).block).toBe(labelledFor(EXPLAIN))
+  expect(await gateReasons($, on)).toEqual([labelledFor(EXPLAIN)])
 })
 
 test('a not_question label clears a request the wording check took for a question', async ($, on) => {
@@ -105,7 +119,7 @@ for (const [name, reply] of [
     await clock.advance(1)
     expect(labelOf(pending, ASKED)).toBe('unknown')
     expect(labelOf(pending, HEBREW)).toBe('unknown')
-    expect((await stop($)).block).toBe(blockFor(ASKED))
+    expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
   })
 }
 
@@ -115,7 +129,7 @@ test('a label still pending at Stop falls back to the wording check and is never
   model(on, () => new Promise(resolve => { release = resolve }))
   await ask($, ASKED)
   expect(labelOf(pending, ASKED)).toBeUndefined()
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
   expect(labelOf(pending, ASKED)).toBeUndefined()
   release(answers('not_question')())
 })
@@ -126,7 +140,7 @@ test('new steps do not cover a prompt Haiku labelled a question', async ($, on) 
   await ask($, HEBREW)
   await clock.advance(1)
   await $.tool.call({ tool: 'mcp__track__track_steps', steps: ['Look at 154'], tool_use_id: 'toolu_t' } as never)
-  expect((await stop($)).block).toBe(labelledFor(HEBREW))
+  expect(await gateReasons($, on)).toEqual([labelledFor(HEBREW)])
 })
 
 test('a question whose summary is the prompt covers it, not an earlier request', async ($, on) => {

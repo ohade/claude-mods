@@ -34,6 +34,7 @@ const prepare = (on: On, options: { classifier?: boolean; seed?: Record<string, 
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('classic.Stop', () => ({}))
+  watchGate(on)
   on('command.list', () => ({ value: [{ name: 'compact', description: 'compact', source: 'builtin' as const }] }))
   return { clock, ledger, pending }
 }
@@ -41,6 +42,19 @@ const prepare = (on: On, options: { classifier?: boolean; seed?: Record<string, 
 const ask = ($: Engine, text: string, turnId?: string) =>
   $.prompt.submit({ text, origin: { kind: 'composer' }, ...(turnId !== undefined && { turnId }) } as never)
 const stop = ($: Engine) => $.classic.Stop({ stop_hook_active: false } as never) as Promise<{ block?: string }>
+// TRACK-46 unit 3 step C: stop-gate.py, the command hook, is the only Stop decider. A case that
+// pinned the module's own block now pins the input rows the module publishes for the hook, and
+// that the module itself returns no block; tests/helpers/test_stop_inputs.py covers the hook's block.
+const gates = new WeakMap<On, { text: string }>()
+const watchGate = (on: On) => {
+  const gate = { text: '{}' }
+  gates.set(on, gate)
+  on('env.set', { name: /^TRACK_GATE_SNAPSHOT$/ }, (_, e) => { gate.text = String(e.value); return { value: {} } })
+}
+const gateReasons = async ($: Engine, on: On, fields: Record<string, unknown> = {}) => {
+  expect((await $.classic.Stop({ stop_hook_active: false, ...fields } as never)).block).toBeUndefined()
+  return (JSON.parse(gates.get(on)?.text ?? '{}') as { inputs?: Array<{ reason: string }> }).inputs?.map(row => row.reason)
+}
 const call = ($: Engine, input: Record<string, unknown>) => $.tool.call(input as never) as Promise<{ deny?: string; result?: unknown }>
 const answerLast = async ($: Engine, ledger: { value: unknown }) => {
   const id = (ledger.value as { questions: Array<{ id: number }> }).questions.at(-1)?.id
@@ -52,7 +66,7 @@ test('an unrelated question with no source does not cover the only waiting promp
   await ask($, ASKED)
   await call($, { tool: 'mcp__track__track_question', summary: 'What about release 176?', tool_use_id: 'toolu_q' })
   await answerLast($, ledger)
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('reusing one open row does not cover a second prompt with the same first line', async ($, on) => {
@@ -64,7 +78,7 @@ test('reusing one open row does not cover a second prompt with the same first li
   await call($, { tool: 'mcp__track__track_question', summary: 'What happened with 154', source_text: 'what happened?', tool_use_id: 'toolu_q1' })
   await call($, { tool: 'mcp__track__track_question', summary: 'What happened with 154', source_text: 'what happened?', tool_use_id: 'toolu_q2' })
   await answerLast($, ledger)
-  expect((await stop($)).block).toBe(blockFor(second))
+  expect(await gateReasons($, on)).toEqual([blockFor(second)])
 })
 
 test('a row linked to an old request does not cover a new prompt by its text', async ($, on) => {
@@ -72,7 +86,7 @@ test('a row linked to an old request does not cover a new prompt by its text', a
   await ask($, ASKED)
   await call($, { tool: 'mcp__track__track_question', summary: 'Old question', source_request_id: 'aaaa0000-bbbb-cccc-dddd-000000000000', source_text: ASKED, tool_use_id: 'toolu_q' })
   await answerLast($, ledger)
-  expect((await stop($)).block).toBe(blockFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
 test('50 prompts Haiku called not_question do not stop a new question from being recorded', async ($, on) => {
@@ -83,7 +97,7 @@ test('50 prompts Haiku called not_question do not stop a new question from being
   await ask($, ASKED, 'turn-1')
   await clock.advance(1)
   expect(pending.value.inputs.some(i => i.excerpt === ASKED)).toBe(true)
-  expect((await stop($)).block).toBe(labelledFor(ASKED))
+  expect(await gateReasons($, on)).toEqual([labelledFor(ASKED)])
 })
 
 test('an input covered by steps waits for its label across turn.start', async ($, on) => {
@@ -97,5 +111,5 @@ test('an input covered by steps waits for its label across turn.start', async ($
   await $.turn.start({ text: 'next', turnId: 'turn-2' } as never)
   release({ value: answers('question') })
   await clock.advance(1)
-  expect((await stop($)).block).toBe(labelledFor(HEBREW))
+  expect(await gateReasons($, on)).toEqual([labelledFor(HEBREW)])
 })

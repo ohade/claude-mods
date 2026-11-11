@@ -1,9 +1,10 @@
 // Failure-intake feed-site pins (correction round 1, refuter findings M3 and L1): the D6 allowlist is exact.
 // save.failed is fed only at the two unsaved-save-failed sites (46b6134 :2098 legacy, :2505 history else branch),
-// never on a pending save outcome; stop.nudge is fed at the six listed freshnessNudge callers, never for facts:<kind>.
+// never on a pending save outcome. The L1 stop.nudge cases ended with TRACK-46 unit 3 step C, which removed the
+// facts:<kind> and claim callers: stop.nudge is now fed only at the identity and bash callers.
 // FIXTURE: history.py, stop-gate.py and git are stand-ins answering receipts only; the ring is read through diagnose.
 import { expect, mock, test } from 'claude-code/testing'
-import type { Ledger, StepFreshness } from '../types'
+import type { Ledger } from '../types'
 import { EMPTY, SESSION, atomStore, blobPool, pluginStore } from './kit'
 import type { Engine, On } from './kit'
 
@@ -108,54 +109,4 @@ test('[M3] an unsaved history save that failed (the :2505 site) still feeds save
   expect((h.durability.value as { isUnsaved: boolean }).isUnsaved, 'M3: the ledger is unsaved').toBe(true)
   const r = await drive(h.clock, tool($, DIAGNOSE))
   expect(ringOf(r).filter(e => e.code === 'save.failed').map(e => e.meta?.phase), 'M3: the history site feeds save.failed').toEqual(['history'])
-})
-
-// L1: a waiting step without a request is a freshness candidate; the claim helper either answers with
-// stderr (the facts:<kind> caller, not in the stop.nudge row) or throws (a listed `claim` caller).
-const stopWorld = (on: On, helper: 'facts' | 'throw') => {
-  mock.clock(on)
-  const steps = [{ id: 'plan:1', source: 'plan', subject: 'Review the result', status: 'waiting' }]
-  const freshness: StepFreshness = { turnId: 'turn-1', edits: [], bash: [], steps: ['plan:1'], completed: [], waiting: ['plan:1'], held: [], nudged: [] }
-  atomStore<Ledger>(on, 'ledger', { ...EMPTY, session_id: SESSION, steps } as Ledger)
-  atomStore(on, 'durability', { isUnsaved: false, reason: '', memorySession: SESSION } as never)
-  atomStore(on, 'pending', { inputs: [], nextId: 1 })
-  const turn = atomStore(on, 'turn', { currentId: 'turn-1', gatedTurnId: null, eventOrder: 0, freshness } as never)
-  atomStore(on, 'activity', { isWorking: false, agentCalls: [], askCalls: [], background: [], tasks: [] })
-  atomStore(on, 'scroll', { questions: null, steps: null })
-  pluginStore(on, { classifier: { isOn: false } })
-  const env = new Map<string, string>([['CLAUDE_CONFIG_DIR', CONFIG], ['CLAUDE_PLUGIN_ROOT', '/fixture/track']])
-  const claims: string[] = []
-  on('session.id', () => ({ value: SESSION }))
-  on('env.get', (_, e) => ({ value: env.get(e.name) }))
-  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
-  on('classic.Stop', () => ({}))
-  on('tool.register', (_, e) => ({ value: { tool: `mcp__track__${e.name}` } }))
-  on('command.register', (_, e) => ({ value: { command: e.name } }))
-  on('process.run', { argv: /^git$/ }, () => gitHead())
-  on('process.run', { argv: /^\/.*\/hooks\/stop-gate\.py$/ }, () => {
-    claims.push(helper)
-    if (helper === 'throw') throw new Error('fixture helper unavailable')
-    return { value: { exitCode: 0, stdout: '{}', stderr: 'track: fixture fact unavailable', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  return { turn, claims }
-}
-const stopOnce = ($: Engine) => $.classic.Stop({ session_id: SESSION, stop_hook_active: false, background_tasks: [] } as never)
-const nudgeCodes = (ring: any[]): string[] => ring.filter(e => e.code === 'stop.nudge').map(e => String(e.meta?.code))
-
-test('[L1] the facts:<kind> caller shows its nudge but feeds no stop.nudge event', async ($, on) => {
-  const w = stopWorld(on, 'facts')
-  await stopOnce($)
-  expect(w.claims, 'L1: the freshness claim ran').toEqual(['facts'])
-  const nudged = ((w.turn.value as { freshness?: StepFreshness }).freshness?.nudged ?? []) as string[]
-  expect(nudged.some(code => code.startsWith('facts:')), `L1: the facts nudge was shown (${JSON.stringify(nudged)})`).toBe(true)
-  const ring = ringOf(await tool($, DIAGNOSE))
-  expect(nudgeCodes(ring).filter(code => code.startsWith('facts:')), 'L1: no stop.nudge for the facts caller').toEqual([])
-})
-
-test('[L1] a listed caller (claim failed or denied) feeds stop.nudge', async ($, on) => {
-  const w = stopWorld(on, 'throw')
-  await stopOnce($)
-  expect(w.claims, 'L1: the freshness claim ran').toEqual(['throw'])
-  const ring = ringOf(await tool($, DIAGNOSE))
-  expect(nudgeCodes(ring), 'L1: the claim caller feeds stop.nudge').toContain('claim')
 })

@@ -41,8 +41,13 @@ UTF-8. When something had to be cut, `truncated` is true and the cut array is fl
 
 Event codes: `save.failed`, `writer.lease_failed`, `writer.lock_cleanup_failed`,
 `writer.completion_unconfirmed`, `identity.mint_unavailable`, `transcript.baseline_unrecorded`,
-`resume.conflict`, `history.collect_skipped`, `stop.snapshot_unavailable`, `stop.claim_stderr`,
-`stop.nudge`, `stop.block.module` and `stop.inventory_applied`.
+`resume.conflict`, `history.collect_skipped`, `stop.snapshot_unavailable`, `stop.nudge` and
+`stop.inventory_applied`.
+
+Retired: `stop.claim_stderr` and `stop.block.module` ended with TRACK-46 Phase 2 unit 3 step C. The
+module no longer runs the claim helper or makes a Stop decision of its own, so neither is fed; a
+bundle from an older build may still show them. `stop.nudge` is fed only at the identity and bash
+reminders since then. No hook-side event replaces them.
 
 Visibility gap: a block decided only by the command hook (`stop-gate.py`) has no path back to the
 module. It shows in the bundle only indirectly, through the held claims in `claims`. The reason that
@@ -67,8 +72,10 @@ what the gate snapshot held.
 
 With the bundle, the triager compares `identity.loaded` with the landing receipt, then reads
 `turn.freshness`: one or more `edits`, zero `steps`, and the `untracked_edit` kind among
-`gate.candidate_kinds`. The ring shows a `stop.block.module` event with kind `untracked_edit` and
-the turn id. It shows the event codes and counts, never the text that was written.
+`gate.candidate_kinds`. The ring of that build showed a `stop.block.module` event with kind
+`untracked_edit` and the turn id; that event ended with unit 3 step C, so on a current build the
+block shows only through the held claims in `claims`. The ring shows event codes and counts, never
+the text that was written.
 
 ## Worked example 2: the handoff-gate failure (handoff.log 19:28:38-19:28:49Z, session ca403af7)
 
@@ -79,5 +86,6 @@ counted the handoff snapshot's Write as an edit, and the handoff mod cancels on 
 is the same class as example 1.
 
 The fix is not part of the intake unit. Intake makes the class diagnosable: the bundle shows the
-edit count, the empty step count and the held kinds, and the ring shows `stop.block.module` with
-kind `untracked_edit` and turn id b29a79bc.
+edit count, the empty step count and the held kinds. The ring of that build showed
+`stop.block.module` with kind `untracked_edit` and turn id b29a79bc; that event ended with unit 3
+step C.
