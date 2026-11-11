@@ -133,9 +133,16 @@ export const gateCache = { last: undefined as GateProjection | undefined }
 export const freshTurn = (turnId: string): StepFreshness => ({ turnId, edits: [], bash: [], steps: [], completed: [], waiting: [], held: [], nudged: [] })
 
 // Unset is normal: Claude Code then uses ~/.claude, as stop-gate.py and writer-lock.py do.
+// A second account runs with CLAUDE_CONFIG_DIR set to its own folder, which links `state` to the
+// canonical setup's state folder. The lock helpers refuse a link below the config they are given,
+// so Track uses the config that owns the real folder: both accounts share one store and one lock.
 export async function configDir($: EngineInterface): Promise<string | undefined> {
   const home = await $.env.get('HOME')
-  return (await $.env.get('CLAUDE_CONFIG_DIR')) || (home?.startsWith('/') ? `${home}/.claude` : undefined)
+  const selected = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home?.startsWith('/') ? `${home}/.claude` : undefined)
+  if (!selected?.startsWith('/')) return selected
+  const state = await $.fs.stat(`${selected}/state`, { resolve: true }).catch(() => undefined)
+  const owner = state?.isLink === true ? /^(\/.+)\/state$/.exec(state.realPath ?? '')?.[1] : undefined
+  return owner ?? selected
 }
 export const sha256Hex = async (text: string): Promise<string> =>
   Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), b => b.toString(16).padStart(2, '0')).join('')

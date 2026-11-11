@@ -2,7 +2,7 @@
 // Engine/store behavior is not exercised here; the native fixture covers saves.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmdirSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -55,7 +55,16 @@ const engine = {
   plugin: { root },
   clock: { after: (ms: number, go: () => void) => { const timer = setTimeout(go, ms); return { cancel: () => clearTimeout(timer) } } },
   env: { get: async (name: string) => variables[name] },
-  fs: { read: async (path: string) => readFileSync(path, 'utf8') },
+  fs: {
+    read: async (path: string) => readFileSync(path, 'utf8'),
+    // As the engine answers: what the path leads to, whether it is itself a link and, when asked,
+    // where it lands. A missing path rejects; configDir asks this about the config's state folder.
+    stat: async (path: string, options?: { resolve?: boolean }) => {
+      const info = statSync(path)
+      return { kind: info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other', size: info.size, mtimeMs: info.mtimeMs,
+        isLink: lstatSync(path).isSymbolicLink(), ...(options?.resolve === true && { realPath: realpathSync(path) }) }
+    },
+  },
   ui: { status: () => undefined },
   process: {
     spawn: (request: { argv: string[]; cwd?: string; env?: Record<string, string> }) => {
