@@ -34,6 +34,7 @@ target=unresolved
 log_dir=not-created
 temporary_tree=
 receipt_tmp=
+engine=
 has_lock=false
 die() { printf 'land: %s\n' "$*" >&2; exit 1; }
 cleanup() {
@@ -47,6 +48,11 @@ cleanup() {
     fi
   fi
   if [ -n "$receipt_tmp" ] && [ -f "$receipt_tmp" ]; then rm -f -- "$receipt_tmp"; fi
+  # The log directory is kept; only the pinned engine copy is removed from it.
+  if [ -n "$engine" ] && [ -f "$engine" ] && ! rm -f -- "$engine"; then
+    printf 'land: cleanup failed for engine copy %s\n' "$engine" >&2
+    result=1
+  fi
   if [ "$has_lock" = true ]; then
     if ! python3 "$helper" unlock "$lock" "$$"; then result=1; fi
   fi
@@ -84,6 +90,35 @@ live_before=$(head_at "$live")
 git -C "$repo" merge-base --is-ancestor "$main_before" "$target" || die 'commit must descend from main (fast-forward only)'
 git -C "$repo" remote get-url origin > /dev/null || die 'origin is not configured'
 log_dir=$(mktemp -d "$state/claude-mods-land-logs.XXXXXX")
+# TRACK-41 (2026-11-11): a session self-update reinstalls the engine and moves its binary away for a moment;
+# `plugin test` starts one child per test file from that path, so every later file did not load.
+# Every engine call of this landing runs from a private copy of the real engine file instead.
+find_engine() {
+  local entry entries
+  IFS=: read -ra entries <<< "$PATH"
+  for entry in "${entries[@]}"; do
+    # The cmux wrapper's own filter: a per-session shim folder only reruns the next claude on PATH.
+    case "$entry" in */cmux-cli-shims/*|*/cmux-cli-shims) continue ;; esac
+    if [ -f "${entry:-.}/claude" ] && [ -x "${entry:-.}/claude" ]; then
+      realpath "${entry:-.}/claude"
+      return
+    fi
+  done
+  return 1
+}
+engine_stamp() {
+  local size mtime
+  size=$(wc -c < "$1") && mtime=$(date -r "$1" +%s) && printf 'size=%s mtime=%s' "$((size))" "$mtime"
+}
+engine_source=$(find_engine) || die 'no claude engine found on PATH (cmux shim folders skipped); rerun, an update may be replacing it'
+engine_before=$(engine_stamp "$engine_source") || die "cannot read the claude engine $engine_source; rerun, an update may be replacing it"
+engine="$log_dir/${engine_source##*/}"
+# A clone where the file system supports it (APFS), otherwise a plain copy.
+if ! cp -c "$engine_source" "$engine" 2> /dev/null && ! cp "$engine_source" "$engine"; then
+  die "cannot copy the claude engine $engine_source; rerun, an update may be replacing it"
+fi
+[ -x "$engine" ] || die "the copy of the claude engine $engine_source is not executable; rerun, an update may be replacing it"
+printf 'source=%s %s\n' "$engine_source" "$engine_before" > "$log_dir/engine.txt"
 temporary_tree="$log_dir/test-tree"
 git -C "$repo" worktree add --detach "$temporary_tree" "$target" > "$log_dir/worktree.log" 2>&1
 mods_file="$log_dir/mods.json"
@@ -132,7 +167,7 @@ for mod in "$temporary_tree"/*; do
   mod_count=$((mod_count + 1))
   log="$log_dir/$name.log"
   # Ten minutes per mod; terminate its process group before cleaning up on timeout/cancel.
-  if python3 "$helper" run 600 claude plugin test "$mod" > "$log" 2>&1; then
+  if python3 "$helper" run 600 "$engine" plugin test "$mod" > "$log" 2>&1; then
     :
   else
     printf 'land: failing mod %s; log %s\n' "$name" "$log" >&2
@@ -161,7 +196,7 @@ for mod in "$temporary_tree"/*; do
   done
   if [ -f "$mod/package.json" ]; then
     if [ -f "$mod/tsconfig.json" ]; then
-      if ! run_check "$name-engine-version" "$mod" claude --version; then has_failed=true; continue; fi
+      if ! run_check "$name-engine-version" "$mod" "$engine" --version; then has_failed=true; continue; fi
       if ! run_check "$name-sdk" "$mod" python3 "$helper" sdk "${CLAUDE_MODS_SDK_ROOT:-}" "$mod" "$script_dir/sdk-types.json" "$log_dir/$name-engine-version.log" "$sdk_file" --layout-root "$layout_root"; then
         has_failed=true
         continue
@@ -181,6 +216,13 @@ fi
 release_python=("$temporary_tree"/scripts/tests/test_*.py)
 if [ -f "${release_python[0]}" ]; then
   if ! run_python_checks release-python "$temporary_tree" "$temporary_tree/scripts/tests"; then has_failed=true; fi
+fi
+# Informational only: the tests above ran from the pinned copy either way.
+engine_after=missing
+if [ -e "$engine_source" ] && engine_now=$(engine_stamp "$engine_source"); then engine_after=$engine_now; fi
+printf 'source=%s %s after %s\n' "$engine_source" "$engine_before" "$engine_after" > "$log_dir/engine.txt"
+if [ "$engine_after" != "$engine_before" ]; then
+  printf 'land: the installed engine %s changed during the landing; the tests used the pinned copy\n' "$engine_source"
 fi
 [ "$has_failed" = false ] || die 'tests did not pass; main, live and receipt were not changed'
 

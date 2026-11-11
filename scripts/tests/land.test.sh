@@ -107,6 +107,32 @@ commit_raw() {
   target=$(git -C "$repo" rev-parse HEAD)
   git -C "$repo" checkout -q main
 }
+# TRACK-41 (2026-11-11): an engine reinstall moved the binary away while `claude plugin test` started one
+# child per test file from that binary's own path, so every later file did not load. land.sh pins a copy.
+# FIXTURE: the fake engine moves the installed file aside, as a reinstall does, then starts a child from "$0".
+write_reinstalling_engine() {
+  cat > "$1" <<'REINSTALLING_ENGINE'
+#!/bin/bash
+set -eu
+if [ "$1" = child ]; then exit 0; fi
+[ "$1" = plugin ] && [ "$2" = test ] && [ -d "$3/tests" ]
+if [ -e "$FAKE_INSTALLED_ENGINE" ]; then mv -- "$FAKE_INSTALLED_ENGINE" "$FAKE_INSTALLED_ENGINE.moved"; fi
+if ! "$0" child; then printf 'the file did not load\n'; exit 1; fi
+printf '3 passed, 0 failed\n'
+REINSTALLING_ENGINE
+  chmod +x "$1"
+}
+# No file under the case's landing logs holds the engine's bytes once land.sh has exited.
+expect_no_engine_copy() {
+  local copies
+  copies=$(find "$state" -path '*/claude-mods-land-logs.*' -type f -exec cmp -s "$1" {} \; -print)
+  [ -z "$copies" ] || fail "$2: $copies"
+}
+# Moves the installed engine back after checking that the fixture really moved it during the landing.
+restore_moved_engine() {
+  [ ! -e "$1" ] && [ -f "$1.moved" ] || fail 'the fixture did not move the installed engine during the landing'
+  mv -- "$1.moved" "$1"
+}
 
 # K1 (failure-intake E-I4), FIXTURE release-gate proof: the landing path refuses a track/ tree whose identity is
 # missing or does not match its own recomputation, and still lands one the shared generator produced.
@@ -317,6 +343,7 @@ export FAKE_FAIL=track
 run_failure
 unset FAKE_FAIL
 expect_unchanged
+expect_no_engine_copy "$scratch/bin/claude" 'engine copy left after a failed landing'
 grep -q 'track.*\.log' "$CLAUDE_MODS_HOME/output" || fail 'missing failing mod/log'
 printf 'PASS test failure preserves all three\n'
 
@@ -377,6 +404,53 @@ unset FAKE_UNKNOWN
 expect_unchanged
 printf 'PASS unknown counts fail closed\n'
 
+prepare_repo engine-replaced
+engine="$scratch/engine-replaced/claude"
+mkdir -p "${engine%/*}"
+write_reinstalling_engine "$engine"
+if ! FAKE_INSTALLED_ENGINE="$engine" PATH="${engine%/*}:$PATH" bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then
+  fail 'landing failed when the installed engine was replaced mid-run'
+fi
+restore_moved_engine "$engine"
+expect_equal "$(git -C "$repo" rev-parse HEAD)" "$target" 'main not advanced after the engine was replaced'
+expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'live not advanced after the engine was replaced'
+grep -q 'changed during the landing' "$CLAUDE_MODS_HOME/output" || fail 'missing note that the installed engine changed'
+expect_no_engine_copy "$engine" 'engine copy left after a successful landing'
+printf 'PASS engine replaced mid-run lands from the pinned copy\n'
+
+# In a cmux terminal the first `claude` on PATH is a wrapper script that drops its own folder from PATH and runs
+# the next `claude`; the pin must be the engine behind it, resolved through its npm-style symlink.
+prepare_repo engine-behind-wrapper
+shims="$scratch/engine-behind-wrapper/tmp/cmux-cli-shims/FIXTURE-SESSION"
+engine_bin="$scratch/engine-behind-wrapper/bin"
+engine="$scratch/engine-behind-wrapper/lib/claude-engine"
+mkdir -p "$shims" "$engine_bin" "${engine%/*}"
+write_reinstalling_engine "$engine"
+ln -s ../lib/claude-engine "$engine_bin/claude"
+cat > "$shims/claude" <<'CMUX_WRAPPER'
+#!/bin/bash
+set -eu
+kept=
+IFS=: read -ra entries <<< "$PATH"
+for entry in "${entries[@]}"; do
+  case "$entry" in */cmux-cli-shims/*|*/cmux-cli-shims) ;; *) kept=${kept:+$kept:}$entry ;; esac
+done
+PATH=$kept exec claude "$@"
+CMUX_WRAPPER
+chmod +x "$shims/claude"
+if ! FAKE_INSTALLED_ENGINE="$engine" PATH="$shims:$engine_bin:$PATH" bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then
+  fail 'landing behind a cmux-style wrapper failed when the engine was replaced mid-run'
+fi
+restore_moved_engine "$engine"
+expect_equal "$(git -C "$live" rev-parse HEAD)" "$target" 'live not advanced behind a cmux-style wrapper'
+evidence=$(cat "$state"/claude-mods-land-logs.*/engine.txt)
+case "$evidence" in
+  "source=$(cd -P "${engine%/*}" && pwd)/claude-engine "*) ;;
+  *) fail "engine evidence does not name the engine behind the wrapper: $evidence" ;;
+esac
+expect_no_engine_copy "$engine" 'engine copy left after a landing behind a cmux-style wrapper'
+printf 'PASS engine behind a cmux-style wrapper is pinned, not the wrapper\n'
+
 prepare_repo usage
 bash "$land" --help > "$CLAUDE_MODS_HOME/help"
 if bash "$land" > "$CLAUDE_MODS_HOME/noargs" 2>&1; then fail 'no args should exit 2'; else expect_equal "$?" 2 'no args exit'; fi
@@ -396,4 +470,4 @@ if bash "$land" "$target" > "$CLAUDE_MODS_HOME/output" 2>&1; then result=0; else
 expect_equal "$(git --git-dir="$CLAUDE_MODS_HOME/origin.git" rev-parse main)" "$target" 'pushed untested concurrent main'
 expect_equal "$result" 1 'concurrent main change not reported'
 printf 'PASS pinned push detects concurrent main\n'
-printf 'PASS 20 landing cases (FIXTURE; no real Claude or remote service)\n'
+printf 'PASS 23 landing cases (FIXTURE; no real Claude or remote service)\n'
