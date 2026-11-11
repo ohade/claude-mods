@@ -3,6 +3,8 @@ import type { TestBody } from 'claude-code/testing'
 import { SESSION } from './kit'
 import type { StateKey } from './kit'
 import type { FreshnessKind, Step, Turn } from '../types'
+import { OPEN_LISTED } from '../hooks/prompt-context'
+import { ANSWER } from '../hooks/track-state'
 
 // Pins the two gates the model meets: the track_question tool (it mints a question) and the
 // Stop gate (it holds a turn once while a question tracked in it is still open).
@@ -202,6 +204,58 @@ test('with several open questions this turn, the block names the first and lists
 
   expect(ids[0]).toBe(2)
   expect([...ids].sort((a, b) => a - b)).toEqual([2, 3, 5])
+})
+
+// FIXTURE: pins the module/hook open-question wire contract. test_stop_gate.py asserts that the
+// command hook returns this exact literal for open rows Q2, Q3 and Q5 with the same heads.
+const openQuestionReason = 'track: Q2 "question 2" from this turn is still open (2 more open: Q3, Q5). Write the formatted answer once between standalone <!-- A2:start --> and <!-- A2:end --> lines, using its stable numeric id; Track captures it automatically. Do not also send answer_text. For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text. If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.'
+
+test('the open-question block built from ANSWER equals the command hook literal', async ($, on) => {
+  stopWith(on, [open(2), open(3), open(5)])
+  const built = `track: Q2 "question 2" from this turn is still open (2 more open: Q3, Q5). ${ANSWER.replaceAll('{id}', '2')}. If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.`
+
+  expect(built).toBe(openQuestionReason)
+  expect((await stop($)).block).toBe(openQuestionReason)
+})
+
+// A Stop raised by a Stop hook skips the open-question gate, and its step check publishes the
+// snapshot before anything else, so the published open list is the ledger's, not a gated one.
+const publishedGate = async ($: Parameters<TestBody>[0], on: On, count: number, gatedTurnId: string | null = null) => {
+  store(on, 'ledger', ledgerOf(Array.from({ length: count }, (_, index) => open(index + 1))))
+  store(on, 'turn', { currentId: 'turn-1', gatedTurnId })
+  store(on, 'activity', { isWorking: true, agentCalls: [], askCalls: [], background: [], tasks: [], owners: {} })
+  store(on, 'pending', { inputs: [], nextId: 1 })
+  const env = new Map<string, string>()
+  on('session.id', () => ({ value: SESSION }))
+  on('env.get', (_, e) => ({ value: env.get(e.name) }))
+  on('env.set', (_, e) => { env.set(e.name, String(e.value)); return { value: {} } })
+  on('classic.Stop', () => ({}))
+  await stop($, { stop_hook_active: true })
+  const snapshot = JSON.parse(env.get('TRACK_GATE_SNAPSHOT') ?? '{}') as { session_id?: string; open?: unknown[] }
+  expect(snapshot.session_id).toBe(SESSION)
+
+  return snapshot
+}
+
+test('a snapshot that cuts the open list carries the true open_count', async ($, on) => {
+  const snapshot = await publishedGate($, on, OPEN_LISTED + 2)
+
+  expect(snapshot.open).toHaveLength(OPEN_LISTED)
+  expect(snapshot).toHaveProperty('open_count', OPEN_LISTED + 2)
+})
+
+test('a snapshot that lists every open question has no open_count', async ($, on) => {
+  const snapshot = await publishedGate($, on, OPEN_LISTED)
+
+  expect(snapshot.open).toHaveLength(OPEN_LISTED)
+  expect(snapshot).not.toHaveProperty('open_count')
+})
+
+test('a gated turn publishes no open list and no open_count', async ($, on) => {
+  const snapshot = await publishedGate($, on, OPEN_LISTED + 2, 'turn-1')
+
+  expect(snapshot.open).toEqual([])
+  expect(snapshot).not.toHaveProperty('open_count')
 })
 
 // FIXTURE: pins the plugin/helper wire contract. The independent Python suite

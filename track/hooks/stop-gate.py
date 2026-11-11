@@ -23,6 +23,11 @@ INPUT_KIND = "uncovered_input"
 INVENTORY_OWNER = "track-stop-inventory-v1"
 INVENTORY_CAP = 256
 INVENTORY_BYTES = 64 * 1024
+# A copy of ANSWER in track-state.ts: the hook cannot import TypeScript.
+# test_stop_gate.py and gates.test.tsx pin both against one literal.
+ANSWER = ("Write the formatted answer once between standalone <!-- A{id}:start --> and <!-- A{id}:end --> lines, "
+          "using its stable numeric id; Track captures it automatically. Do not also send answer_text. "
+          "For a tool/file-only answer, call mcp__track__mark_answered with the completed answer_text")
 
 
 def unavailable(what):
@@ -299,13 +304,27 @@ def decision(payload, snapshot, plugin=False):
     if not isinstance(first, dict) or not isinstance(first.get("id"), int) or not isinstance(first.get("head"), str):
         return {}
     return {"decision": "block", "reason": (
-        f'track: Q{first["id"]} "{first["head"]}" from this turn is still open. '
-        f'Write the formatted answer once between standalone <!-- A{first["id"]}:start --> '
-        f'and <!-- A{first["id"]}:end --> lines; Track captures it automatically. '
-        'Do not also send answer_text. For a tool/file-only answer, call '
-        'mcp__track__mark_answered with the completed answer_text. '
-        'If it must wait, use status "deferred" with a note. Then finish.'
+        f'track: Q{first["id"]} "{first["head"]}" from this turn is still open{more_open(rows, snapshot)}. '
+        f'{ANSWER.replace("{id}", str(first["id"]))}. '
+        'If it must wait, call mcp__track__mark_answered with status "deferred" and a note. Then finish.'
     )}
+
+
+def more_open(rows, snapshot):
+    # TRACK-46 unit 3: the module's stopEvent wording. The snapshot lists at most
+    # OPEN_LISTED rows; open_count, when present, is the true total.
+    total = snapshot.get("open_count")
+    if type(total) is not int or total < len(rows):
+        total = len(rows)
+    if total == 1:
+        return ""
+    listed = [f'Q{row["id"]}' for row in rows[1:] if isinstance(row, dict) and isinstance(row.get("id"), int)]
+    others = total - 1 - len(listed)
+    names = ", ".join(listed)
+    if others:
+        unlisted = f'{others} {"other" if others == 1 else "others"}'
+        names = f"{names} and {unlisted}" if names else unlisted
+    return f" ({total - 1} more open: {names})"
 
 
 def inventory_record(payload, snapshot):

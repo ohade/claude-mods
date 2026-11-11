@@ -41,7 +41,7 @@ const durability = atom({ plugin: 'track', key: 'durability' } as const, { isUns
 
 // `attributed_task_ids`: tasks with a recorded owner step. A running task outside it may own
 // any step, so the helper reports unknown ownership instead of a stale step.
-export type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; inputs: Array<{ id: number; reason: string; legacy?: true }>; inputs_complete: boolean; input_epoch?: string; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
+export type GateSnapshot = { v: 2; session_id: string; turn_id: string | null; open: Array<{ id: number; head: string }>; open_count?: number; inputs: Array<{ id: number; reason: string; legacy?: true }>; inputs_complete: boolean; input_epoch?: string; candidates: FreshnessCandidate[]; attributed_task_ids: string[]; response?: StepFreshness['response']; held: FreshnessKind[]; launch_seq: number; truncated?: true }
 export type StopClaimSnapshot = Omit<GateSnapshot, 'inputs' | 'inputs_complete'> & Partial<Pick<GateSnapshot, 'inputs' | 'inputs_complete'>>
 export const GATE_SNAPSHOT_BYTES = 16 * 1024
 
@@ -70,6 +70,8 @@ export async function publishGate($: EngineInterface, token?: OwnerToken): Promi
     const inputs = uncovered.slice(0, MAX_INPUTS)
     const snapshot: GateSnapshot = { v: 2, session_id: await $.session.id(), turn_id: t.currentId,
       open: t.gatedTurnId === t.currentId ? [] : open.slice(0, OPEN_LISTED).map(q => ({ id: q.id, head: q.head })),
+      // The true total, only when the list above was cut: the command hook names the rest by count.
+      ...(t.gatedTurnId !== t.currentId && open.length > OPEN_LISTED && { open_count: open.length }),
       // The helper's shared claim owns the hold; a module-only held mark must
       // not hide an input from the command hook when classic.Stop is skipped.
       // Reserve every id before budgeting freshness; longer repair wording is optional.
