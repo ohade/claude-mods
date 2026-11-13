@@ -14,20 +14,18 @@ const body = (name: string): string => {
   return source.slice(start, end + 2)
 }
 const classifier = body('saveClassifierSetting')
-assert.ok(classifier.includes("await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }), 'classifier')"),
+assert.ok(classifier.includes('await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }))'),
   'R5 classifier must use the shared grant lifecycle')
 assert.equal(classifier, `export async function saveClassifierSetting($: EngineInterface, isOn: boolean): Promise<void> {
   const run = persistence.queue.then(async () => {
     const session = await $.session.id()
     await ensureWriter($, session)
-    await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }), 'classifier')
+    await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }))
   })
   persistence.queue = run.catch(() => undefined)
   await run
 }`, 'R5 classifier keeps native queue, session and writer admission before the shared grant')
 const grant = body('inOwnGrant')
-assert.ok(grant.includes("cleanupLabel: 'writer' | 'classifier' = 'writer'"), 'R5 shared grant defaults to the existing writer cleanup label')
-assert.ok(grant.includes('`track: ${cleanupLabel} lock cleanup failed: ${reason(error)}`'), 'R5 raw-close diagnostic keeps the caller label and original cause')
 assert.ok(grant.includes('if (context !== undefined) context.tainted = true\n    throw error'), 'R5 failed work taints its context and rethrows')
 assert.ok(grant.includes('if (context !== undefined) await finishWrite($, context)'), 'R5 shared grant retains its existing final completion')
 console.log('check_classifier_grant: shared lifecycle and native admission preserved')

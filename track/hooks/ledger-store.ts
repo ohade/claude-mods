@@ -490,7 +490,7 @@ export async function saveLedger($: EngineInterface, token?: OwnerToken): Promis
       updateState: change => update($, durability, change),
       fallbackNotice: cause => { $.ui.toast(`track: saved inline because blob storage is unavailable: ${cause}`) },
     })
-  }, 'writer', saveFailure)
+  }, saveFailure)
   })
   persistence.queue = run.catch(() => undefined)
   await run
@@ -501,7 +501,7 @@ export async function saveClassifierSetting($: EngineInterface, isOn: boolean): 
   const run = persistence.queue.then(async () => {
     const session = await $.session.id()
     await ensureWriter($, session)
-    await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }), 'classifier')
+    await inOwnGrant($, session, context => writeVerified($, context, CLASSIFIER_KEY, { isOn }))
   })
   persistence.queue = run.catch(() => undefined)
   await run
@@ -674,13 +674,11 @@ export function readHistory($: EngineInterface, store: string, id: string): Prom
 }
 
 // Runs `work` under its own write grant and confirms the grant's completion.
-export async function inOwnGrant($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>, cleanupLabel: 'writer' | 'classifier' = 'writer',
-  onFailure?: (error: unknown, context: WriteContext | undefined) => Promise<void>, rawClose: 'log' | 'propagate' = 'log'): Promise<void> {
-  let lock: LockStream | undefined
+export async function inOwnGrant($: EngineInterface, id: string, work: (context: WriteContext) => Promise<void>,
+  onFailure?: (error: unknown, context: WriteContext | undefined) => Promise<void>): Promise<void> {
   let context: WriteContext | undefined
   try {
-    lock = await acquireLock($, 'write', id)
-    context = writeContext(lock)
+    context = writeContext(await acquireLock($, 'write', id))
     await work(context)
   } catch (error) {
     if (onFailure !== undefined) {
@@ -691,10 +689,6 @@ export async function inOwnGrant($: EngineInterface, id: string, work: (context:
     throw error
   } finally {
     if (context !== undefined) await finishWrite($, context)
-    else if (lock !== undefined) {
-      if (rawClose === 'propagate') await closeLock(lock)
-      else await closeLock(lock).catch(error => $.ui.log(`track: ${cleanupLabel} lock cleanup failed: ${reason(error)}`, { to: 'debug' }))
-    }
   }
 }
 
@@ -901,7 +895,7 @@ export async function resumeOwned($: EngineInterface, id: string): Promise<void>
     await inOwnGrant($, id, async context => {
       await recoverSave($, context, id)
       await resumeLedger($, context, id)
-    }, 'writer', resumeFailure, 'propagate')
+    }, resumeFailure)
   })
   persistence.queue = run.catch(() => undefined)
   await run

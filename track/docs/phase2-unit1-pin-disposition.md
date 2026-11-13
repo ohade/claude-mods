@@ -15,6 +15,11 @@ Deleted:
 Kept:
 - K1: guards real behaviour, but no test is proven to catch a fault there yet. Needs fault-proof before removal.
 - K2: guards code that no test can reach. Carried to unit 5 (dead code).
+  Unit 5 deleted the raw-close branch of `inOwnGrant` (`else if (lock !== undefined)`) with its
+  `cleanupLabel` and `rawClose` parameters, and the three K2 pins and one K1 pin on that text. The branch
+  needed `acquireLock($, 'write', id)` to return while `writeContext` threw, but `writeContext` throws only
+  when `writeGrants` has no entry, and `acquireLock` in write mode returns only after `writeGrants.set`
+  while nothing ever deletes from that WeakMap.
 - K3: a rule that behaviour cannot test (for example the SDK-import rule). Stays.
 - K4: a behaviour section, not a pin.
 - K5: unclear, or shared with a kept check. Kept on doubt.
@@ -90,9 +95,9 @@ Kept:
 - architecture.ts | L63-87 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=34
 - architecture.ts (not a check_*; listed because the plan names it) | L23-42 | D | kept:K3 proposed keep (not a check * file, out of scope) | pins=1 | row=31
 - check_classifier_grant.ts | L8-15 | C | deleted:R3 (declared-once assert only; the start>=0/close guards stay as extraction for kept rows) | pins=2 | row=74
-- check_classifier_grant.ts | L18-19 + L20-28 | B | kept:K1 needs fault-proof | pins=1 | row=75
-- check_classifier_grant.ts | L30 | D | kept:K1 needs fault-proof (none found) | pins=1 | row=76
-- check_classifier_grant.ts | L31 | D | kept:K2 unreachable, carried to unit 5 | pins=1 | row=77
+- check_classifier_grant.ts | L18-19 + L20-28 | B | kept:K1 needs fault-proof; unit 5 re-pointed both pins to the call without `, 'classifier'` | pins=1 | row=75
+- check_classifier_grant.ts | L30 | D | deleted in unit 5 with the unreachable raw-close branch (was kept:K1, `cleanupLabel` default) | pins=1 | row=76
+- check_classifier_grant.ts | L31 | D | deleted in unit 5 with the unreachable raw-close branch (was kept:K2) | pins=1 | row=77
 - check_classifier_grant.ts | L32 | D | kept:K1 needs fault-proof | pins=1 | row=78
 - check_classifier_grant.ts | L33 | D | kept:K1 needs fault-proof | pins=1 | row=79
 - check_clear_arm_writes.ts | L10 | C | kept:K5 unclear (NATIVE list is the input of kept scans L35-45 and L58-59; deleting it breaks them) | pins=1 | row=58
@@ -232,9 +237,9 @@ Kept:
 - check_save_journal.ts | L208-212 | B | kept:K1 needs fault-proof | pins=4 | row=204
 - check_save_journal.ts | L224-229 | D | deleted:R5 (S3 six error strings) | pins=6 | row=205
 - check_save_journal.ts | L231-233 | D | kept:K3 proposed keep | pins=3 | row=206
-- check_save_journal.ts | L249-254 | B | kept:K2 unreachable, carried to unit 5 (N1) | pins=1 | row=207
+- check_save_journal.ts | L249-254 | B | deleted in unit 5: structure only, Ohad's OK 2026-11-11 (N1). Fault (remove `assertWriteOpen(context)` from `recoverSave`): engine suite 1459 pass, Python 291 OK, only this pin failed. The guard cannot see a sealed context: `phase` becomes `sealed` only in `finishWrite`, which runs in the `finally` of `inOwnGrant`, `bindHistory` and `migrateStore`, after every `recoverSave` call (the `recover` port and `resumeOwned` inside the work, `saveFailure` in the catch, `migrateStore` right after `writeContext`). The guard stays | pins=1 | row=207
 - check_save_journal.ts | L256-265 | B | kept:K1 needs fault-proof | pins=1 | row=208
-- check_save_journal.ts | L267-271 | B | kept:K2 unreachable, carried to unit 5 (N3) | pins=1 | row=209
+- check_save_journal.ts | L267-271 | B | kept:K2 after unit 5 (N3). Fault (remove the pointer-mismatch throw from `restorePreviousBlob`): engine suite 1459 pass, Python 291 OK, only this pin failed. No behaviour test was written because none can reach the throw: `saveLegacy` takes `previous` and `previousBlobText` from one read, and `logicalBody` sets the text only after `readBlob` verified it against that same `ledger_blob`, so a plain store value cannot mismatch later. Removing the pin needs a lead decision | pins=1 | row=209
 - check_save_journal.ts | L273-277 | B | kept:K1 needs fault-proof | pins=1 | row=210
 - check_save_journal.ts | L279-286 | B | kept:K1 needs fault-proof | pins=6 | row=211
 - check_save_journal.ts | L289-299 | C | deleted:R3 (track-state/saveRecoveries declaration and import checks) | pins=6 | row=212
@@ -285,16 +290,17 @@ Kept:
 - check_track30_finished_delegation.ts | L42-43 | C | deleted:R3 | pins=1 | row=257
 - check_track30_finished_delegation.ts | L44-48 | D | kept:K3 proposed keep | pins=1 | row=258
 - check_persistence_grants.ts | L18-22 | C | deleted:R3 (declared-once assert L20 only; between/body extraction stays) | pins=3 | row=142
-- check_persistence_grants.ts | L26-27 | D | kept:K1 needs fault-proof | pins=2 | row=143
-- check_persistence_grants.ts | L30-31, L39-40, L41-42, L43-47 | B | split: deleted:R5 (1 of 4 pins: L39-40 span hash) + kept:K1 (3 of 4 pins: L30-31, L41-42, L43-47) | pins=4 | row=144
+- check_persistence_grants.ts | L26-27 | D | kept:K1 needs fault-proof; unit 5 re-pointed both to `}, saveFailure)` and `}, resumeFailure)` | pins=2 | row=143
+- check_persistence_grants.ts | L30-31, L39-40, L41-42, L43-47 | B | split: deleted:R5 (1 of 4 pins: L39-40 span hash) + kept:K1 (3 of 4 pins: L30-31, L41-42, L43-47); unit 5 re-pointed the L30 end anchor to `  }, saveFailure)`, digest unchanged | pins=4 | row=144
 - check_persistence_grants.ts | L32-38 | B | deleted:R2 (whole-file sha256 of legacy-save-plan.ts and legacy-save-flow.ts) | pins=2 | row=145
 - check_persistence_grants.ts | L48-51 | D | split: deleted:R5 (1 of 4 pins: L48 admission-handled-once) + kept:K1 (3 of 4: L49, L50, L51) | pins=4 | row=146
 - check_persistence_grants.ts | L52-57 | D | deleted:R5 (L52-57) | pins=8 | row=147
-- check_persistence_grants.ts | L59 | D | kept:K2 unreachable, carried to unit 5 | pins=1 | row=148
+- check_persistence_grants.ts | L59 | D | deleted in unit 5 with the unreachable raw-close branch (was kept:K2, `rawClose` default) | pins=1 | row=148
 - check_persistence_grants.ts | L60-61 | D | kept:K1 needs fault-proof | pins=2 | row=149
-- check_persistence_grants.ts | L62 | D | kept:K2 unreachable, carried to unit 5 | pins=1 | row=150
+- check_persistence_grants.ts | L62 | D | deleted in unit 5 with the unreachable raw-close branch (was kept:K2, propagate line) | pins=1 | row=150
 
 ## Counts (pins are the inventory's own count per row; rows 144 and 146 are split lines, 1 pin of 4 deleted each)
+- These are unit 1's counts. Unit 5 later deleted rows 76, 77, 148, 150 and 207 (one pin each) and kept row 209; see those rows.
 - rows 259
 - deleted rows {'R3': 93, 'R1': 8, 'R2': 4, 'R5': 10, 'R4': 1} pins {'R3': 382, 'R1': 143, 'R2': 42, 'R5': 32, 'R4': 1} total rows 116 pins 600
 - kept rows {'K1': 54, 'K3': 33, 'K4': 50, 'K2': 5, 'K5': 3} pins {'K1': 107, 'K3': 61, 'K4': 0, 'K2': 5, 'K5': 13} total rows 145 pins 186

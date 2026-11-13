@@ -236,15 +236,8 @@ assert.deepEqual(
     [['savedIndex($)', 'savedIndex(reads)'], ['const index = ', 'return ']]),
   'S6 nextIndex body is the origin index plan, returned')
 
-// The native adapter: the open-writer check precedes the map read, reads stay raw, each write takes
-// a new guarded retention store, and the origin blob block keeps its checks under its own name.
-assert.deepEqual(span('N1', storeLines, 'export async function recoverSave($: EngineInterface, context: WriteContext, id: string): Promise<void> {', closes), [
-  'export async function recoverSave($: EngineInterface, context: WriteContext, id: string): Promise<void> {',
-  '  assertWriteOpen(context)',
-  '  await rollbackSave(saveJournal($, context), saveRecoveries, id)',
-  '}',
-], 'N1 recoverSave checks the open writer, then delegates to rollbackSave')
-
+// The native adapter: reads stay raw, each write takes a new guarded retention store, and the
+// origin blob block keeps its checks under its own name.
 assert.deepEqual(span('N2', storeLines, 'export function storeReads($: EngineInterface): SavedReads {', line => line.startsWith('  restoreBlob: ')), [
   'export function storeReads($: EngineInterface): SavedReads {',
   '  return ({ read: key => $.store.get(key), keys: () => $.store.keys() })',
@@ -284,4 +277,4 @@ for (const line of [
   '  ports.clearRecovery()',
 ]) assert.equal(flowLines.filter(other => other === line).length, 1, `N5 imported flow has exactly one: ${line.trim()}`)
 
-console.log('check_save_journal: C1-C11, S0-S6 and N1-N5 passed')
+console.log('check_save_journal: C1-C11, S0-S6 and N2-N5 passed')
