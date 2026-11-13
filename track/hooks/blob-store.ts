@@ -2,20 +2,13 @@
 // name is the SHA-256 of its UTF-8 text, so a reader can prove what it got.
 export type BlobFs = {
   read: (path: string) => Promise<string | undefined>
-  write: (path: string, text: string) => Promise<void>
-  list: (dir: string) => Promise<string[]>
-  remove: (path: string) => Promise<void>
 }
 export type BlobRef = { checksum: string; bytes: number }
-export type BlobPointer = { v: 1; checksum: string; bytes: number; savedAt: number; closedAt?: number; imported?: boolean }
 
 const CHECKSUM = /^[0-9a-f]{64}$/
-const BLOB_NAME = /^([0-9a-f]{64})\.json$/
-const POINTER_KEYS = new Set(['v', 'checksum', 'bytes', 'savedAt', 'closedAt', 'imported'])
 
 const isChecksum = (value: unknown): value is string => typeof value === 'string' && CHECKSUM.test(value)
 const isByteCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0
-const isTime = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
 
 // Each field is read once and only the validated copy is used, so a getter
 // cannot pass validation and then traverse out of dir.
@@ -23,12 +16,6 @@ const copyBlobRef = (ref: unknown): BlobRef | undefined => {
   if (typeof ref !== 'object' || ref === null) return undefined
   const { checksum, bytes } = ref as Record<string, unknown>
   return isChecksum(checksum) && isByteCount(bytes) ? { checksum, bytes } : undefined
-}
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== 'object' || value === null) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
 }
 
 const blobPath = (dir: string, checksum: string): string => `${dir}/${checksum}.json`
@@ -51,46 +38,4 @@ export const readBlob = async (fs: BlobFs, dir: string, ref: BlobRef): Promise<s
   if (copy === undefined) return undefined
   const text = await fs.read(blobPath(dir, copy.checksum))
   return await matches(text, copy) ? text : undefined
-}
-
-// An existing verified blob is left alone; a damaged one is refused and kept.
-// Only a missing blob is written, then read back before the ref is returned.
-export const writeBlob = async (fs: BlobFs, dir: string, text: string): Promise<BlobRef> => {
-  const ref = await refOf(text)
-  const path = blobPath(dir, ref.checksum)
-  const existingText = await fs.read(path)
-  if (await matches(existingText, ref)) return ref
-  if (existingText !== undefined) throw new Error(`existing blob differs from its name; it was kept: ${path}`)
-  await fs.write(path, text)
-  if (!await matches(await fs.read(path), ref)) throw new Error(`blob read-back mismatch: ${path}`)
-  return ref
-}
-
-// The caller must hold Track's writer lock: a concurrent save writes its blob
-// before it publishes the pointer, so an unlocked sweep could delete it.
-export const sweepBlobs = async (fs: BlobFs, dir: string, referenced: ReadonlySet<string>): Promise<string[]> => {
-  const removed = (await fs.list(dir)).filter(name => {
-    const checksum = BLOB_NAME.exec(name)?.[1]
-    return checksum !== undefined && !referenced.has(checksum)
-  }).sort()
-  for (const name of removed) await fs.remove(`${dir}/${name}`)
-  return removed
-}
-
-// Only own keys of a plain object count, each read once into a local, so an
-// inherited, polluted or changing field cannot pass validation.
-export const parseBlobPointer = (value: unknown): BlobPointer | undefined => {
-  if (!isPlainObject(value) || !Object.keys(value).every(key => POINTER_KEYS.has(key))) return undefined
-  const own = (key: string): unknown => Object.hasOwn(value, key) ? value[key] : undefined
-  const [v, checksum, bytes, savedAt, closedAt, imported] = ['v', 'checksum', 'bytes', 'savedAt', 'closedAt', 'imported'].map(own)
-  const hasClosedAt = Object.hasOwn(value, 'closedAt')
-  const hasImported = Object.hasOwn(value, 'imported')
-  if (v !== 1 || !isChecksum(checksum) || !isByteCount(bytes) || !isTime(savedAt)) return undefined
-  if (hasClosedAt && !isTime(closedAt)) return undefined
-  if (hasImported && typeof imported !== 'boolean') return undefined
-  return {
-    v: 1, checksum, bytes, savedAt,
-    ...(hasClosedAt && { closedAt: closedAt as number }),
-    ...(hasImported && { imported: imported as boolean }),
-  }
 }

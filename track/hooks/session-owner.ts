@@ -3,9 +3,12 @@ import type { EngineInterface, PluginState } from 'claude-code'
 import type { Pending, Turn } from '../types'
 import { checkpointFailure } from './checkpoint'
 import type { Checkpoint } from './checkpoint'
-import { LOADED_IDENTITY, EMPTY_LEDGER, IDLE, reason, ringOwner, noteEvent, ownership, OwnerChanged, updateLedger } from './track-state'
+import { LOADED_IDENTITY, EMPTY_LEDGER, IDLE, reason, ringOwner, noteEvent, ownership, OwnerChanged, updateLedger, eventRing, gateCache, configDir } from './track-state'
 import type { OwnerToken, Owned } from './track-state'
 import { saveLedger, resumeOwned } from './ledger-store'
+import { MAX_INPUTS } from './prompt-intake'
+import type { DiagnosePorts } from './diagnose-flow'
+import { FRESHNESS_KINDS, INPUT_CLAIM_KIND, claimName, inputClaimTurn } from './turn-guidance'
 
 // Atom copies: identical to their register.tsx declarations (tests/helpers/architecture.ts).
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
@@ -214,4 +217,52 @@ export async function observedDisk($: EngineInterface): Promise<string | undefin
 }
 export async function identityLine($: EngineInterface): Promise<string> {
   return `track: loaded ${LOADED_IDENTITY.loaded === 'unknown' ? 'unknown' : LOADED_IDENTITY.loaded.slice(0, 8)} (disk ${(await observedDisk($))?.slice(0, 8) ?? 'unknown'})`
+}
+
+// D9: stat only the claim names this session and turn can own; contents are never read and the
+// directory is never listed, so no other session is enumerated.
+export async function claimStats($: EngineInterface, session: string, turnId: string | null, heldInputs: number[], epoch?: string, legacy: readonly number[] = []): Promise<Array<{ name: string; kind: string; present: boolean }>> {
+  // CLAUDE_CONFIG_DIR wins, as in configDir; HOME is asked only when it is unset.
+  let config: string | undefined
+  try { config = (await $.env.get('CLAUDE_CONFIG_DIR')) || await configDir($) } catch { config = undefined }
+  if (!config?.startsWith('/')) return []
+  const wanted: Array<[string, string]> = [
+    ...(typeof turnId === 'string' && turnId !== '' ? FRESHNESS_KINDS.map(kind => [turnId, kind] as [string, string]) : []),
+    ...heldInputs.slice(0, MAX_INPUTS).map(id => [inputClaimTurn(id, legacy.includes(id) ? undefined : epoch), INPUT_CLAIM_KIND] as [string, string]),
+  ]
+  const stats: Array<{ name: string; kind: string; present: boolean }> = []
+  for (const [claimTurn, kind] of wanted) {
+    const name = await claimName(session, claimTurn, kind)
+    let present = false
+    // D9 lstat: a symbolic link never counts as a present claim, whatever it leads to.
+    try {
+      const stat = await $.fs.stat(`${config}/state/track/stop-holds/${kind === INPUT_CLAIM_KIND ? 'inputs/' : ''}${name}`)
+      present = stat.kind === 'file' && stat.isLink !== true
+    }
+    catch { present = false }
+    stats.push({ name, kind, present })
+  }
+  return stats
+}
+
+// D7-D11: diagnose-flow's native reads, built per call. isAdmitted reads `ownership` on each of its
+// two calls; the durability read happens only when the ledger names no owner.
+export function diagnosePorts($: EngineInterface): DiagnosePorts {
+  return ({
+  epoch: () => ownership.epoch,
+  sessionId: () => $.session.id(),
+  isAdmitted: async (epoch, id) => {
+    if (ownership.running !== undefined || ownership.epoch !== epoch) return false
+    return ((await read($, ledger)).session_id ?? (await read($, durability)).memorySession) === id
+  },
+  readLedger: () => read($, ledger),
+  readTurn: () => read($, turn),
+  readActivity: () => read($, activity),
+  readPending: () => read($, pending),
+  observedDisk: () => observedDisk($),
+  claimStats: (session, turnId, heldInputs, epoch, legacy) => claimStats($, session, turnId, heldInputs, epoch, legacy),
+  cachedGate: () => gateCache.last,
+  events: () => eventRing,
+  identity: LOADED_IDENTITY,
+})
 }

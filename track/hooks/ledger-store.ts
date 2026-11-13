@@ -117,7 +117,6 @@ export async function publishGate($: EngineInterface, token?: OwnerToken): Promi
 export const blobFailure = (detail: string, cause?: unknown): Error =>
   new Error(`saved history blob is missing or damaged (${detail}); pointer was kept`, cause === undefined ? undefined : { cause })
 
-export const refuseBlobMutation = async (): Promise<never> => { throw new Error('track blob readers never write or delete blobs') }
 export function blobFs($: EngineInterface): BlobFs {
   return ({
   read: async path => {
@@ -129,9 +128,6 @@ export function blobFs($: EngineInterface): BlobFs {
       throw blobFailure('blob unreadable', error)
     }
   },
-  write: refuseBlobMutation,
-  list: refuseBlobMutation,
-  remove: refuseBlobMutation,
 })
 }
 
