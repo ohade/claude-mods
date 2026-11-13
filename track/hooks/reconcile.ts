@@ -1,4 +1,4 @@
-import type { Baseline, Ledger } from '../types'
+import type { Ledger } from '../types'
 
 // TRACK-21 (2026-10-11): reload adopted a durable revision while retaining
 // unrelated nonempty memory, making a later save silently overwrite newer rows.

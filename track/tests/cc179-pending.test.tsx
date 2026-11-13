@@ -85,7 +85,7 @@ test('an AMQ doorbell in the same turn does not erase a pending question', async
   expect(await gateReasons($, on)).toEqual([blockFor(FIRST)])
 })
 
-test('Track still blocks once for an uncovered prompt after another Stop hook continued the turn', async ($, on) => {
+test('Track still publishes an uncovered prompt as a gate reason after another Stop hook continued the turn, and Stop does not block', async ($, on) => {
   prepare(on)
   await ask($, FIRST)
   expect(await gateReasons($, on, { stop_hook_active: true })).toEqual([blockFor(FIRST)])

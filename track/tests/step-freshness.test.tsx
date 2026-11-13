@@ -94,7 +94,7 @@ test('confirmed clear all refreshes the external Stop snapshot after an establis
   expect(waiting(), 'a cleared step must not remain in the published command-Stop snapshot').toBe(false)
 })
 
-test('stale current-turn step blocks once without a live owner', async ($, on) => {
+test('stale current-turn step without a live owner is published as stale_in_progress and Stop does not block', async ($, on) => {
   const fixture = await prepare($, on)
   await mark($, 'in_progress')
   await response($)

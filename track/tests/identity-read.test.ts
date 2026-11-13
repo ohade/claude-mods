@@ -2,7 +2,7 @@
 // RED-exempt: before the product commit its only red is the missing module; its mutant (accept invalid
 // metadata, or report the placeholder as loaded) proves it at GREEN. No disk value is ever an input.
 import { expect, test } from 'claude-code/testing'
-import { identityOf } from '../hooks/identity-read'
+import { identityOf } from '../hooks/diagnose-bundle'
 
 const VALID = { v: 1, source_fingerprint: 'a'.repeat(64), source_base: 'b'.repeat(40), generated_at: '2026-10-27T00:00:00Z' }
 

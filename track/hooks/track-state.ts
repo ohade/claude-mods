@@ -3,7 +3,7 @@ import type { HookStream, ProcessSpawnChunk, ProcessSpawnResult, PluginState, En
 import type { Ledger, Activity, StepFreshness } from '../types'
 import { utf8Bytes } from './ledger-text'
 import { BUILD_IDENTITY } from './build-identity'
-import { identityOf } from './identity-read'
+import { identityOf } from './diagnose-bundle'
 import type { RingEntry, RingValue, GateProjection } from './diagnose-bundle'
 import type { SaveRecovery } from './save-journal'
 

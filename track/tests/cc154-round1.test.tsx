@@ -53,7 +53,7 @@ const trackAnswered = async (
   await $.tool.call({ tool: 'mcp__track__mark_answered', id, status: 'answered', answer_text: 'On it.', tool_use_id: 'toolu_a' } as never)
 }
 
-test('prompt.submit then turn.start then Stop blocks once', async ($, on) => {
+test('prompt.submit then turn.start publishes the uncovered prompt as a gate reason and Stop does not block', async ($, on) => {
   prepare(on)
   await ask($, 'ok, u on it?', { kind: 'composer' })
   await start($, 'turn-2')
@@ -62,7 +62,7 @@ test('prompt.submit then turn.start then Stop blocks once', async ($, on) => {
   expect(second.block).toBeUndefined()
 })
 
-test('turn.start then prompt.submit then Stop blocks once', async ($, on) => {
+test('turn.start then prompt.submit publishes the uncovered prompt as a gate reason and Stop does not block', async ($, on) => {
   prepare(on)
   await start($, 'turn-2')
   await ask($, 'ok, u on it?', { kind: 'composer' })

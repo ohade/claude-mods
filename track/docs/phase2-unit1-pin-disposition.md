@@ -239,7 +239,7 @@ Kept:
 - check_save_journal.ts | L231-233 | D | kept:K3 proposed keep | pins=3 | row=206
 - check_save_journal.ts | L249-254 | B | deleted in unit 5: structure only, Ohad's OK 2026-11-11 (N1). Fault (remove `assertWriteOpen(context)` from `recoverSave`): engine suite 1459 pass, Python 291 OK, only this pin failed. The guard cannot see a sealed context: `phase` becomes `sealed` only in `finishWrite`, which runs in the `finally` of `inOwnGrant`, `bindHistory` and `migrateStore`, after every `recoverSave` call (the `recover` port and `resumeOwned` inside the work, `saveFailure` in the catch, `migrateStore` right after `writeContext`). The guard stays | pins=1 | row=207
 - check_save_journal.ts | L256-265 | B | kept:K1 needs fault-proof | pins=1 | row=208
-- check_save_journal.ts | L267-271 | B | kept:K2 after unit 5 (N3). Fault (remove the pointer-mismatch throw from `restorePreviousBlob`): engine suite 1459 pass, Python 291 OK, only this pin failed. No behaviour test was written because none can reach the throw: `saveLegacy` takes `previous` and `previousBlobText` from one read, and `logicalBody` sets the text only after `readBlob` verified it against that same `ledger_blob`, so a plain store value cannot mismatch later. Removing the pin needs a lead decision | pins=1 | row=209
+- check_save_journal.ts | L267-271 | B | deleted in unit 5: structure only, Ohad's OK 2026-11-13: a planted fault failed no behaviour test, and no behaviour test can reach the pinned throw (previous value and blob text come from one read) (N3). Fault (remove the pointer-mismatch throw from `restorePreviousBlob`): engine suite 1459 pass, Python 291 OK, only this pin failed. No behaviour test was written because none can reach the throw: `saveLegacy` takes `previous` and `previousBlobText` from one read, and `logicalBody` sets the text only after `readBlob` verified it against that same `ledger_blob`, so a plain store value cannot mismatch later. The throw stays | pins=1 | row=209
 - check_save_journal.ts | L273-277 | B | kept:K1 needs fault-proof | pins=1 | row=210
 - check_save_journal.ts | L279-286 | B | kept:K1 needs fault-proof | pins=6 | row=211
 - check_save_journal.ts | L289-299 | C | deleted:R3 (track-state/saveRecoveries declaration and import checks) | pins=6 | row=212
@@ -300,7 +300,7 @@ Kept:
 - check_persistence_grants.ts | L62 | D | deleted in unit 5 with the unreachable raw-close branch (was kept:K2, propagate line) | pins=1 | row=150
 
 ## Counts (pins are the inventory's own count per row; rows 144 and 146 are split lines, 1 pin of 4 deleted each)
-- These are unit 1's counts. Unit 5 later deleted rows 76, 77, 148, 150 and 207 (one pin each) and kept row 209; see those rows.
+- These are unit 1's counts. Unit 5 later deleted rows 76, 77, 148, 150, 207 and 209 (one pin each); see those rows.
 - rows 259
 - deleted rows {'R3': 93, 'R1': 8, 'R2': 4, 'R5': 10, 'R4': 1} pins {'R3': 382, 'R1': 143, 'R2': 42, 'R5': 32, 'R4': 1} total rows 116 pins 600
 - kept rows {'K1': 54, 'K3': 33, 'K4': 50, 'K2': 5, 'K5': 3} pins {'K1': 107, 'K3': 61, 'K4': 0, 'K2': 5, 'K5': 13} total rows 145 pins 186

@@ -1,5 +1,5 @@
-// TRACK-35 unit 1 (2026-10-22): content-addressed blob files must be
-// write-once, verified on write and read, and swept only when unreferenced.
+// TRACK-35 unit 1 (2026-10-22): a content-addressed blob is returned only when its file
+// matches the reference's checksum and byte count; an invalid reference never reaches fs.
 import assert from 'node:assert/strict'
 import { readBlob } from '../../hooks/blob-store'
 import type { BlobFs } from '../../hooks/blob-store'

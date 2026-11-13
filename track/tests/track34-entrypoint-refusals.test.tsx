@@ -16,10 +16,7 @@ const CONFIG = '/fixture/config'
 const BLOBS = `${CONFIG}/state/track/blobs`
 const NOW = 10000
 const B_RESULT = 'B completed the independently requested result.'
-const B_MARK = 'unit2-b-mark'
-const IDENTITY_FAILURE = 'TRACK34 injected session.id read failure'
 const READ_FAILURE = 'TRACK34 injected B resume store refusal'
-const LEASE_FAILURE = 'TRACK34 injected B writer lease refusal'
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 const encoder = new TextEncoder()
 const hash = async (text: string) => Array.from(new Uint8Array(
@@ -168,8 +165,6 @@ const baseline = (saved: Fixture['a'], id: string) => ({ session_id: id, ledger:
   checkpoint: saved.head.checkpoint, generation: GENERATION })
 const archives = (fixture: Fixture) => [...fixture.store.held.entries()]
   .filter(([key]) => key.startsWith('r:')).map(([, value]) => value)
-const expectedArchive = (rows: Ledger) => [{ v: 1, session_id: B, kind: 'session-switch',
-  value: { source_session: A, ledger: rows } }]
 const history = async (fixture: Fixture, id: string, saved: Fixture['a']) => ({
   bodyBytes: JSON.stringify(fixture.store.held.get(`s:${id}`)), headBytes: JSON.stringify(fixture.store.held.get(`h:${id}`)),
   blobBytes: fixture.files.get(saved.path), ledger: (await fixture.pool.logical(fixture.store, `s:${id}`) as { ledger: Ledger }).ledger,
@@ -181,29 +176,10 @@ const ownership = (fixture: Fixture) => ({ memorySession: fixture.durability.val
 const unchangedState = async (fixture: Fixture) => ({ memory: fixture.memory.value,
   a: await history(fixture, A, fixture.a), b: await history(fixture, B, fixture.b), c: await history(fixture, C, fixture.c),
   saved: fixture.store.held.get('saved'), archives: archives(fixture), ownership: ownership(fixture), starts: fixture.starts })
-const expectedSelectedB = (fixture: Fixture, memory: unknown, archived = fixture.a.rows) => ({ memory,
-  a: expectedHistory(fixture.a), b: expectedHistory(fixture.b), c: expectedHistory(fixture.c), saved: fixture.saved,
-  archives: expectedArchive(archived), ownership: { memorySession: B, baseline: baseline(fixture.b, B) }, starts: [A] })
 const expectedStillA = (fixture: Fixture) => ({ memory: fixture.a.rows,
   a: expectedHistory(fixture.a), b: expectedHistory(fixture.b), c: expectedHistory(fixture.c), saved: fixture.saved,
   archives: [], ownership: { memorySession: A, baseline: baseline(fixture.a, A) }, starts: [A] })
-const pendingQuestion = async (text: string) => ({ inputs: [{ id: expect.any(Number), head: text,
-  excerpt: text, textHash: await hash(JSON.stringify(text)), turnId: null }], nextId: expect.any(Number) })
 const submit = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
-const markB = ($: Engine) => $.tool.call({ tool: 'mcp__track__mark_step', tool_use_id: B_MARK,
-  id: 'plan:1', status: 'completed', result_text: B_RESULT } as never)
-const changedB = async (fixture: Fixture): Promise<Ledger> => ({ ...fixture.b.rows, steps: [{
-  session_id: B, id: 'plan:1', source: 'plan', subject: 'B saved step', status: 'completed', note: 'B step context',
-  startedAt: 10, endedAt: 20, resultText: B_RESULT, resultTextHash: await hash(JSON.stringify(B_RESULT)), resultRequestId: B_MARK, resultAt: NOW,
-}] })
-const appendB = (door: 'prompt' | 'delivery', text: string) => ({ door, origin: { kind: 'composer' as const },
-  uuid: 'eeeeeeee-0000-4000-8000-000000000034', message: { type: door === 'prompt' ? 'user' as const : 'attachment' as const,
-    ...(door === 'delivery' && { name: 'queued_command' }), role: 'user' as const, content: [{ type: 'text' as const, text }] } })
-const outcome = async <T,>(request: Promise<T>) => {
-  try { return { value: await request } }
-  catch (error) { return { error: error instanceof Error ? error.message : String(error) } }
-}
-const refusalText = (result: unknown) => JSON.stringify(result)
 
 // Project every turn/activity field that can carry A's temporary ownership. Null
 // and missing optional values both mean absent; no A value is taken as an oracle.

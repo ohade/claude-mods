@@ -1,8 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginState, Hook, MatchedHook } from 'claude-code'
-import type { Pane, Pending, PendingInput, Step, Turn } from '../types'
+import type { Pane, Pending, PendingInput, Turn } from '../types'
 import { checksumOf } from './checkpoint'
-import { deploymentDriftMessage } from './deploy-drift'
 import { MAX_INPUTS, admitInput } from './prompt-intake'
 import { unregisteredContext, promptContext, remainingNotices } from './prompt-context'
 import { gateable, looksLikeQuestion, needsQuestion } from './turn-policy'
@@ -41,6 +40,14 @@ export const TASK_ID = /<task-id>([^<]+)<\/task-id>/g
 // turns; it is held once, then named on each later prompt. At the cap a covered input leaves
 // first, then one Haiku called not_question; with none, the new prompt is not recorded, with a
 // toast. Never an unresolved one.
+
+// Pure parsing only: the native loader cannot follow engine capabilities across imports.
+export const deploymentDriftMessage = (main: string, live: string, receiptText: string): string | undefined => {
+  const receipt = JSON.parse(receiptText) as { commit?: string }
+  if (!/^[0-9a-f]{40}$/.test(main) || !/^[0-9a-f]{40}$/.test(live)) return
+  if (receipt.commit !== live || main === live) return
+  return `claude-mods: main ${main.slice(0, 7)} is not live (live ${live.slice(0, 7)}). Run scripts/land.sh main.`
+}
 
 // Whether the drift status shows: while it does, each main turn's end checks
 // again, so a land clears it; with none, a session checks at start alone.

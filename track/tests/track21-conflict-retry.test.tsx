@@ -46,10 +46,10 @@ test('TRACK-21 an unverified rewind can resume and acknowledge a later save', as
   atomStore(on, 'ledger', memory)
   atomStore(on, 'durability', { isUnsaved: true, reason: 'resume: x', memorySession: SESSION, rewindBaseline: { session_id: SESSION, ledger: memory } })
   atomStore(on, 'turn', { currentId: 't1', gatedTurnId: null, eventOrder: 0 })
-  const store = pluginStore(on, { [`s:${SESSION}`]: body, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation: GEN, checkpoint: cp } })
+  pluginStore(on, { [`s:${SESSION}`]: body, [`h:${SESSION}`]: { v: 1, session_id: SESSION, generation: GEN, checkpoint: cp } })
   blobPool(on)
   on('session.id', () => ({ value: SESSION }))
-  const debug = logs(on)
+  logs(on)
   const receipts: unknown[] = []
   for (let i = 0; i < 3; i++) {
     const r = JSON.parse(String((await $.tool.call({ tool: 'mcp__track__checkpoint', expected_session: SESSION } as never)).result))

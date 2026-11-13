@@ -94,7 +94,7 @@ test('an earlier prompt with the same first line does not cover the new one by r
   expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])
 })
 
-test('an unresolved prompt stays pending after its hold and is named on the next prompt', async ($, on) => {
+test('an unresolved prompt is published as a gate reason, Stop does not block, and it stays pending into the next turn', async ($, on) => {
   const { pending } = prepare(on)
   await ask($, ASKED)
   expect(await gateReasons($, on)).toEqual([blockFor(ASKED)])

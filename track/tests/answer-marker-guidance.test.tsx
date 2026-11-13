@@ -49,7 +49,7 @@ test('the later-turn open reminder prefers one formatted marker answer', async (
   expectMarkers(observed.context.join('\n'))
 })
 
-test('the Stop repair for a tracked open question prefers one marker answer', async ($, on) => {
+test('a tracked open question is published as the one open row the Stop marker repair is built from', async ($, on) => {
   prepare(on)
   await $.tool.call({ tool: 'mcp__track__track_question', summary: 'Open question', tool_use_id: 'ask-guidance' } as never)
   await gateReasons($, on)

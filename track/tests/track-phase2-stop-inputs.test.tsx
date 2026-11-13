@@ -149,7 +149,8 @@ test('R4 the published input remains present beside a freshness candidate after 
   fixture.helper.mode = 'spent'
   await call($, 'Bash', { command: 'true' })
   // The merged baseline has no producer. This prerequisite is R4's observed RED;
-  // the no-key assertions below reject a naive producer-only implementation.
+  // the assertions below check that Stop makes no claim call and leaves this published input
+  // and its waiting candidate in place.
   expect(fixture.snapshot().inputs).toEqual([{ id: 1, reason: worded(FIRST) }])
   expect(fixture.snapshot().inputs_complete).toBe(true)
   expect((await stop($, { stop_hook_active: true })).block).toBeUndefined()

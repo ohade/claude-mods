@@ -236,8 +236,7 @@ assert.deepEqual(
     [['savedIndex($)', 'savedIndex(reads)'], ['const index = ', 'return ']]),
   'S6 nextIndex body is the origin index plan, returned')
 
-// The native adapter: reads stay raw, each write takes a new guarded retention store, and the
-// origin blob block keeps its checks under its own name.
+// The native adapter: reads stay raw, and each write takes a new guarded retention store.
 assert.deepEqual(span('N2', storeLines, 'export function storeReads($: EngineInterface): SavedReads {', line => line.startsWith('  restoreBlob: ')), [
   'export function storeReads($: EngineInterface): SavedReads {',
   '  return ({ read: key => $.store.get(key), keys: () => $.store.keys() })',
@@ -248,12 +247,6 @@ assert.deepEqual(span('N2', storeLines, 'export function storeReads($: EngineInt
   '  writeVerified: (key, value) => writeVerified($, context, key, value), taint: () => { context.tainted = true },',
   '  restoreBlob: (pointer, text) => restorePreviousBlob($, context, pointer, text) })',
 ], 'N2 save journal callbacks: raw reads, guarded writes')
-
-assert.deepEqual(
-  span('N3', storeLines, 'export async function restorePreviousBlob($: EngineInterface, context: WriteContext, pointer: { checksum?: unknown; bytes?: unknown } | undefined, text: string | undefined): Promise<void> {', closes).slice(1, -1),
-  transform(dedent(span('N3', originLines, '    const text = recovery.previousBlobText', line => line === '  const failures: string[] = []').slice(1, -2)),
-    [['previous.ledger_blob?.', 'pointer?.']]),
-  'N3 restorePreviousBlob is the origin blob block bound to its parameters')
 
 assert.deepEqual(span('N4', storeLines, 'export async function writeVerified($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> {', closes), [
   'export async function writeVerified($: EngineInterface, context: WriteContext, key: string, value: unknown): Promise<void> {',
@@ -277,4 +270,4 @@ for (const line of [
   '  ports.clearRecovery()',
 ]) assert.equal(flowLines.filter(other => other === line).length, 1, `N5 imported flow has exactly one: ${line.trim()}`)
 
-console.log('check_save_journal: C1-C11, S0-S6 and N2-N5 passed')
+console.log('check_save_journal: C1-C11, S0-S6, N2, N4 and N5 passed')

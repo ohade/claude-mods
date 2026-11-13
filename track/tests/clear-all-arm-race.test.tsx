@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { EMPTY, SESSION, atomStore, pane, pluginStore } from './kit'
-import type { Engine, On } from './kit'
+import type { Engine } from './kit'
 import type { Ledger, Step } from '../types'
 
 // FIXTURE, WO plan:16c (refuter, unreproduced): the first clear-all press decides to arm on the

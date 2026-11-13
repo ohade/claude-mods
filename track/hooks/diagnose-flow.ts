@@ -3,8 +3,7 @@
 import type { Activity, Ledger, Pending, Turn } from '../types'
 import { visibleSteps } from './steps'
 import { fitBundle } from './diagnose-bundle'
-import type { Bundle, GateProjection, RingEntry } from './diagnose-bundle'
-import type { LoadedIdentity } from './identity-read'
+import type { Bundle, GateProjection, LoadedIdentity, RingEntry } from './diagnose-bundle'
 
 export const DIAGNOSE_OWNER = 'track: diagnose needs an admitted owner'
 export const DIAGNOSE_MAIN_LOOP = 'track: diagnose is main-loop only'

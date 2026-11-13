@@ -1,6 +1,6 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, PluginState, RenderElement, Timer } from 'claude-code'
-import type { Activity, Ledger, Pane, Pending, Question, Restore } from '../types'
+import type { Activity, Ledger, Pane, Question, Restore } from '../types'
 import { visibleSteps } from './steps'
 import { runningClocks } from './ledger-policy'
 import { reorderVisibleSteps } from './pane-order'
@@ -16,7 +16,6 @@ import { renderInstances, pressOwned, ensureOwner } from './session-owner'
 // Atom copies: identical to their register.tsx declarations (tests/helpers/architecture.ts).
 const ledger = atom({ plugin: 'track', key: 'ledger' } as const, EMPTY_LEDGER)
 const pane = atom({ plugin: 'track', key: 'pane' } as const, { isOpen: false, hidden: false, closedByPerson: false } as Pane)
-const pending = atom({ plugin: 'track', key: 'pending' } as const, { inputs: [], nextId: 1 } as Pending)
 const flash = atom({ plugin: 'track', key: 'flash' } as const, 0)
 const lit = atom({ plugin: 'track', key: 'lit' } as const, [] as string[])
 const activity = atom({ plugin: 'track', key: 'activity' } as const, IDLE)

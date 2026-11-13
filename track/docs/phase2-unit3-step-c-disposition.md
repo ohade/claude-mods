@@ -144,9 +144,16 @@ for the other two block types:
   `cc154-round1.test.tsx` two "...Stop blocks once" cases, `answer-marker-guidance.test.tsx` "prefers
   one marker answer", and the comment in `track-phase2-stop-inputs.test.tsx` about "the no-key
   assertions below". Rename them or add a one-line note.
+  - Unit 5 part 5b: renamed. The six titles now name the published snapshot and the unblocked Stop
+    they assert; the comment now describes the assertions that follow it. No assertion changed.
 - Newly unused: the multi-input branch of `uncoveredBlock` in `stop-guidance.ts` (production calls it
   with one input), and the architecture allowance `turn-guidance.ts -> stop-guidance.ts`.
+  - Unit 5 part 5b: the allowance is removed (`turn-guidance.ts` no longer imports `stop-guidance.ts`).
+    The multi-input branch is kept: `uncoveredBlock` mirrors the message builder of `stop-gate.py`,
+    and its text is pinned.
 - A test helper (`watchGate` / `gateReasons`) is copied into 9 test files; `tests/kit.ts` was outside
   this step's scope.
+  - Unit 5 part 5b: kept, by the lead's decision; the copies are unchanged.
 - The comment above the `classic.Stop` registration in `register.tsx` still says the module holds
   the turn.
+  - Unit 5 part 5b: not changed; `register.tsx` was outside part 5b's scope, so this stays open.

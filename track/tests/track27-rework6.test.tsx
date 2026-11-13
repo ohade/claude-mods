@@ -7,7 +7,6 @@ import type { Activity, Ledger, Step } from '../types'
 
 const TASK = 'shell-9'
 const TODO = 'todo:start the dev server'
-const PREMATURE = 'track: todo:start the dev server is completed while its owned task shell-9 is still running. Reopen or pause the step, or wait for that task, then finish.'
 const step = (extra: Partial<Step> = {}): Step => ({ id: 'plan:1', source: 'plan', subject: 'Start the dev server', status: 'pending', ...extra })
 const invoke = ($: Engine, tool: string, input: object = {}) => $.tool.call({ tool, tool_use_id: `${tool}-call`, ...input } as never)
 const mark = ($: Engine, status: Step['status'], id = 'plan:1') => invoke($, 'mcp__track__mark_step', { id, status })
