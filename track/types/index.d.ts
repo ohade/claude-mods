@@ -181,8 +181,11 @@ export type Turn = {
 // check saw no question, kept only for Haiku to judge. `label`: Haiku's, once it answered.
 // `textHash`: SHA-256 of the full text, its identity for redelivery. `rowKey`: its transcript row,
 // what a source_request_id must name. `covered`: the kind of accepted row that covered it, and
-// `questionId` the question row, which covers no other input.
-export type PendingInput = { id: number; head: string; excerpt: string; textHash: string; rowKey?: string; turnId: string | null; covered?: 'question' | 'steps'; questionId?: number; held?: true; wording?: false; label?: 'question' | 'not_question' | 'unknown'; legacy?: true }
+// `questionId` the question row, which covers no other input. `fragment`: the user's own words,
+// lowercased with whitespace collapsed and image tags dropped, when an AMQ doorbell was typed after
+// them and they do not end a sentence (so the prompt may be cut off); `superseded`: a later prompt
+// began with all of that fragment, so the user re-sent it and it needs no row.
+export type PendingInput = { id: number; head: string; excerpt: string; textHash: string; rowKey?: string; turnId: string | null; covered?: 'question' | 'steps'; questionId?: number; held?: true; wording?: false; label?: 'question' | 'not_question' | 'unknown'; legacy?: true; fragment?: string; superseded?: true }
 // legacy: admitted before its queue had an epoch, so its helper claim keeps the input:<id> name.
 // epoch: one runtime's input numbering (TRACK-46 S2); a new process restarts nextId at 1.
 export type Pending = { inputs: PendingInput[]; nextId: number; epoch?: string }

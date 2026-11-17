@@ -333,7 +333,8 @@ export async function coverInput($: EngineInterface, kind: 'question' | 'steps',
   await update($, pending, p => {
     assertOwner(token)
     if (source.questionId !== undefined && p.inputs.some(i => i.questionId === source.questionId)) return p
-    const fits = (i: PendingInput) => i.covered === undefined && (kind === 'question' || i.label !== 'question')
+    // A superseded fragment is never a target: its re-send, which may share its first line, is.
+    const fits = (i: PendingInput) => i.covered === undefined && i.superseded !== true && (kind === 'question' || i.label !== 'question')
     let target: PendingInput | undefined
     if (row !== undefined) target = p.inputs.find(i => fits(i) && i.rowKey === row)
     else if (text !== undefined) target = p.inputs.find(i => fits(i) && norm(i.head) === norm(text))

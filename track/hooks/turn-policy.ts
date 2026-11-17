@@ -5,12 +5,26 @@ import { visibleSteps } from './steps'
 
 const QUESTION_FIRST = /^(why|how|what|who|whom|whose|when|where|which|is|are|was|were|can|could|do|does|did|should|would|will|u)$/i
 
+// The AMQ wake system types this line into the input box. It is not the user's words, and the
+// line can be cut anywhere when the user interrupts, so a trailing prefix of it counts too.
+const DOORBELL = ': AMQ doorbell run amq drain --include-body then act on it'
+// The floor is deliberate: a shorter tail (a user's ": A") is user text, not a cut doorbell.
+const DOORBELL_START = ': AMQ doorbell'
+// The text without a trailing doorbell, or the text itself when it has none.
+export const withoutDoorbell = (text: string): string => {
+  const body = text.trimEnd()
+  for (let length = DOORBELL.length; length >= DOORBELL_START.length; length--) {
+    if (body.endsWith(DOORBELL.slice(0, length))) return body.slice(0, body.length - length).trimEnd()
+  }
+  return text
+}
+
 // A main prompt the gate may judge, trimmed, or absent for a slash command, a doorbell, terminal
 // input, a notification or a peer's message. A subagent hand-back comes in under the peer origin
 // and is model output, not the person's question; recordPrompt skips it for the same reason.
 export const gateable = (text: string, originKind: string | undefined): string | undefined => {
   const trimmed = text.trim()
-  if (trimmed === '' || trimmed.startsWith('/') || trimmed.startsWith(': AMQ doorbell')) return undefined
+  if (trimmed === '' || trimmed.startsWith('/') || trimmed.startsWith(DOORBELL_START)) return undefined
   if (trimmed.startsWith('<bash-') || trimmed.startsWith('<local-command') || trimmed.startsWith('<task-notification')) return undefined
   if (originKind === 'task-notification' || originKind === 'peer') return undefined
   return trimmed
@@ -21,8 +35,9 @@ export const looksLikeQuestion = (trimmed: string): boolean =>
   trimmed.includes('?') || QUESTION_FIRST.test(trimmed.split(/\s+/)[0] ?? '')
 
 // Whether an input needs a question row: Haiku's label when it gave one, else the wording check.
+// A fragment the user re-sent whole needs none (see supersedeFragments).
 export const needsQuestion = (i: PendingInput): boolean =>
-  i.label === 'question' || (i.label !== 'not_question' && i.wording !== false)
+  i.superseded !== true && (i.label === 'question' || (i.label !== 'not_question' && i.wording !== false))
 
 // The inputs of the turn: bound to it, or not yet bound to any turn.
 export const ofTurn = (inputs: PendingInput[], currentId: string): PendingInput[] =>

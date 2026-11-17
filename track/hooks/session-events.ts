@@ -3,9 +3,9 @@ import type { EngineInterface, PluginState, Hook, MatchedHook } from 'claude-cod
 import type { Pane, Pending, PendingInput, Question, Step, Turn } from '../types'
 import { checksumOf } from './checkpoint'
 import { deploymentDriftMessage } from './deploy-drift'
-import { MAX_INPUTS, admitInput } from './prompt-intake'
+import { MAX_INPUTS, admitInput, askedKey, fragmentKey, isResentFragment, supersedeFragments } from './prompt-intake'
 import { unregisteredContext, promptContext, remainingNotices } from './prompt-context'
-import { gateable, looksLikeQuestion, needsQuestion } from './turn-policy'
+import { gateable, looksLikeQuestion, needsQuestion, withoutDoorbell } from './turn-policy'
 import { MAX_STEPS, withStatus, STEP_STATUSES } from './ledger-policy'
 import { headOf } from './ledger-text'
 import { toolContracts } from './tool-contracts'
@@ -272,14 +272,31 @@ export async function promptSubmitEvent($: Parameters<PromptSubmitEventHook>[0],
     return next({ ...e, context: [...(e.context ?? []), 'track: session owner changed during the call; Track did not record this prompt.'] })
   }
   const trimmed = (e as { agentId?: string }).agentId === undefined ? gateable(String(e.text ?? ''), e.origin?.kind) : undefined
-  const wording = trimmed !== undefined && looksLikeQuestion(trimmed)
+  // The user's own words: an injected doorbell is neither judged nor classified.
+  const asked = trimmed === undefined ? undefined : withoutDoorbell(trimmed)
+  const wording = asked !== undefined && looksLikeQuestion(asked)
+  const fragment = asked !== undefined && asked !== trimmed ? fragmentKey(asked) : undefined
   const classify = trimmed !== undefined && (await classifierOn($))
+  // A fragment the user cut off with the doorbell and then re-sent whole needs no row of its own.
+  const later = asked === undefined ? undefined : askedKey(asked)
+  const textHash = trimmed === undefined ? '' : await checksumOf(String(e.text))
+  const admits = trimmed !== undefined && (wording || classify)
+  if (!admits && later !== undefined && (await read($, pending)).inputs.some(i => isResentFragment(i, later, textHash))) {
+    try {
+      await update($, pending, p => {
+        assertAdmitted()
+        return supersedeFragments(p, later, textHash)
+      })
+    } catch (error) {
+      if (!(error instanceof OwnerChanged)) throw error
+      return passThrough()
+    }
+  }
   let added: number | undefined
-  if (trimmed !== undefined && (wording || classify)) {
+  if (trimmed !== undefined && admits) {
     const excerpt = trimmed.slice(0, 80)
     const head = headOf(String(e.text))
     const turnId = typeof e.turnId === 'string' ? e.turnId : null
-    const textHash = await checksumOf(String(e.text))
     // The prompt row may already be recorded: the newest with these words, not yet taken.
     const prompts = (await read($, ledger)).prompts
     let full = false
@@ -288,7 +305,7 @@ export async function promptSubmitEvent($: Parameters<PromptSubmitEventHook>[0],
         assertAdmitted()
         added = undefined
         full = false
-        const admission = admitInput(p, { head, excerpt, textHash, turnId, wording, prompts, labelling: new Set([...classifying.keys(), ...labelScheduled]), needsRow: needsQuestion })
+        const admission = admitInput(later === undefined ? p : supersedeFragments(p, later, textHash), { head, excerpt, textHash, turnId, ...(fragment !== undefined && { fragment }), wording, prompts, labelling: new Set([...classifying.keys(), ...labelScheduled]), needsRow: needsQuestion })
         added = admission.added
         full = admission.full
         // Permanent helper claims are named per epoch, so a restarted runtime's input 1 is new.
@@ -307,7 +324,7 @@ export async function promptSubmitEvent($: Parameters<PromptSubmitEventHook>[0],
     // Started, not awaited: the label is read at Stop. A managed timer stops on a reload.
     if (added !== undefined && classify) {
       const id = added
-      const text = String(e.text)
+      const text = withoutDoorbell(String(e.text))
       const epoch = ownership.epoch
       labelScheduled.add(id)
       $.clock.after(0, () => {
