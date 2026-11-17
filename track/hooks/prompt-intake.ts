@@ -36,7 +36,7 @@ const compact = (text: string): string => text.replace(/\[Image #\d+\]/g, ' ').r
 // sentence ending in ?, . or ! is complete, and a very long one is not recorded (it keeps its row).
 export const fragmentKey = (asked: string): string | undefined => {
   const key = compact(asked)
-  return key === '' || key.length > FRAGMENT_CHARS || /[?.!]$/.test(key) ? undefined : key
+  return key === '' || key.length > FRAGMENT_CHARS || '?.!'.includes(key.slice(-1)) ? undefined : key
 }
 export const askedKey = compact
 // The prompt being admitted (matched by hash, as on redelivery) never supersedes itself.
